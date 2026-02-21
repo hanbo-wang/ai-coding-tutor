@@ -1,0 +1,27 @@
+@import "tailwindcss";
+
+@theme {
+  --color-brand: #364044;
+  --color-brand-light: #4a575c;
+  --color-accent: #8cc2b6;
+  --color-accent-dark: #6ba99c;
+  --color-accent-light: #b3d9d0;
+}
+
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+}
+
+.split-root > .gutter {
+  background: #e5e7eb;
+  transition: background-color 0.15s ease;
+}
+
+.split-root > .gutter:hover {
+  background: #c9ced3;
+}
+
+.split-root > .gutter.gutter-horizontal {
+  cursor: col-resize;
+}

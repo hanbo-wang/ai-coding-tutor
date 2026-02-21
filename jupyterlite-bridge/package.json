@@ -1,0 +1,30 @@
+{
+  "name": "jupyterlite-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "postMessage bridge extension for Guided Cursor workspace",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "files": [
+    "lib/**/*",
+    "style/**/*"
+  ],
+  "scripts": {
+    "clean": "rimraf labextension lib tsconfig.tsbuildinfo",
+    "build": "npm run clean && tsc -p tsconfig.json && jupyter labextension build ."
+  },
+  "dependencies": {
+    "@jupyterlab/application": "^4.5.4",
+    "@jupyterlab/docregistry": "^4.5.4",
+    "@jupyterlab/notebook": "^4.5.4"
+  },
+  "devDependencies": {
+    "@jupyterlab/builder": "^4.5.4",
+    "rimraf": "^5.0.10",
+    "typescript": "~5.6.2"
+  },
+  "jupyterlab": {
+    "extension": "lib/index.js",
+    "outputDir": "labextension"
+  }
+}
