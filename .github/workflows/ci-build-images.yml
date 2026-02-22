@@ -48,7 +48,9 @@ jobs:
 
       - name: Run backend tests
         working-directory: backend
-        run: pytest tests -q
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend
+        run: python -m pytest tests -q
 
       - name: Build JupyterLite assets
         run: bash scripts/build-jupyterlite.sh
