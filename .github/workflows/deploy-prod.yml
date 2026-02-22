@@ -1,0 +1,98 @@
+name: Deploy Production (Manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "GHCR image tag to deploy (e.g. main or sha-<gitsha>)"
+        required: true
+        default: "main"
+      deploy_path:
+        description: "Remote directory containing .env and compose deployment files"
+        required: true
+        default: "/opt/ai-coding-tutor"
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute lowercase image names
+        id: vars
+        shell: bash
+        run: |
+          owner_lc="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          repo_lc="$(echo "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
+          echo "owner_lc=$owner_lc" >> "$GITHUB_OUTPUT"
+          echo "repo_lc=$repo_lc" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure remote deploy directory exists
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || '22' }}
+          script: |
+            set -eu
+            mkdir -p "${{ inputs.deploy_path }}"
+
+      - name: Upload compose file
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || '22' }}
+          source: "docker-compose.prod.yml"
+          target: "${{ inputs.deploy_path }}"
+          overwrite: true
+
+      - name: Deploy selected image tag
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          DEPLOY_PATH: ${{ inputs.deploy_path }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          GHCR_OWNER: ${{ steps.vars.outputs.owner_lc }}
+          GHCR_IMAGE_PREFIX: ${{ steps.vars.outputs.repo_lc }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || '22' }}
+          envs: DEPLOY_PATH,IMAGE_TAG,GHCR_OWNER,GHCR_IMAGE_PREFIX,GHCR_USERNAME,GHCR_TOKEN
+          script: |
+            set -euo pipefail
+            cd "$DEPLOY_PATH"
+
+            if [ ! -f .env ]; then
+              echo "Missing $DEPLOY_PATH/.env (use .github/workflows/templates/prod.env.sample as your template)"
+              exit 1
+            fi
+
+            if [ -n "${GHCR_TOKEN:-}" ] && [ -n "${GHCR_USERNAME:-}" ]; then
+              echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
+            fi
+
+            export GHCR_OWNER
+            export GHCR_IMAGE_PREFIX
+            export IMAGE_TAG
+
+            docker compose -f docker-compose.prod.yml pull
+            docker compose -f docker-compose.prod.yml up -d
+            docker compose -f docker-compose.prod.yml ps
+
+            docker compose -f docker-compose.prod.yml exec -T backend python - <<'PY'
+            import json
+            import urllib.request
+            data = urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=10).read()
+            print(json.loads(data.decode("utf-8")))
+            PY

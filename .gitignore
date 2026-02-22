@@ -1,7 +1,11 @@
 # Secrets and environment
 .env
+.env.prod
+.env.prod.example
 .env.local
 .env.*.local
+!/.env.example
+# Keep the root local development example in the repository.
 cookies.txt
 
 # Python artefacts

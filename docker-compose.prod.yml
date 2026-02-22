@@ -1,0 +1,87 @@
+services:
+  db:
+    image: postgres:15
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    image: ${GHCR_REGISTRY:-ghcr.io}/${GHCR_OWNER:?set GHCR_OWNER}/${GHCR_IMAGE_PREFIX:-ai-coding-tutor}-backend:${IMAGE_TAG:-main}
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Force persistent container paths even if the operator forgets to override dev defaults.
+      UPLOAD_STORAGE_DIR: /data/uploads
+      NOTEBOOK_STORAGE_DIR: /data/notebooks
+      BACKEND_RELOAD: "false"
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-true}
+    volumes:
+      - uploads_data:/data/uploads
+      - notebooks_data:/data/notebooks
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read()",
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # Frontend image is nginx-based and also acts as the reverse proxy.
+  frontend:
+    image: ${GHCR_REGISTRY:-ghcr.io}/${GHCR_OWNER:?set GHCR_OWNER}/${GHCR_IMAGE_PREFIX:-ai-coding-tutor}-frontend:${IMAGE_TAG:-main}
+    restart: unless-stopped
+    environment:
+      SERVER_NAME: ${SERVER_NAME:?set SERVER_NAME}
+      BACKEND_UPSTREAM: ${BACKEND_UPSTREAM:-backend:8000}
+      CLIENT_MAX_BODY_SIZE: ${CLIENT_MAX_BODY_SIZE:-16m}
+      TLS_CERT_PATH: ${TLS_CERT_PATH:?set TLS_CERT_PATH}
+      TLS_KEY_PATH: ${TLS_KEY_PATH:?set TLS_KEY_PATH}
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - certbot_certs:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+
+  certbot:
+    image: certbot/certbot:latest
+    profiles: ["ops"]
+    restart: unless-stopped
+    volumes:
+      - certbot_certs:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+    entrypoint: >
+      /bin/sh -c 'trap exit TERM; while :; do
+      certbot renew --webroot -w /var/www/certbot --quiet;
+      sleep 12h;
+      done'
+
+volumes:
+  pgdata:
+  uploads_data:
+  notebooks_data:
+  certbot_certs:
+  certbot_www:

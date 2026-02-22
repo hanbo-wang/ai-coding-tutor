@@ -1,0 +1,23 @@
+FROM node:20-alpine AS build
+
+WORKDIR /app
+
+COPY frontend/package.json frontend/package-lock.json ./frontend/
+WORKDIR /app/frontend
+RUN npm ci
+
+COPY frontend/ ./
+RUN npm run build
+
+
+FROM nginx:1.27-alpine
+
+# Nginx official image automatically envsubst's /etc/nginx/templates/*.template at startup.
+COPY nginx/nginx.prod.conf /etc/nginx/templates/default.conf.template
+COPY --from=build /app/frontend/dist /usr/share/nginx/html
+
+RUN mkdir -p /var/www/certbot
+
+EXPOSE 80 443
+
+# Healthcheck is intentionally omitted here; backend /health is the source of truth.
