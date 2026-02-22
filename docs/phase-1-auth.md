@@ -23,7 +23,7 @@ Create the `backend/` directory with the following files.
 | File | Purpose |
 |------|---------|
 | `backend/Dockerfile` | Python 3.11-slim image. Installs system dependencies (`gcc`, `libpq-dev`), Python requirements, and runs Uvicorn. |
-| `backend/requirements.txt` | FastAPI, uvicorn[standard], SQLAlchemy[asyncio], asyncpg, alembic, python-jose[cryptography], passlib[bcrypt], bcrypt, pydantic[email], pydantic-settings, httpx |
+| `backend/requirements.txt` | FastAPI, uvicorn[standard], SQLAlchemy[asyncio], asyncpg, alembic, python-jose[cryptography], bcrypt, pydantic[email], pydantic-settings, httpx |
 | `backend/alembic.ini` | Points to the migrations directory. Logging configured for Alembic and SQLAlchemy. |
 | `backend/app/__init__.py` | Empty file that marks the directory as a package. |
 

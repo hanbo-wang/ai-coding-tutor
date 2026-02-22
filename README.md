@@ -52,7 +52,7 @@ Additional reference: [docs/semantic-recognition-testing.md](docs/semantic-recog
 - **Precise Token Tracking**: input and output token counts are read from each LLM provider's API response, recorded per message, and aggregated into daily usage totals.
 - **Admin Cost Visibility**: the admin dashboard shows total input/output tokens and estimated cost for today, this week, and this month.
 - **Admin Audit Log**: every Learning Hub modification is logged with the admin's email, timestamp, and change details for name updates.
-- **Automated Test Suite**: 34 passing tests covering pedagogy, context building, rate limiting, connection tracking, admin usage, audit log, config parsing, notebook validation, and upload handling.
+- **Automated Test Suite**: 65 passing tests covering end-to-end API flows, auth helpers, chat helper logic, pedagogy, context building, rate limiting, connection tracking, admin usage, admin audit logging, config parsing, notebook validation, upload handling, and zone path utilities.
 
 ### Planned (Phase 5)
 
@@ -64,7 +64,7 @@ Additional reference: [docs/semantic-recognition-testing.md](docs/semantic-recog
 | ---------- | ------------------------------------------------------------------------ |
 | Frontend   | React 18, TypeScript (strict), Vite, Tailwind CSS v4                     |
 | Backend    | FastAPI, Uvicorn, SQLAlchemy 2.0 (async), Alembic, Pydantic v2           |
-| Auth       | python-jose (JWT), passlib + bcrypt                                      |
+| Auth       | python-jose (JWT), bcrypt                                                |
 | AI         | Anthropic Claude, Google Gemini, OpenAI GPT (configurable with failover) |
 | Embeddings | Cohere embed-v4.0 (primary), Voyage AI voyage-multimodal-3.5 (fallback)  |
 | Database   | PostgreSQL 15 with asyncpg                                               |

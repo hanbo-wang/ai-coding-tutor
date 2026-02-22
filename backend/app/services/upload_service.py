@@ -4,7 +4,7 @@ import io
 import json
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Sequence
 
@@ -36,6 +36,11 @@ DOCUMENT_MIME_TO_EXTENSION = {
     "text/csv": ".csv",
     "application/x-ipynb+json": ".ipynb",
 }
+
+
+def _utc_now_naive() -> datetime:
+    """Return a naive UTC datetime without deprecated utcnow()."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class UploadValidationError(ValueError):
@@ -194,7 +199,7 @@ def classify_upload(
 
 
 async def cleanup_expired_uploads(db: AsyncSession) -> int:
-    now = datetime.utcnow()
+    now = _utc_now_naive()
     result = await db.execute(
         select(UploadedFile).where(UploadedFile.expires_at < now)
     )
@@ -231,7 +236,7 @@ async def save_uploaded_files(
     await cleanup_expired_uploads(db)
 
     storage_dir = ensure_storage_dir()
-    now = datetime.utcnow()
+    now = _utc_now_naive()
     expires_at = now + timedelta(hours=settings.upload_expiry_hours)
 
     saved_files: list[UploadedFile] = []
@@ -296,7 +301,7 @@ async def get_user_uploads_by_ids(
     if not upload_ids:
         return []
 
-    now = datetime.utcnow()
+    now = _utc_now_naive()
     result = await db.execute(
         select(UploadedFile).where(
             UploadedFile.user_id == user_id,
@@ -319,7 +324,7 @@ async def get_user_upload_by_id(
     user_id: uuid.UUID,
     upload_id: uuid.UUID,
 ) -> UploadedFile | None:
-    now = datetime.utcnow()
+    now = _utc_now_naive()
     result = await db.execute(
         select(UploadedFile).where(
             UploadedFile.id == upload_id,

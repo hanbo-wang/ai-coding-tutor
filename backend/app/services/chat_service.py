@@ -2,7 +2,7 @@
 
 import uuid
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 from sqlalchemy import and_, delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -12,6 +12,11 @@ from sqlalchemy.exc import IntegrityError
 from app.models.chat import ChatSession, ChatMessage, DailyTokenUsage, UploadedFile
 from app.config import settings
 from app.services.upload_service import attachment_payload
+
+
+def _utc_now_naive() -> datetime:
+    """Return a naive UTC datetime without deprecated utcnow()."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 async def get_or_create_session(
@@ -160,7 +165,7 @@ async def get_session_messages(
 
     attachment_map: dict[str, dict] = {}
     if all_attachment_ids:
-        now = datetime.utcnow()
+        now = _utc_now_naive()
         attachment_result = await db.execute(
             select(UploadedFile).where(
                 UploadedFile.user_id == user_id,

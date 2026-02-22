@@ -151,11 +151,12 @@ async def _authenticate_ws(token: str) -> User | None:
         user_id = payload.get("sub")
         if not user_id:
             return None
+        user_uuid = uuid_mod.UUID(user_id)
     except ValueError:
         return None
 
     async with AsyncSessionLocal() as db:
-        result = await db.execute(select(User).where(User.id == user_id))
+        result = await db.execute(select(User).where(User.id == user_uuid))
         return result.scalar_one_or_none()
 
 

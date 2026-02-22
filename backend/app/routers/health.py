@@ -1,6 +1,6 @@
 """Health check endpoints."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter
 
@@ -13,12 +13,17 @@ _last_ai_health_result: dict[str, bool] | None = None
 _last_ai_health_at: datetime | None = None
 
 
+def _utc_now_naive() -> datetime:
+    """Return a naive UTC datetime without deprecated utcnow()."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 @router.get("/ai")
 async def ai_health_check(force: bool = False):
     """Check that external AI service API keys are valid."""
     global _last_ai_health_result, _last_ai_health_at
 
-    now = datetime.utcnow()
+    now = _utc_now_naive()
     if (
         not force
         and _last_ai_health_result is not None

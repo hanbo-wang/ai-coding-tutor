@@ -344,7 +344,9 @@ The complete pipeline for each user message:
 - A pedagogy engine that manages hint levels, student adaptation, and dynamic levelling.
 - A WebSocket endpoint (`/ws/chat`) that streams AI responses.
 - A frontend chat page with message history, streaming display, markdown rendering, syntax-highlighted code blocks, and LaTeX formula rendering.
-  **Part B (File and Image Uploads):**
+
+**Part B (File and Image Uploads):**
+
 - File upload endpoint supporting images and documents.
 - Multimodal embedding for uploaded content (using the configured embedding provider).
 - Vision-capable LLM processing for screenshots and images.

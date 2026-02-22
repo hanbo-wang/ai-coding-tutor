@@ -267,94 +267,44 @@ The following stability measures are in place:
 
 ### 7.1 Test Infrastructure
 
-**`backend/tests/conftest.py`**
+`backend/tests/conftest.py` provides `MockLLMProvider`, a lightweight provider used by async tests that need deterministic streaming and deterministic token usage reporting.
 
-Shared fixtures for all test files:
+The suite mixes:
 
-- **`MockLLMProvider`**: a mock implementation that extends `LLMProvider`, yields predetermined tokens from `generate_stream()`, and sets `last_usage` with configurable precise input and output token counts after streaming (simulating API-reported usage). Accepts configurable responses per test.
-- **`MockEmbeddingService`**: returns fixed embedding vectors. Allows tests to control greeting, off topic, and same problem detection outcomes without calling a real embedding API.
+- `pytest` function-style tests;
+- `pytest-asyncio` for async test functions; and
+- one `unittest.TestCase` module, still executed by `pytest`.
 
-**Test dependencies** (in `requirements.txt`):
-- `pytest`
-- `pytest-asyncio`
+`backend/pytest.ini` sets `asyncio_mode=auto` so async tests run consistently without command-line flags.
 
-`httpx` is already in `requirements.txt`.
+Current automated total: **65 tests**.
 
 ### 7.2 Test Files
 
-#### `test_auth.py` (planned)
-
-Authentication endpoint tests covering registration, login, profile retrieval, and token refresh flows.
-
-#### `test_chat.py` (planned)
-
-WebSocket chat tests covering connection auth, message streaming, persistence, daily limit enforcement, and session listing. All tests will use `MockLLMProvider` and `MockEmbeddingService`.
-
-#### `test_pedagogy.py` (6 tests)
-
-| # | Test | Expected |
-|---|------|----------|
-| 1 | `test_hint_escalation` | 5 same problem messages produce hint levels 1, 2, 3, 4, 5. |
-| 2 | `test_hint_reset_on_new_problem` | After 3 same problem messages, a new problem resets the hint level. |
-| 3 | `test_hint_cap_at_five` | 7 same problem messages: hint stays at 5 for messages 6 and 7. |
-| 4 | `test_greeting_returns_canned_response` | Greeting detection returns `filter_result="greeting"` with username. |
-| 5 | `test_off_topic_returns_rejection` | Off topic detection returns `filter_result="off_topic"`. |
-| 6 | `test_ema_level_update` | Effective level 3.0, difficulty 4, hint 2 produces 3.04. |
-
-#### `test_context_builder.py` (3 tests)
-
-| # | Test | Expected |
-|---|------|----------|
-| 1 | `test_token_budget_truncation` | 50 messages above budget are trimmed to fit. |
-| 2 | `test_compression_triggers` | History above 80% threshold triggers summarisation. |
-| 3 | `test_empty_history` | Empty history returns only the current user message. |
-
-#### `test_rate_limiter.py` (4 tests)
-
-| # | Test | Expected |
-|---|------|----------|
-| 1 | `test_user_within_limit` | 5 requests in one minute are all allowed. |
-| 2 | `test_user_exceeds_limit` | 6th request in one minute is rejected. |
-| 3 | `test_global_limit` | Exceeding global limit rejects the request. |
-| 4 | `test_timestamp_expiry` | Requests older than 60 seconds are pruned and do not count. |
-
-#### `test_connection_tracker.py` (3 tests)
-
-| # | Test | Expected |
-|---|------|----------|
-| 1 | `test_add_and_remove` | Adding and removing connections updates the count correctly. |
-| 2 | `test_limit_enforcement` | 4th connection for the same user is rejected. |
-| 3 | `test_multi_user_isolation` | Different users have independent connection pools. |
-
-#### `test_admin_usage.py` (2 tests)
-
-| # | Test | Expected |
-|---|------|----------|
-| 1 | `test_usage_aggregation` | Seeded token data returns correct sums for today, week, month. |
-| 2 | `test_cost_calculation` | Token counts produce the correct estimated cost. |
-
-#### `test_admin_audit.py` (3 tests)
-
-| # | Test | Expected |
-|---|------|----------|
-| 1 | `test_log_creation` | Creating a zone produces an audit entry with correct fields. |
-| 2 | `test_log_retrieval` | GET `/api/admin/audit-log` returns recent entries. |
-| 3 | `test_pagination` | Requesting page 2 returns the correct subset. |
-
-#### Existing Tests (unchanged)
-
-- `test_config_admin_email.py` (2 tests): admin email parsing.
-- `test_notebook_service.py` (7 tests): notebook validation and storage.
-- `test_upload_service.py` (4 tests): upload classification and limits.
+| File | Tests | Scope | Key checks |
+|------|------:|-------|------------|
+| `test_auth.py` | 5 | Auth helpers and token lifecycle | Password hashing/verification, access/refresh token claims, invalid token rejection, refresh cookie flags. |
+| `test_chat.py` | 11 | Chat router helper logic | WebSocket token resolution, upload split and limit validation, enriched message generation, multimodal part generation, context truncation helpers. |
+| `test_pedagogy.py` | 7 | Pedagogy engine behaviour | Greeting/off-topic filtering, default filter disablement, hint escalation, new-problem reset, hint cap, effective-level EMA update. |
+| `test_context_builder.py` | 3 | Token-aware context assembly | Empty history handling, truncation under small budgets, full-history inclusion when budget allows. |
+| `test_rate_limiter.py` | 4 | Sliding-window request limits | Per-user allowance, per-user rejection, global cap enforcement, 60-second expiry pruning. |
+| `test_connection_tracker.py` | 3 | Concurrent WebSocket caps | Add/remove accounting, max-connection rejection, per-user isolation. |
+| `test_admin_usage.py` | 3 | Admin usage and cost logic | Provider pricing calculation, zero-token behaviour, aggregate usage payload shape. |
+| `test_admin_audit.py` | 5 | Audit log model and service | Field mapping, optional values, action set, entry creation/flush, paginated response shape. |
+| `test_e2e_api.py` | 5 | End-to-end API flows | Register/profile/refresh/logout chain, new-user usage/sessions baseline, admin access control, admin usage/audit retrieval, owner-scoped upload access. |
+| `test_config_admin_email.py` | 2 | Admin email parsing | Comma/space parsing and JSON list parsing with lower-case normalisation. |
+| `test_notebook_service.py` | 8 | Notebook naming and storage paths | Title normalisation, filename derivation, safe storage segment mapping, user/zone directory creation. |
+| `test_upload_service.py` | 4 | Upload classification and count limits | MIME fallback classification, in-limit acceptance, over-limit rejection, unsupported type rejection. |
+| `test_zone_service.py` | 5 | Zone asset path utilities | Relative path normalisation, parent-segment rejection, title derivation, shared-root detection, root stripping. |
 
 ### 7.3 Running the Tests
 
 ```bash
 cd backend
-pytest tests/ -v --asyncio-mode=auto
+PYTHONPATH=. pytest tests/ -q -s
 ```
 
-The `test_semantic_thresholds.py` file is a manual calibration script, not a pytest test:
+`test_semantic_thresholds.py` is a manual calibration script, not an automated `pytest` test:
 
 ```bash
 python -m tests.test_semantic_thresholds
@@ -428,7 +378,7 @@ In development, log to stdout in human readable format. In production (detected 
 
 - [ ] Sending more than 5 LLM requests in one minute returns a rate limit error.
 - [ ] Opening a 4th browser tab with the chat page rejects the WebSocket connection with code 4002.
-- [ ] All tests pass: `pytest backend/tests/ -v --asyncio-mode=auto`.
+- [ ] All tests pass: `cd backend && PYTHONPATH=. pytest tests/ -q -s`.
 - [ ] Pedagogy tests confirm hint escalation 1, 2, 3, 4, 5 and reset on new problem.
 - [ ] The health endpoint at `/api/health/ai` returns 200.
 - [ ] Backend logs show structured entries for LLM calls with cost estimates.

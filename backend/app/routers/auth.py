@@ -1,5 +1,6 @@
 """Authentication endpoints: register, login, refresh, profile."""
 
+import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Response, Request, status
@@ -127,13 +128,14 @@ async def refresh(
                 detail="Invalid token type",
             )
         user_id = payload.get("sub")
-    except ValueError:
+        user_uuid = uuid.UUID(user_id)
+    except (ValueError, TypeError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired refresh token",
         )
 
-    result = await db.execute(select(User).where(User.id == user_id))
+    result = await db.execute(select(User).where(User.id == user_uuid))
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(

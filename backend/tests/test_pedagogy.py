@@ -151,6 +151,25 @@ async def test_hint_cap_at_five() -> None:
     assert result.hint_level == 5
 
 
+@pytest.mark.asyncio
+async def test_hint_reset_on_new_problem() -> None:
+    """A new problem should reset hint level from a higher follow-up state."""
+    es = FakeEmbeddingService()
+    engine = _make_engine(es)
+    state = _make_state()
+    state.current_hint_level = 4
+    state.current_programming_difficulty = 4
+    state.current_maths_difficulty = 4
+    state.last_context_embedding = [0.1] * 256
+
+    es.same_problem_result = False
+    es.elaboration_result = False
+
+    result = await engine.process_message("new topic question", state, username="Alice")
+    assert result.is_same_problem is False
+    assert result.hint_level == 1
+
+
 def test_ema_level_update() -> None:
     """EMA update with difficulty 4, hint 2 on level 3.0 should produce 3.04."""
     state = _make_state(prog=3.0, maths=3.0)
