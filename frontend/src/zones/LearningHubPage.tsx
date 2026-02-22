@@ -57,7 +57,7 @@ export function LearningHubPage() {
               >
                 <h2 className="text-lg font-semibold text-brand">{zone.title}</h2>
                 <p className="mt-1 line-clamp-3 text-sm text-gray-600">
-                  {zone.description}
+                  {zone.description || "No description yet."}
                 </p>
                 <p className="mt-3 text-xs text-gray-500">
                   {zone.notebook_count} notebook

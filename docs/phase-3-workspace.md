@@ -2,7 +2,7 @@
 
 **Prerequisite:** Phase 2 complete (chat, pedagogy engine, and uploads working).
 
-**Visible result:** Students can upload notebooks, run Python in-browser with JupyterLite, and chat with a tutor in the same split workspace. Admins can publish zone notebooks in a Learning Hub, and each student keeps an independent progress copy.
+**Visible result:** Students can upload notebooks, run Python in-browser with JupyterLite, and chat with a tutor in the same split workspace. Admins can manage zones, notebooks, and shared dependency files in a Learning Hub, and each student keeps an independent progress copy.
 
 ---
 
@@ -20,7 +20,10 @@
 ### Part B: Admin Learning Hub
 
 - Admin role support (`is_admin`) driven by `ADMIN_EMAIL`.
-- Learning zones and zone notebook management (admin API and dashboard).
+- Learning zones and zone notebook management (admin API and dashboard), with optional descriptions.
+- Zone asset import from files or folders, with `.ipynb` files auto-created as notebooks.
+- Zone shared dependency files, injected into zone notebook runtime and managed by admins.
+- Student-facing zone pages show notebooks only; shared dependency files remain admin-only.
 - Public zone browsing for all authenticated users.
 - Per-user zone notebook progress (`zone_notebook_progress`) with reset-to-original.
 - Scoped chat sessions per zone notebook.
@@ -32,11 +35,12 @@
 1. Student opens `/notebook/:notebookId` or `/zone-notebook/:zoneId/:notebookId`.
 2. `NotebookPanel` loads the JupyterLite iframe and waits for bridge readiness.
 3. Backend returns notebook JSON (personal state or zone progress/original).
-4. Frontend sends `load-notebook` to iframe bridge with a scoped workspace key.
-5. Student edits and runs code; bridge emits `notebook-dirty` events.
-6. JupyterLite saves in-browser, while frontend syncs to backend only when dirty.
-7. Tutor chat sends scoped identifiers (`notebook_id` or `zone_notebook_id`) plus current cell code and error output.
-8. Backend injects notebook context into the system prompt and stores messages in a scoped session.
+4. In zone workspace mode, frontend fetches runtime dependency files from `/api/zones/{zone_id}/notebooks/{notebook_id}/runtime-files`.
+5. Frontend sends `load-notebook` to iframe bridge with a scoped workspace key and `workspace_files`.
+6. Student edits and runs code; bridge emits `notebook-dirty` events.
+7. JupyterLite saves in-browser, while frontend syncs to backend only when dirty.
+8. Tutor chat sends scoped identifiers (`notebook_id` or `zone_notebook_id`) plus current cell code and error output.
+9. Backend injects notebook context into the system prompt and stores messages in a scoped session.
 
 ---
 
@@ -88,7 +92,7 @@ Current `docmanager` patch values:
 | --------------------------- | ---------------- | ----------------------------------------------------- |
 | `ping`                    | Parent -> iframe | Health check for bridge readiness.                    |
 | `ready`                   | Iframe -> parent | Bridge ready signal (sent multiple times on startup). |
-| `load-notebook`           | Parent -> iframe | Save/open notebook payload inside JupyterLite.        |
+| `load-notebook`           | Parent -> iframe | Save/open notebook payload and inject `workspace_files` inside JupyterLite. |
 | `get-notebook-state`      | Parent -> iframe | Return full current notebook JSON.                    |
 | `get-current-cell`        | Parent -> iframe | Return active cell source and index.                  |
 | `get-error-output`        | Parent -> iframe | Return latest error traceback text if present.        |
@@ -118,7 +122,7 @@ The bridge enforces single-document behaviour:
 - Deletes notebook files other than the active workspace notebook.
 - Shuts down unrelated sessions.
 - Clears recent documents (`docmanager:clear-recents`).
-- Generates a title-based filename (e.g. `C6 without an (abcdef12).ipynb`) so JupyterLab naturally shows the title in the tab. Sets `document.title` and `panel.title.caption` but does not override `panel.title.label` (to avoid desynchronising internal path tracking).
+- Generates a title-based filename so JupyterLab naturally shows the title in the tab. Sets `document.title` and `panel.title.caption` but does not override `panel.title.label` (to avoid desynchronising internal path tracking).
 - Overrides `docmanager:download` so the downloaded file uses the display title as its filename.
 
 This is the main protection against notebook cross-visibility and stale state carry-over.
@@ -146,7 +150,10 @@ Adds:
 - `users.is_admin`
 - `learning_zones`
 - `zone_notebooks`
+- `zone_shared_files`
 - `zone_notebook_progress` with unique `(user_id, zone_notebook_id)`
+
+`learning_zones.description` and `zone_notebooks.description` are nullable, so zone and notebook descriptions are optional.
 
 #### Migration `006_add_scoped_chat_session_uniqueness.py`
 
@@ -163,10 +170,11 @@ Root storage comes from `NOTEBOOK_STORAGE_DIR` (default `/tmp/ai_coding_tutor_no
 
 - Personal notebooks:
   - `/tmp/ai_coding_tutor_notebooks/<normalised_user_email>/`
-- Admin zone notebooks:
-  - `/tmp/ai_coding_tutor_notebooks/learning_zone_notebooks/`
+- Admin zone content:
+  - `/tmp/ai_coding_tutor_notebooks/learning_zone_notebooks/<zone_id>/notebooks`
+  - `/tmp/ai_coding_tutor_notebooks/learning_zone_notebooks/<zone_id>/shared`
 
-The server stores notebook payloads independently in backend-managed files and DB JSON fields. Workspace edits update backend state, not the original local upload file on the user's machine.
+Shared zone files keep their relative paths and are served to zone notebook runtime as `workspace_files`. The server stores notebook payloads independently in backend-managed files and DB JSON fields. Workspace edits update backend state, not the original local upload file on the user's machine.
 
 ### 4.3 Personal Notebook Service and API
 
@@ -200,6 +208,7 @@ Core service behaviours:
 | `/api/zones`                                            | GET    | List zones for authenticated users.               |
 | `/api/zones/{zone_id}`                                  | GET    | Zone detail + notebook list +`has_progress`.    |
 | `/api/zones/{zone_id}/notebooks/{notebook_id}`          | GET    | Return notebook JSON (progress copy or original). |
+| `/api/zones/{zone_id}/notebooks/{notebook_id}/runtime-files` | GET    | Return runtime dependency files for zone notebook execution. |
 | `/api/zones/{zone_id}/notebooks/{notebook_id}/progress` | PUT    | Save user's progress notebook state.              |
 | `/api/zones/{zone_id}/notebooks/{notebook_id}/progress` | DELETE | Reset user's progress to original.                |
 
@@ -215,10 +224,16 @@ All endpoints require `get_admin_user`. All mutation endpoints log actions to `a
 | `/api/admin/zones/{zone_id}`                   | DELETE | Delete zone and related data.             |
 | `/api/admin/zones/{zone_id}/notebooks`         | GET    | List notebooks in zone.                   |
 | `/api/admin/zones/{zone_id}/notebooks`         | POST   | Upload notebook to zone.                  |
+| `/api/admin/zones/{zone_id}/assets`            | POST   | Import files/folders into a zone; `.ipynb` files auto-create notebooks and other files become shared zone files. |
+| `/api/admin/zones/{zone_id}/shared-files`      | GET    | List shared zone files for admin management. |
+| `/api/admin/notebooks/{notebook_id}/metadata`  | PATCH  | Update zone notebook title and optional description. |
 | `/api/admin/notebooks/{notebook_id}`           | PUT    | Replace notebook content.                 |
+| `/api/admin/shared-files/{shared_file_id}`     | DELETE | Delete shared zone file.                  |
 | `/api/admin/notebooks/{notebook_id}`           | DELETE | Delete zone notebook.                     |
 | `/api/admin/zones/{zone_id}/notebooks/reorder` | PUT    | Reorder notebooks.                        |
 | `/api/admin/audit-log`                         | GET    | Return paginated admin audit log entries. |
+
+Zone and notebook name updates are recorded in `admin_audit_log` with change details.
 
 ### 4.5 Notebook-Aware and Scoped Chat
 
@@ -308,9 +323,10 @@ Notebook cards show title, filename, size, and upload date.
 
 Key behaviours:
 
-- Loads `/jupyterlite/lab/index.html` in iframe with version string `bridge-single-notebook-11`.
+- Loads `/jupyterlite/lab/index.html` in iframe with a cache-busting bridge version parameter.
 - Waits for bridge readiness via `ping` polling (`waitForNotebookBridgeReady`).
 - Loads notebook JSON from backend and sends `load-notebook`.
+- In zone workspace mode, fetches `/api/zones/{zone_id}/notebooks/{notebook_id}/runtime-files` and passes them as `workspace_files` to `load-notebook`.
 - Applies retry on load timeout for better stability.
 - Bridge performs local in-browser save with a 5s debounce after edits.
 - Listens for `notebook-dirty` and syncs to backend every 30s only when dirty.
@@ -337,10 +353,26 @@ Differences from personal workspace:
 
 - Uses zone notebook endpoints for load/save.
 - Sends `zone_notebook_id` in chat scope.
+- Loads zone runtime dependency files into notebook workspace before execution.
+- Shows notebooks only in student UI; shared dependency file management is admin-only.
 - Shows `Reset to Original` button in the top-right of notebook panel.
 - Reset deletes progress and reloads notebook state.
 
-### 5.6 Split Layout Dependency
+### 5.6 Admin Dashboard
+
+**File:** `frontend/src/admin/AdminDashboardPage.tsx`
+
+Key behaviours:
+
+- Creates and edits zones with optional descriptions.
+- Imports files or folders into a zone via `/api/admin/zones/{zone_id}/assets`.
+- Creates notebooks from imported `.ipynb` files.
+- Lists and deletes shared zone dependency files via admin-only controls.
+- Edits notebook metadata (title and optional description).
+- Supports notebook replace, delete, and reorder actions.
+- Shows usage and audit panels for admins.
+
+### 5.7 Split Layout Dependency
 
 The project uses the official `react-split` package directly:
 
@@ -359,6 +391,10 @@ The project uses the official `react-split` package directly:
 - [ ] Open two different notebook routes in sequence: workspace shows only the active notebook.
 - [ ] Leave notebook route and re-enter: no `Save your work` close dialog appears.
 - [ ] Open a Learning Hub notebook as two different users: progress stays isolated.
+- [ ] Import a folder containing `.ipynb` and dependency files: notebooks are auto-created and non-`.ipynb` files are stored as shared zone files.
+- [ ] In zone workspace, imported shared files are available to notebook runtime imports.
+- [ ] Shared zone files are manageable in admin dashboard and are not shown in student zone pages.
+- [ ] Rename a zone or zone notebook in admin dashboard: audit log entry includes change details.
 - [ ] Click `New chat` in workspace chat: scoped history resets for that notebook only.
 - [ ] Click `Reset to Original` in zone workspace: user progress is removed and original content reloads.
 

@@ -100,7 +100,7 @@ export interface NotebookDetail extends NotebookSummary {
 export interface LearningZone {
   id: string;
   title: string;
-  description: string;
+  description: string | null;
   order: number;
   created_at: string;
   notebook_count: number;
@@ -124,6 +124,29 @@ export interface ZoneDetail extends LearningZone {
 
 export interface ZoneNotebookDetail extends ZoneNotebook {
   notebook_json: Record<string, unknown>;
+}
+
+export interface ZoneSharedFile {
+  id: string;
+  zone_id: string;
+  relative_path: string;
+  original_filename: string;
+  content_type: string | null;
+  size_bytes: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ZoneRuntimeFile {
+  relative_path: string;
+  content_base64: string;
+  content_type: string | null;
+}
+
+export interface ZoneImportResult {
+  notebooks_created: number;
+  shared_files_created: number;
+  shared_files_updated: number;
 }
 
 export interface ScopedChatSession {

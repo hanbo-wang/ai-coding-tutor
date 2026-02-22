@@ -65,7 +65,9 @@ export function ZoneDetailPage() {
         </button>
 
         <h1 className="text-2xl font-bold text-brand">{zone.title}</h1>
-        <p className="mt-1 text-sm text-gray-600">{zone.description}</p>
+        <p className="mt-1 text-sm text-gray-600">
+          {zone.description || "No description yet."}
+        </p>
 
         {zone.notebooks.length === 0 ? (
           <div className="mt-6 rounded-lg bg-white p-8 text-center text-gray-500">

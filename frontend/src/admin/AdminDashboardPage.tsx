@@ -7,7 +7,9 @@ import {
   AuditLogEntry,
   AuditLogResponse,
   LearningZone,
+  ZoneImportResult,
   ZoneNotebook,
+  ZoneSharedFile,
 } from "../api/types";
 import { useAuth } from "../auth/useAuth";
 
@@ -16,16 +18,34 @@ interface ZoneEditorState {
   description: string;
 }
 
+interface NotebookEditorState {
+  title: string;
+  description: string;
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
 export function AdminDashboardPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const replaceInputRef = useRef<HTMLInputElement | null>(null);
+  const assetsFileInputRef = useRef<HTMLInputElement | null>(null);
+  const assetsFolderInputRef = useRef<HTMLInputElement | null>(null);
 
   const [zones, setZones] = useState<LearningZone[]>([]);
   const [zoneNotebooks, setZoneNotebooks] = useState<Record<string, ZoneNotebook[]>>(
     {}
   );
+  const [zoneSharedFiles, setZoneSharedFiles] = useState<
+    Record<string, ZoneSharedFile[]>
+  >({});
   const [expandedZoneId, setExpandedZoneId] = useState<string | null>(null);
+  const [assetTargetZoneId, setAssetTargetZoneId] = useState<string | null>(null);
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -40,10 +60,12 @@ export function AdminDashboardPage() {
     description: "",
   });
 
-  const [newNotebookTitle, setNewNotebookTitle] = useState("");
-  const [newNotebookDescription, setNewNotebookDescription] = useState("");
-  const [newNotebookFile, setNewNotebookFile] = useState<File | null>(null);
   const [replaceNotebookId, setReplaceNotebookId] = useState<string | null>(null);
+  const [editingNotebookId, setEditingNotebookId] = useState<string | null>(null);
+  const [editingNotebook, setEditingNotebook] = useState<NotebookEditorState>({
+    title: "",
+    description: "",
+  });
 
   // Usage and audit state.
   const [usage, setUsage] = useState<AdminUsage | null>(null);
@@ -71,15 +93,23 @@ export function AdminDashboardPage() {
 
   const loadZoneNotebooks = async (zoneId: string) => {
     try {
-      const data = await apiFetch<ZoneNotebook[]>(
-        `/api/admin/zones/${zoneId}/notebooks`
-      );
+      const data = await apiFetch<ZoneNotebook[]>(`/api/admin/zones/${zoneId}/notebooks`);
       setZoneNotebooks((prev) => ({ ...prev, [zoneId]: data }));
       setError("");
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Failed to load zone notebooks."
+      setError(err instanceof Error ? err.message : "Failed to load zone notebooks.");
+    }
+  };
+
+  const loadZoneSharedFiles = async (zoneId: string) => {
+    try {
+      const data = await apiFetch<ZoneSharedFile[]>(
+        `/api/admin/zones/${zoneId}/shared-files`
       );
+      setZoneSharedFiles((prev) => ({ ...prev, [zoneId]: data }));
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load shared files.");
     }
   };
 
@@ -123,17 +153,26 @@ export function AdminDashboardPage() {
       return;
     }
     setExpandedZoneId(zoneId);
-    if (!zoneNotebooks[zoneId]) {
-      await loadZoneNotebooks(zoneId);
+    if (!zoneNotebooks[zoneId] || !zoneSharedFiles[zoneId]) {
+      await Promise.all([loadZoneNotebooks(zoneId), loadZoneSharedFiles(zoneId)]);
     }
   };
 
   const handleCreateZone = async (event: FormEvent) => {
     event.preventDefault();
+    const title = newZone.title.trim();
+    if (!title) {
+      setError("Zone title cannot be empty.");
+      return;
+    }
+
     try {
       await apiFetch("/api/admin/zones", {
         method: "POST",
-        body: JSON.stringify(newZone),
+        body: JSON.stringify({
+          title,
+          description: newZone.description.trim() || null,
+        }),
       });
       setShowCreateForm(false);
       setNewZone({ title: "", description: "" });
@@ -158,6 +197,11 @@ export function AdminDashboardPage() {
         delete next[zoneId];
         return next;
       });
+      setZoneSharedFiles((prev) => {
+        const next = { ...prev };
+        delete next[zoneId];
+        return next;
+      });
       await loadAuditLog(1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete zone.");
@@ -166,14 +210,23 @@ export function AdminDashboardPage() {
 
   const startEditZone = (zone: LearningZone) => {
     setEditingZoneId(zone.id);
-    setEditingZone({ title: zone.title, description: zone.description });
+    setEditingZone({ title: zone.title, description: zone.description ?? "" });
   };
 
   const handleSaveZoneEdit = async (zoneId: string) => {
+    const title = editingZone.title.trim();
+    if (!title) {
+      setError("Zone title cannot be empty.");
+      return;
+    }
+
     try {
       await apiFetch(`/api/admin/zones/${zoneId}`, {
         method: "PUT",
-        body: JSON.stringify(editingZone),
+        body: JSON.stringify({
+          title,
+          description: editingZone.description.trim() || null,
+        }),
       });
       setEditingZoneId(null);
       await loadZones();
@@ -183,28 +236,64 @@ export function AdminDashboardPage() {
     }
   };
 
-  const handleAddNotebook = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!expandedZoneId || !newNotebookFile) return;
+  const openAssetsFilePicker = (zoneId: string) => {
+    setAssetTargetZoneId(zoneId);
+    assetsFileInputRef.current?.click();
+  };
+
+  const openAssetsFolderPicker = (zoneId: string) => {
+    setAssetTargetZoneId(zoneId);
+    const input = assetsFolderInputRef.current;
+    if (!input) return;
+    input.setAttribute("webkitdirectory", "");
+    input.setAttribute("directory", "");
+    input.click();
+  };
+
+  const handleImportAssets = async (event: ChangeEvent<HTMLInputElement>) => {
+    const zoneId = assetTargetZoneId;
+    const files = Array.from(event.target.files ?? []);
+    if (!zoneId || files.length === 0) {
+      event.target.value = "";
+      setAssetTargetZoneId(null);
+      return;
+    }
 
     const formData = new FormData();
-    formData.append("title", newNotebookTitle);
-    formData.append("description", newNotebookDescription);
-    formData.append("file", newNotebookFile);
+    for (const file of files) {
+      formData.append("files", file);
+      const relativePath = (
+        file as File & {
+          webkitRelativePath?: string;
+        }
+      ).webkitRelativePath;
+      formData.append("relative_paths", relativePath || file.name);
+    }
 
     try {
-      await apiFetch(`/api/admin/zones/${expandedZoneId}/notebooks`, {
-        method: "POST",
-        body: formData,
-      });
-      setNewNotebookTitle("");
-      setNewNotebookDescription("");
-      setNewNotebookFile(null);
-      await loadZoneNotebooks(expandedZoneId);
-      await loadZones();
+      const result = await apiFetch<ZoneImportResult>(
+        `/api/admin/zones/${zoneId}/assets`,
+        {
+          method: "POST",
+          body: formData,
+        }
+      );
+      if (
+        result.notebooks_created === 0 &&
+        result.shared_files_created === 0 &&
+        result.shared_files_updated === 0
+      ) {
+        setError("No files were imported.");
+      } else {
+        setError("");
+      }
+      await Promise.all([loadZoneNotebooks(zoneId), loadZoneSharedFiles(zoneId), loadZones()]);
       await loadAuditLog(1);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to add notebook.");
+      setError(err instanceof Error ? err.message : "Failed to import assets.");
+    } finally {
+      event.target.value = "";
+      setAssetTargetZoneId(null);
     }
   };
 
@@ -221,6 +310,54 @@ export function AdminDashboardPage() {
       await loadAuditLog(1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete notebook.");
+    }
+  };
+
+  const startEditNotebook = (notebook: ZoneNotebook) => {
+    setEditingNotebookId(notebook.id);
+    setEditingNotebook({
+      title: notebook.title,
+      description: notebook.description ?? "",
+    });
+  };
+
+  const handleSaveNotebookMetadata = async (notebookId: string) => {
+    const title = editingNotebook.title.trim();
+    if (!title) {
+      setError("Notebook title cannot be empty.");
+      return;
+    }
+
+    try {
+      await apiFetch(`/api/admin/notebooks/${notebookId}/metadata`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          title,
+          description: editingNotebook.description.trim() || null,
+        }),
+      });
+      setEditingNotebookId(null);
+      if (expandedZoneId) {
+        await loadZoneNotebooks(expandedZoneId);
+      }
+      await loadAuditLog(1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update notebook.");
+    }
+  };
+
+  const handleDeleteSharedFile = async (sharedFileId: string) => {
+    const confirmed = window.confirm(
+      "Delete this shared dependency file from the zone?"
+    );
+    if (!confirmed || !expandedZoneId) return;
+
+    try {
+      await apiFetch(`/api/admin/shared-files/${sharedFileId}`, { method: "DELETE" });
+      await loadZoneSharedFiles(expandedZoneId);
+      await loadAuditLog(1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete shared file.");
     }
   };
 
@@ -290,6 +427,21 @@ export function AdminDashboardPage() {
     });
   };
 
+  const panelSection =
+    "rounded-md border border-gray-200 bg-gray-50 p-4";
+  const sectionTitle = "text-sm font-semibold text-brand";
+  const sectionHint = "text-xs leading-5 text-gray-600";
+  const inputBase =
+    "w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800 focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30";
+  const btnPrimary =
+    "inline-flex h-9 items-center justify-center rounded-md bg-accent px-4 text-sm font-medium text-brand transition-colors hover:bg-accent-dark focus:outline-none focus:ring-2 focus:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60";
+  const btnSecondary =
+    "inline-flex h-9 items-center justify-center rounded-md border border-gray-300 bg-white px-4 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-60";
+  const btnDanger =
+    "inline-flex h-9 items-center justify-center rounded-md border border-red-200 bg-white px-4 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-red-200 disabled:cursor-not-allowed disabled:opacity-60";
+  const btnIcon =
+    "inline-flex h-8 w-8 items-center justify-center rounded-md border border-gray-300 bg-white text-xs font-semibold text-gray-700 transition-colors hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-60";
+
   return (
     <div className="h-full overflow-y-auto bg-gray-100">
       <div className="mx-auto max-w-6xl px-6 py-8">
@@ -297,13 +449,13 @@ export function AdminDashboardPage() {
           <div>
             <h1 className="text-2xl font-bold text-brand">Admin Dashboard</h1>
             <p className="mt-1 text-sm text-gray-600">
-              Manage learning zones, view usage, and review audit history.
+              Manage learning zones, notebooks, shared dependencies, usage, and audit history.
             </p>
           </div>
           <button
             type="button"
             onClick={() => setShowCreateForm((value) => !value)}
-            className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-brand hover:bg-accent-dark"
+            className={btnPrimary}
           >
             Create Zone
           </button>
@@ -315,11 +467,15 @@ export function AdminDashboardPage() {
           </div>
         )}
 
-        {/* Usage Overview */}
         {usage && (
           <div className="mb-6 grid gap-4 md:grid-cols-3">
             {(["today", "this_week", "this_month"] as const).map((period) => {
-              const label = period === "today" ? "Today" : period === "this_week" ? "This Week" : "This Month";
+              const label =
+                period === "today"
+                  ? "Today"
+                  : period === "this_week"
+                    ? "This Week"
+                    : "This Month";
               const data = usage[period];
               return (
                 <div
@@ -329,10 +485,12 @@ export function AdminDashboardPage() {
                   <h3 className="text-sm font-medium text-gray-500">{label}</h3>
                   <div className="mt-2 space-y-1">
                     <p className="text-sm text-gray-700">
-                      Input: <span className="font-semibold">{formatTokens(data.input_tokens)}</span> tokens
+                      Input: <span className="font-semibold">{formatTokens(data.input_tokens)}</span>{" "}
+                      tokens
                     </p>
                     <p className="text-sm text-gray-700">
-                      Output: <span className="font-semibold">{formatTokens(data.output_tokens)}</span> tokens
+                      Output: <span className="font-semibold">{formatTokens(data.output_tokens)}</span>{" "}
+                      tokens
                     </p>
                     <p className="text-sm font-medium text-brand">
                       Est. cost: ${data.estimated_cost_usd.toFixed(2)}
@@ -344,7 +502,6 @@ export function AdminDashboardPage() {
           </div>
         )}
 
-        {/* Audit Log */}
         {auditEntries.length > 0 && (
           <div className="mb-6 rounded-lg border border-gray-200 bg-white shadow-sm">
             <div className="border-b border-gray-100 px-4 py-3">
@@ -391,7 +548,7 @@ export function AdminDashboardPage() {
                   type="button"
                   disabled={auditPage <= 1}
                   onClick={() => void loadAuditLog(auditPage - 1)}
-                  className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                  className={`${btnSecondary} h-7 px-2 text-xs`}
                 >
                   Previous
                 </button>
@@ -402,7 +559,7 @@ export function AdminDashboardPage() {
                   type="button"
                   disabled={auditPage >= auditTotalPages}
                   onClick={() => void loadAuditLog(auditPage + 1)}
-                  className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                  className={`${btnSecondary} h-7 px-2 text-xs`}
                 >
                   Next
                 </button>
@@ -436,22 +593,21 @@ export function AdminDashboardPage() {
                     description: event.target.value,
                   }))
                 }
-                placeholder="Zone description"
+                placeholder="Zone description (optional)"
                 className="rounded-md border border-gray-300 px-3 py-2 text-sm"
-                required
               />
             </div>
             <div className="mt-3 flex gap-2">
               <button
                 type="submit"
-                className="rounded-md bg-brand px-3 py-1.5 text-sm text-white hover:bg-brand-light"
+                className={btnPrimary}
               >
                 Save Zone
               </button>
               <button
                 type="button"
                 onClick={() => setShowCreateForm(false)}
-                className="rounded-md border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50"
+                className={btnSecondary}
               >
                 Cancel
               </button>
@@ -467,6 +623,22 @@ export function AdminDashboardPage() {
           onChange={handleReplaceNotebook}
         />
 
+        <input
+          ref={assetsFileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={handleImportAssets}
+        />
+
+        <input
+          ref={assetsFolderInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={handleImportAssets}
+        />
+
         {loading ? (
           <div className="rounded-lg bg-white p-8 text-center text-gray-500">
             Loading admin data...
@@ -480,6 +652,7 @@ export function AdminDashboardPage() {
             {zones.map((zone) => {
               const isExpanded = expandedZoneId === zone.id;
               const notebooks = zoneNotebooks[zone.id] ?? [];
+              const sharedFiles = zoneSharedFiles[zone.id] ?? [];
 
               return (
                 <section
@@ -515,14 +688,14 @@ export function AdminDashboardPage() {
                           <button
                             type="button"
                             onClick={() => void handleSaveZoneEdit(zone.id)}
-                            className="rounded-md bg-brand px-3 py-1.5 text-sm text-white hover:bg-brand-light"
+                            className={btnPrimary}
                           >
                             Save
                           </button>
                           <button
                             type="button"
                             onClick={() => setEditingZoneId(null)}
-                            className="rounded-md border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50"
+                            className={btnSecondary}
                           >
                             Cancel
                           </button>
@@ -531,7 +704,9 @@ export function AdminDashboardPage() {
                     ) : (
                       <div className="flex-1">
                         <h2 className="text-lg font-semibold text-brand">{zone.title}</h2>
-                        <p className="mt-1 text-sm text-gray-600">{zone.description}</p>
+                        <p className="mt-1 text-sm text-gray-600">
+                          {zone.description || "No description yet."}
+                        </p>
                         <p className="mt-2 text-xs text-gray-500">
                           {zone.notebook_count} notebook
                           {zone.notebook_count === 1 ? "" : "s"}
@@ -544,23 +719,23 @@ export function AdminDashboardPage() {
                         <button
                           type="button"
                           onClick={() => startEditZone(zone)}
-                          className="rounded-md border border-gray-300 px-2.5 py-1 text-xs text-gray-700 hover:bg-gray-50"
+                          className={`${btnSecondary} h-8 px-3 text-xs`}
                         >
                           Edit
                         </button>
                         <button
                           type="button"
                           onClick={() => void handleDeleteZone(zone.id)}
-                          className="rounded-md border border-red-200 px-2.5 py-1 text-xs text-red-600 hover:bg-red-50"
+                          className={`${btnDanger} h-8 px-3 text-xs`}
                         >
                           Delete
                         </button>
                         <button
                           type="button"
                           onClick={() => void toggleZone(zone.id)}
-                          className="rounded-md border border-gray-300 px-2.5 py-1 text-xs text-gray-700 hover:bg-gray-50"
+                          className={`${btnSecondary} h-8 px-3 text-xs`}
                         >
-                          {isExpanded ? "Hide Notebooks" : "Manage Notebooks"}
+                          {isExpanded ? "Hide Details" : "Manage Zone"}
                         </button>
                       </div>
                     )}
@@ -568,107 +743,181 @@ export function AdminDashboardPage() {
 
                   {isExpanded && (
                     <div className="border-t border-gray-100 px-4 py-4">
-                      <form
-                        onSubmit={handleAddNotebook}
-                        className="mb-4 rounded-md border border-gray-200 bg-gray-50 p-3"
-                      >
-                        <p className="mb-2 text-sm font-medium text-brand">Add Notebook</p>
-                        <div className="grid gap-2 md:grid-cols-3">
-                          <input
-                            type="text"
-                            placeholder="Title"
-                            value={newNotebookTitle}
-                            onChange={(event) => setNewNotebookTitle(event.target.value)}
-                            className="rounded-md border border-gray-300 px-3 py-2 text-sm"
-                            required
-                          />
-                          <input
-                            type="text"
-                            placeholder="Description (optional)"
-                            value={newNotebookDescription}
-                            onChange={(event) =>
-                              setNewNotebookDescription(event.target.value)
-                            }
-                            className="rounded-md border border-gray-300 px-3 py-2 text-sm"
-                          />
-                          <input
-                            type="file"
-                            accept=".ipynb"
-                            onChange={(event) =>
-                              setNewNotebookFile(event.target.files?.[0] ?? null)
-                            }
-                            className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm"
-                            required
-                          />
-                        </div>
-                        <button
-                          type="submit"
-                          className="mt-2 rounded-md bg-brand px-3 py-1.5 text-sm text-white hover:bg-brand-light"
-                        >
-                          Upload Notebook
-                        </button>
-                      </form>
-
-                      {notebooks.length === 0 ? (
-                        <p className="text-sm text-gray-500">No notebooks in this zone.</p>
-                      ) : (
-                        <div className="space-y-2">
-                          {notebooks.map((notebook, index) => (
-                            <div
-                              key={notebook.id}
-                              className="flex items-center justify-between gap-3 rounded-md border border-gray-200 bg-white px-3 py-2"
+                      <div className="space-y-4">
+                        <div className={panelSection}>
+                          <p className={sectionTitle}>Import Folder / Shared Files</p>
+                          <p className={`mt-2 ${sectionHint}`}>
+                            If imported files include `.ipynb`, they will be auto-created as
+                            notebooks. Other files become shared dependencies for all notebooks in
+                            this zone.
+                          </p>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => openAssetsFolderPicker(zone.id)}
+                              className={btnSecondary}
                             >
-                              <div>
-                                <p className="text-sm font-medium text-brand">
-                                  {notebook.title}
-                                </p>
-                                {notebook.description && (
-                                  <p className="text-xs text-gray-600">
-                                    {notebook.description}
-                                  </p>
+                              Upload Folder
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => openAssetsFilePicker(zone.id)}
+                              className={btnSecondary}
+                            >
+                              Upload Files
+                            </button>
+                          </div>
+                        </div>
+
+                        {notebooks.length === 0 ? (
+                          <p className="px-1 text-sm text-gray-500">No notebooks in this zone.</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {notebooks.map((notebook, index) => (
+                              <div
+                                key={notebook.id}
+                                className="rounded-md border border-gray-200 bg-white p-3"
+                              >
+                                {editingNotebookId === notebook.id ? (
+                                  <div className="space-y-2">
+                                    <input
+                                      type="text"
+                                      value={editingNotebook.title}
+                                      onChange={(event) =>
+                                        setEditingNotebook((prev) => ({
+                                          ...prev,
+                                          title: event.target.value,
+                                        }))
+                                      }
+                                      className={inputBase}
+                                    />
+                                    <textarea
+                                      value={editingNotebook.description}
+                                      onChange={(event) =>
+                                        setEditingNotebook((prev) => ({
+                                          ...prev,
+                                          description: event.target.value,
+                                        }))
+                                      }
+                                      className={inputBase}
+                                      rows={2}
+                                    />
+                                    <div className="flex flex-wrap gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          void handleSaveNotebookMetadata(notebook.id)
+                                        }
+                                        className={btnPrimary}
+                                      >
+                                        Save
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setEditingNotebookId(null)}
+                                        className={btnSecondary}
+                                      >
+                                        Cancel
+                                      </button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                      <p className="truncate text-sm font-medium text-brand">
+                                        {notebook.title}
+                                      </p>
+                                      <p className="mt-0.5 text-xs text-gray-600">
+                                        {notebook.description || "No description"}
+                                      </p>
+                                    </div>
+
+                                    <div className="flex flex-wrap items-center justify-end gap-1.5">
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          void moveNotebook(zone.id, index, index - 1)
+                                        }
+                                        className={btnIcon}
+                                        disabled={index === 0}
+                                      >
+                                        ↑
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          void moveNotebook(zone.id, index, index + 1)
+                                        }
+                                        className={btnIcon}
+                                        disabled={index === notebooks.length - 1}
+                                      >
+                                        ↓
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => startEditNotebook(notebook)}
+                                        className={`${btnSecondary} h-8 px-3 text-xs`}
+                                      >
+                                        Edit
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => triggerReplaceNotebook(notebook.id)}
+                                        className={`${btnSecondary} h-8 px-3 text-xs`}
+                                      >
+                                        Replace
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => void handleDeleteNotebook(notebook.id)}
+                                        className={`${btnDanger} h-8 px-3 text-xs`}
+                                      >
+                                        Delete
+                                      </button>
+                                    </div>
+                                  </div>
                                 )}
                               </div>
+                            ))}
+                          </div>
+                        )}
 
-                              <div className="flex gap-1">
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    void moveNotebook(zone.id, index, index - 1)
-                                  }
-                                  className="rounded-md border border-gray-300 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50"
-                                  disabled={index === 0}
+                        <div className={panelSection}>
+                          <p className={sectionTitle}>Shared Dependency Files (Admin Only)</p>
+                          <p className={`mt-2 ${sectionHint}`}>
+                            Students do not see this list. These files are injected into each zone
+                            notebook runtime.
+                          </p>
+                          {sharedFiles.length === 0 ? (
+                            <p className="mt-3 text-sm text-gray-500">No shared files yet.</p>
+                          ) : (
+                            <div className="mt-3 space-y-2">
+                              {sharedFiles.map((item) => (
+                                <div
+                                  key={item.id}
+                                  className="flex items-center justify-between gap-3 rounded-md border border-gray-200 bg-white px-3 py-2"
                                 >
-                                  ↑
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    void moveNotebook(zone.id, index, index + 1)
-                                  }
-                                  className="rounded-md border border-gray-300 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50"
-                                  disabled={index === notebooks.length - 1}
-                                >
-                                  ↓
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => triggerReplaceNotebook(notebook.id)}
-                                  className="rounded-md border border-gray-300 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50"
-                                >
-                                  Replace
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => void handleDeleteNotebook(notebook.id)}
-                                  className="rounded-md border border-red-200 px-2 py-1 text-xs text-red-600 hover:bg-red-50"
-                                >
-                                  Delete
-                                </button>
-                              </div>
+                                  <div className="min-w-0">
+                                    <p className="truncate text-xs font-medium text-brand">
+                                      {item.relative_path}
+                                    </p>
+                                    <p className="text-[11px] text-gray-600">
+                                      {formatSize(item.size_bytes)}
+                                    </p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleDeleteSharedFile(item.id)}
+                                    className={`${btnDanger} h-8 px-3 text-xs`}
+                                  >
+                                    Delete
+                                  </button>
+                                </div>
+                              ))}
                             </div>
-                          ))}
+                          )}
                         </div>
-                      )}
+                      </div>
                     </div>
                   )}
                 </section>

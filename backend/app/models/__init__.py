@@ -1,7 +1,7 @@
 from app.models.user import User, Base
 from app.models.chat import ChatSession, ChatMessage, DailyTokenUsage, UploadedFile
 from app.models.notebook import UserNotebook
-from app.models.zone import LearningZone, ZoneNotebook, ZoneNotebookProgress
+from app.models.zone import LearningZone, ZoneNotebook, ZoneNotebookProgress, ZoneSharedFile
 
 __all__ = [
     "User",
@@ -14,4 +14,5 @@ __all__ = [
     "LearningZone",
     "ZoneNotebook",
     "ZoneNotebookProgress",
+    "ZoneSharedFile",
 ]

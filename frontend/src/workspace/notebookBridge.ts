@@ -7,6 +7,7 @@ interface BridgeEnvelope {
   command: string;
   request_id?: string;
   notebook_json?: Record<string, unknown>;
+  workspace_files?: WorkspaceFilePayload[];
   notebook_key?: string;
   notebook_name?: string;
   notebook_title?: string;
@@ -14,6 +15,12 @@ interface BridgeEnvelope {
   cell_index?: number;
   error?: string | null;
   ok?: boolean;
+}
+
+export interface WorkspaceFilePayload {
+  relative_path: string;
+  content_base64: string;
+  content_type?: string | null;
 }
 
 function requireIframeWindow(iframe: HTMLIFrameElement): Window {
@@ -89,6 +96,7 @@ function postCommand<T extends BridgeEnvelope>(
 export async function loadNotebook(
   iframe: HTMLIFrameElement,
   notebookJson: Record<string, unknown>,
+  workspaceFiles: WorkspaceFilePayload[] = [],
   notebookKey?: string,
   notebookName?: string,
   notebookTitle?: string,
@@ -96,6 +104,7 @@ export async function loadNotebook(
 ): Promise<void> {
   await postCommand(iframe, "load-notebook", {
     notebook_json: notebookJson,
+    workspace_files: workspaceFiles,
     notebook_key: notebookKey,
     notebook_name: notebookName,
     notebook_title: notebookTitle,

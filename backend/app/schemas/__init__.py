@@ -20,10 +20,14 @@ from app.schemas.zone import (
     ZoneUpdate,
     ZoneOut,
     ZoneNotebookOut,
+    ZoneNotebookMetadataUpdate,
     ZoneNotebookDetail,
     ZoneProgressSave,
     ZoneReorder,
     ZoneDetailOut,
+    ZoneSharedFileOut,
+    ZoneRuntimeFileOut,
+    ZoneImportResult,
 )
 
 __all__ = [
@@ -48,8 +52,12 @@ __all__ = [
     "ZoneUpdate",
     "ZoneOut",
     "ZoneNotebookOut",
+    "ZoneNotebookMetadataUpdate",
     "ZoneNotebookDetail",
     "ZoneProgressSave",
     "ZoneReorder",
     "ZoneDetailOut",
+    "ZoneSharedFileOut",
+    "ZoneRuntimeFileOut",
+    "ZoneImportResult",
 ]

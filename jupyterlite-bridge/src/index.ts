@@ -5,9 +5,21 @@ interface BridgeMessage {
   command: string;
   request_id?: string;
   notebook_json?: Record<string, unknown>;
+  workspace_files?: WorkspaceFilePayload[];
   notebook_key?: string;
   notebook_name?: string;
   notebook_title?: string;
+}
+
+interface WorkspaceFilePayload {
+  relative_path?: string;
+  content_base64?: string;
+  content_type?: string | null;
+}
+
+interface KernelRuntimeFile {
+  path: string;
+  contentBase64: string;
 }
 
 const DEFAULT_NOTEBOOK_PATH = "workspace.ipynb";
@@ -38,6 +50,11 @@ const autosaveTimerByPanelId = new Map<string, number>();
 const autosaveInFlightPanelIds = new Set<string>();
 const titleRenameDisabledPanelIds = new Set<string>();
 const downloadPatchedPanelIds = new Set<string>();
+const injectedRuntimePaths = new Set<string>();
+let pendingKernelImportPaths: string[] = ["/drive"];
+let pendingKernelRuntimeFiles: KernelRuntimeFile[] = [];
+let runtimeSyncToken = 0;
+const syncedPanelTokenById = new Map<string, number>();
 let downloadCommandOverrideInstalled = false;
 
 function postToParent(message: Record<string, unknown>): void {
@@ -160,11 +177,29 @@ function watchPanel(panel: NotebookPanel): void {
     schedulePanelAutosave(panel);
   });
 
+  panel.sessionContext.kernelChanged.connect(() => {
+    syncedPanelTokenById.delete(panel.id);
+    if (panel.context.path !== activeNotebookPath) {
+      return;
+    }
+    const syncedToken = syncedPanelTokenById.get(panel.id);
+    if (syncedToken === runtimeSyncToken) {
+      return;
+    }
+    syncedPanelTokenById.set(panel.id, runtimeSyncToken);
+    void syncKernelRuntime(
+      panel,
+      pendingKernelImportPaths,
+      pendingKernelRuntimeFiles
+    );
+  });
+
   panel.disposed.connect(() => {
     watchedPanelIds.delete(panel.id);
     clearPanelAutosave(panel.id);
     titleRenameDisabledPanelIds.delete(panel.id);
     downloadPatchedPanelIds.delete(panel.id);
+    syncedPanelTokenById.delete(panel.id);
     if (activePanel?.id === panel.id) {
       activePanel = null;
     }
@@ -175,6 +210,17 @@ function setActiveNotebookPanel(panel: NotebookPanel | null): void {
   activePanel = panel;
   if (panel) {
     watchPanel(panel);
+    if (panel.context.path === activeNotebookPath) {
+      const syncedToken = syncedPanelTokenById.get(panel.id);
+      if (syncedToken !== runtimeSyncToken) {
+        syncedPanelTokenById.set(panel.id, runtimeSyncToken);
+        void syncKernelRuntime(
+          panel,
+          pendingKernelImportPaths,
+          pendingKernelRuntimeFiles
+        );
+      }
+    }
   }
 }
 
@@ -301,7 +347,319 @@ function toNotebookPath(notebookKey?: string): string {
   }
   const pathPrefix = safe.slice(0, 96);
   const fingerprint = hashNotebookKey(trimmedKey);
-  return `workspace-${pathPrefix}-${fingerprint}.ipynb`;
+  return `workspace-${pathPrefix}-${fingerprint}/workspace.ipynb`;
+}
+
+function splitParentPath(path: string): [string, string] {
+  const index = path.lastIndexOf("/");
+  if (index < 0) {
+    return ["", path];
+  }
+  return [path.slice(0, index), path.slice(index + 1)];
+}
+
+function workspaceRootFromNotebookPath(notebookPath: string): string {
+  const [parent] = splitParentPath(notebookPath);
+  return parent;
+}
+
+function normaliseWorkspaceRelativePath(value: string): string | null {
+  const clean = value.replace(/\\/g, "/").trim();
+  if (!clean) {
+    return null;
+  }
+  const segments: string[] = [];
+  for (const segment of clean.split("/")) {
+    const trimmed = segment.trim();
+    if (!trimmed || trimmed === ".") {
+      continue;
+    }
+    if (trimmed === "..") {
+      return null;
+    }
+    segments.push(trimmed);
+  }
+  return segments.length > 0 ? segments.join("/") : null;
+}
+
+function aliasWorkspaceRelativePath(relativePath: string): string | null {
+  const segments = relativePath.split("/").filter((segment) => Boolean(segment));
+  if (segments.length <= 1) {
+    return null;
+  }
+  const alias = segments.slice(1).join("/");
+  return alias || null;
+}
+
+function dirnameOrEmpty(path: string): string {
+  const [parent] = splitParentPath(path);
+  return parent;
+}
+
+function buildKernelImportPaths(
+  notebookPath: string,
+  files: WorkspaceFilePayload[]
+): string[] {
+  const paths = new Set<string>();
+  paths.add("/drive");
+
+  const workspaceRoot = workspaceRootFromNotebookPath(notebookPath);
+  const workspaceBase = workspaceRoot ? `/drive/${workspaceRoot}` : "/drive";
+  paths.add(workspaceBase);
+
+  for (const item of files) {
+    const relativePath = normaliseWorkspaceRelativePath(item.relative_path ?? "");
+    if (!relativePath) {
+      continue;
+    }
+    const aliasPath = aliasWorkspaceRelativePath(relativePath);
+    const candidateDirs = [dirnameOrEmpty(relativePath)];
+    if (aliasPath) {
+      candidateDirs.push(dirnameOrEmpty(aliasPath));
+    }
+
+    for (const candidate of candidateDirs) {
+      if (!candidate) {
+        continue;
+      }
+      paths.add(`/drive/${candidate}`);
+      if (workspaceRoot) {
+        paths.add(`/drive/${workspaceRoot}/${candidate}`);
+      }
+    }
+  }
+
+  return Array.from(paths);
+}
+
+function buildKernelRuntimeFiles(
+  notebookPath: string,
+  files: WorkspaceFilePayload[]
+): KernelRuntimeFile[] {
+  const workspaceRoot = workspaceRootFromNotebookPath(notebookPath);
+  const entries = new Map<string, KernelRuntimeFile>();
+
+  for (const item of files) {
+    const relativePath = normaliseWorkspaceRelativePath(item.relative_path ?? "");
+    const contentBase64 = item.content_base64;
+    if (!relativePath || !contentBase64) {
+      continue;
+    }
+    const aliasPath = aliasWorkspaceRelativePath(relativePath);
+    const candidateRelativePaths = [relativePath];
+    if (aliasPath) {
+      candidateRelativePaths.push(aliasPath);
+    }
+    if (workspaceRoot) {
+      candidateRelativePaths.push(`${workspaceRoot}/${relativePath}`);
+      if (aliasPath) {
+        candidateRelativePaths.push(`${workspaceRoot}/${aliasPath}`);
+      }
+    }
+
+    for (const rel of candidateRelativePaths) {
+      const cleanRel = rel.replace(/^\/+/, "");
+      const targetPath = `/drive/${cleanRel}`;
+      entries.set(targetPath, { path: targetPath, contentBase64 });
+    }
+  }
+
+  return Array.from(entries.values());
+}
+
+function encodeUtf8ToBase64(value: string): string {
+  return window.btoa(unescape(encodeURIComponent(value)));
+}
+
+async function syncKernelRuntime(
+  panel: NotebookPanel,
+  importPaths: string[],
+  runtimeFiles: KernelRuntimeFile[]
+): Promise<void> {
+  if (importPaths.length === 0 && runtimeFiles.length === 0) {
+    return;
+  }
+  try {
+    await panel.sessionContext.ready;
+  } catch {
+    return;
+  }
+  const kernel = panel.sessionContext.session?.kernel;
+  if (!kernel) {
+    return;
+  }
+
+  for (const item of runtimeFiles) {
+    const encodedFilePayload = encodeUtf8ToBase64(
+      JSON.stringify({
+        path: item.path,
+        content_base64: item.contentBase64,
+      })
+    );
+    const fileCode = [
+      "import os, json, base64",
+      `_item = json.loads(base64.b64decode("${encodedFilePayload}").decode("utf-8"))`,
+      "_path = _item.get('path', '')",
+      "_data = _item.get('content_base64', '')",
+      "if isinstance(_path, str) and _path and isinstance(_data, str) and _data:",
+      "    _dir = os.path.dirname(_path)",
+      "    if _dir:",
+      "        os.makedirs(_dir, exist_ok=True)",
+      "    with open(_path, 'wb') as _f:",
+      "        _f.write(base64.b64decode(_data))",
+    ].join("\n");
+    try {
+      const future = kernel.requestExecute({
+        code: fileCode,
+        silent: true,
+        store_history: false,
+        stop_on_error: false,
+      });
+      await future.done;
+    } catch {
+      // Best effort only.
+    }
+  }
+
+  const importPayload = JSON.stringify(importPaths);
+  const encodedImportPayload = encodeUtf8ToBase64(importPayload);
+  const importCode = [
+    "import os, sys, json, base64, importlib",
+    `_paths = json.loads(base64.b64decode("${encodedImportPayload}").decode("utf-8"))`,
+    "_cwd_candidates = []",
+    "for _path in _paths:",
+    "    if not isinstance(_path, str) or not _path:",
+    "        continue",
+    "    if _path.startswith('/drive/') and not os.path.isdir(_path):",
+    "        try:",
+    "            os.makedirs(_path, exist_ok=True)",
+    "        except OSError:",
+    "            pass",
+    "    if os.path.isdir(_path):",
+    "        if _path not in sys.path:",
+    "            sys.path.insert(0, _path)",
+    "        _cwd_candidates.append(_path)",
+    "if _cwd_candidates:",
+    "    _preferred = _cwd_candidates[1] if len(_cwd_candidates) > 1 else _cwd_candidates[0]",
+    "    if isinstance(_preferred, str) and _preferred and os.path.isdir(_preferred):",
+    "        os.chdir(_preferred)",
+    "importlib.invalidate_caches()",
+  ].join("\n");
+
+  try {
+    const future = kernel.requestExecute({
+      code: importCode,
+      silent: true,
+      store_history: false,
+      stop_on_error: false,
+    });
+    await future.done;
+  } catch {
+    // Best effort only.
+  }
+}
+
+async function ensureDirectoryPath(
+  app: JupyterFrontEnd,
+  directoryPath: string
+): Promise<void> {
+  if (!directoryPath) {
+    return;
+  }
+  const segments = directoryPath.split("/").filter((segment) => Boolean(segment));
+  let currentPath = "";
+  for (const segment of segments) {
+    currentPath = currentPath ? `${currentPath}/${segment}` : segment;
+    try {
+      await app.serviceManager.contents.get(currentPath, { content: false });
+    } catch {
+      await app.serviceManager.contents.save(currentPath, {
+        type: "directory",
+      });
+    }
+  }
+}
+
+async function deletePathIfExists(
+  app: JupyterFrontEnd,
+  targetPath: string
+): Promise<void> {
+  try {
+    await app.serviceManager.contents.delete(targetPath);
+  } catch {
+    // Best effort cleanup.
+  }
+}
+
+async function clearInjectedRuntimePaths(app: JupyterFrontEnd): Promise<void> {
+  if (injectedRuntimePaths.size === 0) {
+    return;
+  }
+
+  // Delete deeper paths first to minimise directory-not-empty errors.
+  const ordered = Array.from(injectedRuntimePaths).sort(
+    (a, b) => b.length - a.length
+  );
+  for (const targetPath of ordered) {
+    await deletePathIfExists(app, targetPath);
+    const [parent] = splitParentPath(targetPath);
+    if (parent) {
+      await deletePathIfExists(app, parent);
+    }
+  }
+  injectedRuntimePaths.clear();
+}
+
+async function saveWorkspaceFiles(
+  app: JupyterFrontEnd,
+  notebookPath: string,
+  files: WorkspaceFilePayload[]
+): Promise<Set<string>> {
+  const writtenPaths = new Set<string>();
+  if (!files.length) {
+    return writtenPaths;
+  }
+
+  const workspaceRoot = workspaceRootFromNotebookPath(notebookPath);
+  for (const item of files) {
+    const relativePath = normaliseWorkspaceRelativePath(item.relative_path ?? "");
+    const contentBase64 = item.content_base64;
+    if (!relativePath || !contentBase64) {
+      continue;
+    }
+
+    const primaryPath = workspaceRoot
+      ? `${workspaceRoot}/${relativePath}`
+      : relativePath;
+    const aliasRelativePath = aliasWorkspaceRelativePath(relativePath);
+    const candidatePaths = [primaryPath];
+    if (aliasRelativePath) {
+      candidatePaths.push(
+        workspaceRoot ? `${workspaceRoot}/${aliasRelativePath}` : aliasRelativePath
+      );
+    }
+    candidatePaths.push(relativePath);
+    if (aliasRelativePath) {
+      candidatePaths.push(aliasRelativePath);
+    }
+
+    const dedupedPaths = Array.from(new Set(candidatePaths));
+    for (const targetPath of dedupedPaths) {
+      const [parent] = splitParentPath(targetPath);
+      await ensureDirectoryPath(app, parent);
+      await withTimeout(
+        app.serviceManager.contents.save(targetPath, {
+          type: "file",
+          format: "base64",
+          content: contentBase64,
+        }),
+        SAVE_TIMEOUT_MS,
+        "Workspace file save"
+      );
+      writtenPaths.add(targetPath);
+    }
+  }
+  return writtenPaths;
 }
 
 function injectWorkspaceChromeStyles(): void {
@@ -549,22 +907,36 @@ async function deleteNotebookFilesExcept(
   app: JupyterFrontEnd,
   notebookPath: string
 ): Promise<void> {
+  const activeWorkspaceRoot = workspaceRootFromNotebookPath(notebookPath);
   try {
     const root = await app.serviceManager.contents.get("", { content: true });
     const items = Array.isArray(root.content)
       ? root.content
       : [];
     for (const item of items) {
-      if (item.type !== "notebook") {
+      if (item.type === "directory") {
+        if (!item.path || !item.path.startsWith("workspace-")) {
+          continue;
+        }
+        if (item.path === activeWorkspaceRoot) {
+          continue;
+        }
+        try {
+          await app.serviceManager.contents.delete(item.path);
+        } catch {
+          // Best effort cleanup.
+        }
         continue;
       }
-      if (!item.path || item.path === notebookPath) {
-        continue;
-      }
-      try {
-        await app.serviceManager.contents.delete(item.path);
-      } catch {
-        // Best effort cleanup.
+      if (item.type === "notebook") {
+        if (!item.path || item.path === notebookPath) {
+          continue;
+        }
+        try {
+          await app.serviceManager.contents.delete(item.path);
+        } catch {
+          // Best effort cleanup.
+        }
       }
     }
   } catch {
@@ -731,12 +1103,32 @@ const plugin: JupyterFrontEndPlugin<void> = {
             app,
             message.notebook_json ?? EMPTY_NOTEBOOK
           );
+          const workspaceFiles = Array.isArray(message.workspace_files)
+            ? message.workspace_files
+            : [];
           const notebookPath = toNotebookPath(message.notebook_key);
           const notebookTitle = normaliseNotebookTitle(
             message.notebook_title ?? message.notebook_name
           );
+          const [notebookDirectory] = splitParentPath(notebookPath);
+          runtimeSyncToken += 1;
+          pendingKernelImportPaths = buildKernelImportPaths(
+            notebookPath,
+            workspaceFiles
+          );
+          pendingKernelRuntimeFiles = buildKernelRuntimeFiles(
+            notebookPath,
+            workspaceFiles
+          );
           activeNotebookPath = notebookPath;
           activeNotebookTitle = notebookTitle;
+
+          await clearInjectedRuntimePaths(app);
+          await ensureDirectoryPath(app, notebookDirectory);
+          const writtenPaths = await saveWorkspaceFiles(app, notebookPath, workspaceFiles);
+          for (const path of writtenPaths) {
+            injectedRuntimePaths.add(path);
+          }
 
           if (activePanel?.context.path === notebookPath) {
             const model = activePanel.context.model as {
@@ -746,6 +1138,12 @@ const plugin: JupyterFrontEndPlugin<void> = {
               model.fromJSON(notebookJson);
               void activePanel.context.save();
               applyNotebookPresentation(activePanel, notebookTitle, app);
+              syncedPanelTokenById.set(activePanel.id, runtimeSyncToken);
+              await syncKernelRuntime(
+                activePanel,
+                pendingKernelImportPaths,
+                pendingKernelRuntimeFiles
+              );
               reply(message, { notebook_json: notebookJson });
               queueWorkspaceIsolationInBackground(app, notebookPath, notebookTitle);
               return;

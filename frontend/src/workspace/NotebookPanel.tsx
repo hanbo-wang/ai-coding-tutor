@@ -9,11 +9,13 @@ import {
 } from "react";
 
 import { apiFetch, getAccessToken } from "../api/http";
+import { ZoneRuntimeFile } from "../api/types";
 import {
   getCurrentCell,
   getErrorOutput,
   getNotebookState,
   loadNotebook,
+  WorkspaceFilePayload,
   subscribeNotebookSaveRequested,
   waitForNotebookBridgeReady,
   subscribeNotebookDirty,
@@ -148,7 +150,7 @@ export const NotebookPanel = forwardRef<NotebookPanelHandle, NotebookPanelProps>
 
     const iframeSrc = useMemo(() => {
       const key = encodeURIComponent(workspaceKey ?? `${mode}:${zoneId ?? ""}:${notebookId}`);
-      return `/jupyterlite/lab/index.html?v=bridge-single-notebook-11&reload=${reloadKey}&wk=${key}`;
+      return `/jupyterlite/lab/index.html?v=bridge-single-notebook-17&reload=${reloadKey}&wk=${key}`;
     }, [mode, notebookId, reloadKey, workspaceKey, zoneId]);
 
     const setStatus = useCallback(
@@ -273,6 +275,17 @@ export const NotebookPanel = forwardRef<NotebookPanelHandle, NotebookPanelProps>
             title?: string;
             original_filename?: string;
           }>(loadPath);
+          let workspaceFiles: WorkspaceFilePayload[] = [];
+          if (mode === "zone" && zoneId) {
+            const runtimeFiles = await apiFetch<ZoneRuntimeFile[]>(
+              `/api/zones/${zoneId}/notebooks/${notebookId}/runtime-files`
+            );
+            workspaceFiles = runtimeFiles.map((item) => ({
+              relative_path: item.relative_path,
+              content_base64: item.content_base64,
+              content_type: item.content_type,
+            }));
+          }
           const notebookTitle =
             detail.title?.trim() ||
             detail.original_filename?.replace(/\.ipynb$/i, "").trim() ||
@@ -287,6 +300,7 @@ export const NotebookPanel = forwardRef<NotebookPanelHandle, NotebookPanelProps>
               await loadNotebook(
                 iframe,
                 notebookJson,
+                workspaceFiles,
                 notebookKey,
                 undefined,
                 notebookTitle

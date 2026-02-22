@@ -15,11 +15,13 @@ from app.schemas.zone import (
     ZoneNotebookOut,
     ZoneOut,
     ZoneProgressSave,
+    ZoneRuntimeFileOut,
 )
 from app.services.zone_service import (
     ZoneValidationError,
     get_zone,
     get_zone_notebook,
+    get_zone_runtime_files,
     list_zone_notebooks_with_progress,
     list_zones_with_notebook_counts,
     reset_zone_progress,
@@ -109,6 +111,22 @@ async def get_zone_notebook_detail(
         has_progress=has_progress,
         notebook_json=parse_notebook_json_or_500(notebook_json),
     )
+
+
+@router.get(
+    "/{zone_id}/notebooks/{notebook_id}/runtime-files",
+    response_model=list[ZoneRuntimeFileOut],
+)
+async def get_zone_notebook_runtime_files(
+    zone_id: uuid.UUID,
+    notebook_id: uuid.UUID,
+    _: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    runtime_files = await get_zone_runtime_files(db, zone_id, notebook_id)
+    if runtime_files is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Notebook not found")
+    return [ZoneRuntimeFileOut(**item) for item in runtime_files]
 
 
 @router.put("/{zone_id}/notebooks/{notebook_id}/progress")

@@ -14,9 +14,12 @@ from app.models.chat import DailyTokenUsage
 from app.models.user import User
 from app.schemas.zone import (
     ZoneCreate,
+    ZoneImportResult,
     ZoneNotebookOut,
+    ZoneNotebookMetadataUpdate,
     ZoneOut,
     ZoneReorder,
+    ZoneSharedFileOut,
     ZoneUpdate,
 )
 from app.services import audit_service
@@ -26,10 +29,16 @@ from app.services.zone_service import (
     create_zone,
     delete_zone,
     delete_zone_notebook,
+    delete_zone_shared_file,
+    get_zone,
+    get_zone_notebook_for_context,
+    import_zone_assets,
     list_zone_notebooks,
+    list_zone_shared_files,
     list_zones_with_notebook_counts,
     reorder_zone_notebooks,
     replace_notebook_content,
+    update_zone_notebook_metadata,
     update_zone,
 )
 
@@ -149,14 +158,27 @@ async def update_admin_zone(
     admin: Annotated[User, Depends(get_admin_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    zone = await update_zone(db, zone_id, **payload.model_dump(exclude_none=True))
+    existing_zone = await get_zone(db, zone_id)
+    if existing_zone is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Zone not found")
+    old_title = existing_zone.title
+    old_description = existing_zone.description
+
+    fields = payload.model_dump(exclude_unset=True)
+    zone = await update_zone(db, zone_id, **fields)
     if zone is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Zone not found")
 
     notebook_count = len(await list_zone_notebooks(db, zone_id))
+    detail_parts: list[str] = []
+    if old_title != zone.title:
+        detail_parts.append(f"title: '{old_title}' -> '{zone.title}'")
+    if old_description != zone.description:
+        detail_parts.append("description updated")
     await audit_service.log_action(
         db, admin.email, "update", "zone",
         resource_id=zone.id, resource_title=zone.title,
+        details="; ".join(detail_parts) if detail_parts else None,
     )
     await db.commit()
     await db.refresh(zone)
@@ -215,6 +237,42 @@ async def add_zone_notebook(
     return notebook
 
 
+@router.post(
+    "/zones/{zone_id}/assets",
+    response_model=ZoneImportResult,
+    status_code=status.HTTP_201_CREATED,
+)
+async def import_zone_assets_bundle(
+    zone_id: uuid.UUID,
+    admin: Annotated[User, Depends(get_admin_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    files: list[UploadFile] = File(...),
+    relative_paths: list[str] | None = Form(default=None),
+):
+    try:
+        result = await import_zone_assets(db, zone_id, files, relative_paths or [])
+    except ZoneValidationError as exc:
+        detail = str(exc)
+        code = status.HTTP_404_NOT_FOUND if "not found" in detail.lower() else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=code, detail=detail)
+
+    detail = (
+        f"imported notebooks={result['notebooks_created']}, "
+        f"shared_created={result['shared_files_created']}, "
+        f"shared_updated={result['shared_files_updated']}"
+    )
+    await audit_service.log_action(
+        db,
+        admin.email,
+        "update",
+        "zone_assets",
+        resource_id=zone_id,
+        details=detail,
+    )
+    await db.commit()
+    return ZoneImportResult(**result)
+
+
 @router.get("/zones/{zone_id}/notebooks", response_model=list[ZoneNotebookOut])
 async def get_zone_notebooks_for_admin(
     zone_id: uuid.UUID,
@@ -223,6 +281,71 @@ async def get_zone_notebooks_for_admin(
 ):
     notebooks = await list_zone_notebooks(db, zone_id)
     return notebooks
+
+
+@router.get("/zones/{zone_id}/shared-files", response_model=list[ZoneSharedFileOut])
+async def get_zone_shared_files_for_admin(
+    zone_id: uuid.UUID,
+    _: Annotated[User, Depends(get_admin_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    zone = await get_zone(db, zone_id)
+    if zone is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Zone not found")
+    return await list_zone_shared_files(db, zone_id)
+
+
+@router.patch("/notebooks/{notebook_id}/metadata", response_model=ZoneNotebookOut)
+async def update_zone_notebook_metadata_for_admin(
+    notebook_id: uuid.UUID,
+    payload: ZoneNotebookMetadataUpdate,
+    admin: Annotated[User, Depends(get_admin_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    fields = payload.model_dump(exclude_unset=True)
+    if not fields:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No metadata fields provided.",
+        )
+
+    existing = await get_zone_notebook_for_context(db, notebook_id)
+    if existing is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Notebook not found")
+
+    old_title = existing.title
+    old_description = existing.description
+    try:
+        notebook = await update_zone_notebook_metadata(
+            db,
+            notebook_id,
+            title=fields.get("title"),
+            description=fields.get("description"),
+            description_provided="description" in fields,
+        )
+    except ZoneValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+    if notebook is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Notebook not found")
+
+    detail_parts: list[str] = []
+    if old_title != notebook.title:
+        detail_parts.append(f"title: '{old_title}' -> '{notebook.title}'")
+    if old_description != notebook.description:
+        detail_parts.append("description updated")
+    await audit_service.log_action(
+        db,
+        admin.email,
+        "update",
+        "zone_notebook",
+        resource_id=notebook.id,
+        resource_title=notebook.title,
+        details="; ".join(detail_parts) if detail_parts else None,
+    )
+    await db.commit()
+    await db.refresh(notebook)
+    return notebook
 
 
 @router.put("/notebooks/{notebook_id}", response_model=ZoneNotebookOut)
@@ -247,6 +370,26 @@ async def replace_zone_notebook(
     await db.commit()
     await db.refresh(notebook)
     return notebook
+
+
+@router.delete("/shared-files/{shared_file_id}")
+async def remove_zone_shared_file(
+    shared_file_id: uuid.UUID,
+    admin: Annotated[User, Depends(get_admin_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    deleted = await delete_zone_shared_file(db, shared_file_id)
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shared file not found")
+    await audit_service.log_action(
+        db,
+        admin.email,
+        "delete",
+        "zone_shared_file",
+        resource_id=shared_file_id,
+    )
+    await db.commit()
+    return {"message": "Shared file deleted"}
 
 
 @router.delete("/notebooks/{notebook_id}")

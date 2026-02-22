@@ -45,13 +45,13 @@ Additional reference: [docs/semantic-recognition-testing.md](docs/semantic-recog
 - **Notebook Autosave and Restore**: notebook state is saved to backend storage and restored on reopen.
 - **Scoped Workspace Chat Sessions**: notebook and zone chats are isolated from general chat and restored per module.
 - **My Notebooks Management**: upload, open, rename, and delete personal notebooks.
-- **Learning Hub**: all users can browse learning zones and open zone notebooks.
-- **Admin Dashboard**: admins can create zones, upload/replace/reorder notebooks, view token usage and cost, and review an audit log of all Learning Hub changes.
+- **Learning Hub**: all users can browse learning zones, open zone notebooks, and run notebooks with zone-level shared dependency files.
+- **Admin Dashboard**: admins can create and edit zones, edit notebook metadata, import files or folders into zones (with `.ipynb` files created as notebooks), replace/reorder notebooks, manage shared dependency files, view token usage and cost, and review an audit log of Learning Hub changes.
 - **Per-User Zone Progress**: each user gets an independent working copy of zone notebooks, with reset-to-original support.
 - **Rate Limiting**: per user LLM request limits (default 5/min), global LLM limits (default 300/min), and concurrent WebSocket connection limits (default 3 per user). All configurable via `.env`.
 - **Precise Token Tracking**: input and output token counts are read from each LLM provider's API response, recorded per message, and aggregated into daily usage totals.
 - **Admin Cost Visibility**: the admin dashboard shows total input/output tokens and estimated cost for today, this week, and this month.
-- **Admin Audit Log**: every Learning Hub modification (zone or notebook create, update, delete) is logged with the admin's email and timestamp.
+- **Admin Audit Log**: every Learning Hub modification is logged with the admin's email, timestamp, and change details for name updates.
 - **Automated Test Suite**: 34 passing tests covering pedagogy, context building, rate limiting, connection tracking, admin usage, audit log, config parsing, notebook validation, and upload handling.
 
 ### Planned (Phase 5)
@@ -78,7 +78,7 @@ Frontend (React + TypeScript + Vite + Tailwind)
   ├── Chat page (WebSocket, streaming, session sidebar)
   ├── My Notebooks + Workspace (JupyterLite + scoped chat)
   ├── Learning Hub (zone browse + zone workspace)
-  └── Admin dashboard (zone management, usage, audit log)
+  └── Admin dashboard (zone/notebook metadata, assets, shared dependencies, usage, audit log)
          │
          │  REST + WebSocket (JWT auth)
          ▼
@@ -86,8 +86,8 @@ Backend (FastAPI, async Python)
   ├── Auth API (JWT access tokens + httpOnly refresh cookies)
   ├── Chat API (REST for sessions/usage, WebSocket for streaming)
   ├── Notebook API (upload, list, open, save, rename, delete)
-  ├── Zone API (public browse + progress save/reset)
-  ├── Admin API (zone management, usage visibility, audit log)
+  ├── Zone API (public browse + runtime files + progress save/reset)
+  ├── Admin API (zone management + asset import + shared files + usage + audit log)
   └── AI subsystem
        ├── LLM abstraction (3 providers, retry + fallback)
        ├── Embedding service (Cohere/Voyage, pre-filter pipeline)
@@ -95,7 +95,7 @@ Backend (FastAPI, async Python)
        └── Context builder (system prompt assembly, notebook + cell context injection)
          │
          ▼
-PostgreSQL (users, sessions, messages, usage, notebooks, zones, progress)
+PostgreSQL (users, sessions, messages, usage, notebooks, zones, zone_shared_files, progress)
 ```
 
 ## Getting Started

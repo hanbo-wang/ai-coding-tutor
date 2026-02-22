@@ -26,7 +26,7 @@ class LearningZone(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
-    description: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     order: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
@@ -85,4 +85,32 @@ class ZoneNotebookProgress(Base):
             name="uq_zone_notebook_progress_user_notebook",
         ),
         Index("ix_zone_notebook_progress_user_id", "user_id"),
+    )
+
+
+class ZoneSharedFile(Base):
+    __tablename__ = "zone_shared_files"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    zone_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("learning_zones.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    relative_path: Mapped[str] = mapped_column(String(500), nullable=False)
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    stored_filename: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    storage_path: Mapped[str] = mapped_column(String(500), nullable=False)
+    content_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("zone_id", "relative_path", name="uq_zone_shared_files_zone_path"),
+        Index("ix_zone_shared_files_zone_id", "zone_id"),
     )
