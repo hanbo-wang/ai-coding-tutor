@@ -333,7 +333,7 @@ The complete pipeline for each user message:
 - An LLM abstraction layer supporting three providers with automatic failover.
 - A pedagogy engine that manages hint levels, student adaptation, and dynamic levelling.
 - A WebSocket endpoint (`/ws/chat`) that streams AI responses.
-- A frontend chat page with message history, streaming display, markdown rendering, syntax-highlighted code blocks, and LaTeX formula rendering.
+- A frontend chat page with message history, streaming display, GFM markdown rendering (including tables), syntax-highlighted code blocks, and LaTeX formula rendering.
 
 **Part B (File and Image Uploads):**
 
@@ -646,8 +646,9 @@ The helper forwards server events (`session`, `meta`, `token`, `done`, `canned`,
 
 **`frontend/src/chat/ChatBubble.tsx`:** Renders a single message.
 
-- User messages are displayed as plain text.
-- Assistant messages display a lightweight metadata row (hint level and programming/maths difficulty) above the markdown content.
+- User messages are displayed as plain text in a compact brand-coloured bubble with support for inline image previews and file download buttons.
+- Assistant messages render in a soft bordered card that matches the neutral grey brand palette.
+- Assistant metadata (hint level and programming/maths difficulty) is shown as compact badges above the answer content for quicker scanning.
 - AI messages are rendered via the markdown/LaTeX renderer (see below).
 
 ### 4.11 Markdown, Code, and LaTeX Rendering
@@ -656,19 +657,22 @@ The helper forwards server events (`session`, `meta`, `token`, `done`, `canned`,
 
 Renders AI responses with full support for:
 
-- **Code blocks** with syntax highlighting via `react-syntax-highlighter` (or `highlight.js`). The language is detected from the markdown fence (e.g. ` ```python `). Code blocks are rendered in a styled container with a copy button.
-- **Inline code** with monospace styling.
-- **LaTeX formulas** rendered via KaTeX:
-  - Inline mathematics: `$...$`
-  - Display mathematics: `$$...$$`
-- **Standard markdown:** bold, italic, lists, links, tables.
+- **GFM tables** via `remark-gfm`. Tables render inside a rounded, scrollable wrapper with a soft border, alternating row backgrounds, and hover highlights. A preprocessing step escapes pipe characters (`|`) inside inline math spans on table rows so that `$\pi(a|s)$` renders correctly instead of splitting the cell.
+- **Code blocks** with syntax highlighting via `react-syntax-highlighter` using the Prism `one-light` theme. Language-tagged blocks render as compact bordered panels without oversized headers, untagged blocks render as plain compact monospace blocks, and short single-line untagged snippets are collapsed to tight monospace rendering so table rows are not stretched unnecessarily.
+- **Inline code** with monospace styling, a subtle border, and a muted background that remains distinct from both paragraph text and full code blocks.
+- **LaTeX formulas** rendered via KaTeX with custom spacing:
+  - Inline mathematics: `$...$` with increased letter-spacing (`0.035em`) and a larger relative font size (`1.12em`) for clearer in-line readability.
+  - Display mathematics: `$$...$$` in a bordered rounded container with a soft neutral-grey gradient, larger relative font size (`1.18em`), and increased letter/word spacing for easier visual parsing.
+- **Standard markdown:** bold, italic, links, lists, headings, horizontal rules, and blockquotes.
+- **Structural styling:** slightly increased text tracking and line height, clearer heading rhythm, and muted accents for links, blockquotes, and dividers so longer tutor responses remain clean and readable.
 
-**Frontend dependencies to add:**
+**Frontend dependencies:**
 
 - `react-markdown`
+- `remark-gfm`
+- `remark-math`
 - `react-syntax-highlighter`
 - `katex` and `rehype-katex`
-- `remark-math`
 
 ### 4.12 Update Routing and Profile
 
@@ -759,7 +763,7 @@ When a chat message includes uploaded files:
 - [ ] The effective student level updates in the database after the student moves to a new problem.
 - [ ] Greeting messages ("hello", "hi") receive an instant personalised canned response that includes the student's username, with no LLM delay.
 - [ ] Off-topic questions ("what is the weather?") are politely rejected with no LLM delay.
-- [ ] AI responses render code blocks with syntax highlighting and a copy button.
+- [ ] AI responses render code blocks with syntax highlighting, with compact monospace rendering for short untagged snippets.
 - [ ] AI responses render LaTeX formulas correctly (both inline `$...$` and display `$$...$$`).
 - [ ] Refreshing the page preserves and displays the previous chat history.
 - [ ] If the primary LLM provider is unavailable (simulate with a wrong API key), the system falls back to the next provider.
