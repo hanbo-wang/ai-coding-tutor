@@ -9,12 +9,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+_GOOGLE_AUTH_IMPORT_ERROR: Exception | None = None
+
 try:  # pragma: no cover - exercised indirectly; guarded for local dev without dependency.
     from google.auth.transport.requests import Request as GoogleAuthRequest
     from google.oauth2 import service_account
-except Exception:  # pragma: no cover
+except Exception as exc:  # pragma: no cover
     GoogleAuthRequest = None  # type: ignore[assignment]
     service_account = None  # type: ignore[assignment]
+    _GOOGLE_AUTH_IMPORT_ERROR = exc
 
 GOOGLE_CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -121,8 +124,10 @@ class GoogleServiceAccountTokenProvider:
 
     def __init__(self, credentials_path: str) -> None:
         if service_account is None or GoogleAuthRequest is None:
+            detail = f" ({_GOOGLE_AUTH_IMPORT_ERROR})" if _GOOGLE_AUTH_IMPORT_ERROR else ""
             raise RuntimeError(
-                "google-auth is not installed. Add 'google-auth' to backend dependencies."
+                "Google auth dependencies are unavailable. Add 'google-auth' and "
+                f"'requests' to backend dependencies{detail}."
             )
         resolved_path = resolve_google_credentials_path(credentials_path)
         _load_service_account_json(resolved_path)

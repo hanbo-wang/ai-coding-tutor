@@ -9,6 +9,7 @@ pydantic[email]>=2.5.0
 pydantic-settings>=2.1.0
 httpx>=0.26.0
 google-auth>=2.35.0
+requests>=2.31.0
 aiosqlite>=0.20.0
 numpy>=1.26.0
 websockets>=12.0

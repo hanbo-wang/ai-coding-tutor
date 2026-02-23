@@ -126,7 +126,7 @@ async def verify_google_key(
                     "Content-Type": "application/json",
                 },
                 json={
-                    "contents": [{"parts": [{"text": "ping"}]}],
+                    "contents": [{"role": "user", "parts": [{"text": "ping"}]}],
                     "generationConfig": {"maxOutputTokens": 1},
                 },
             )

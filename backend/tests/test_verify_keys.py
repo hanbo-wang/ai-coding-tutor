@@ -47,6 +47,7 @@ class _FakeResponse:
 
 class _RecordingAsyncClient:
     last_url: str | None = None
+    last_json: dict | None = None
 
     def __init__(self, *args, **kwargs) -> None:
         pass
@@ -59,6 +60,7 @@ class _RecordingAsyncClient:
 
     async def post(self, url, headers=None, json=None):
         _RecordingAsyncClient.last_url = url
+        _RecordingAsyncClient.last_json = json
         return _FakeResponse(200)
 
 
@@ -83,3 +85,7 @@ async def test_verify_google_key_uses_global_vertex_host(monkeypatch) -> None:
         == "https://aiplatform.googleapis.com/v1/projects/proj/locations/global/"
         "publishers/google/models/gemini-3-flash-preview:generateContent"
     )
+    assert _RecordingAsyncClient.last_json == {
+        "contents": [{"role": "user", "parts": [{"text": "ping"}]}],
+        "generationConfig": {"maxOutputTokens": 1},
+    }
