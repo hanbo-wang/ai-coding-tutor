@@ -163,7 +163,7 @@ Both responses are at hint level 3 (structural outline, no code), but the langua
 
 ## 2. Intelligent Pre-Filter Pipeline
 
-User messages are processed through a lightweight embedding-based pipeline before reaching the LLM. This filters out greetings and off-topic queries, detects repeated questions, and estimates problem difficulty. The goal is to reserve expensive LLM inference exclusively for high-value educational interactions.
+User messages are processed through a lightweight pre-processing pipeline before the main tutoring response is generated. Embeddings support multimodal semantics and optional greeting/off-topic filtering, while the configured LLM handles same-problem detection and difficulty estimation by default.
 
 ### 2.1 Embedding Service
 
@@ -171,15 +171,17 @@ User messages are processed through a lightweight embedding-based pipeline befor
 
 | Provider  | Model                     | Notes                                                                                                |
 | --------- | ------------------------- | ---------------------------------------------------------------------------------------------------- |
-| Cohere    | `embed-v4.0`            | Text and images. 128k token context (very long). 100+ languages (very strong).                       |
-| Voyage AI | `voyage-multimodal-3.5` | Text, images, and video. 32k token context. Supports multilingual (optimised for general scenarios). |
+| Vertex AI | `multimodalembedding@001` | Text and images. Default provider. Uses Google Cloud service account auth (Bearer token in code). |
+| Cohere    | `embed-v4.0`              | Text and images. Supported fallback provider. |
+| Voyage AI | `voyage-multimodal-3.5`   | Text, images, and video. Supported fallback provider. |
 
-The embedding provider is configured via the `EMBEDDING_PROVIDER` environment variable (`cohere` or `voyage`, default `cohere`). The chosen provider handles all embedding requests. If its API call fails, the other provider is tried automatically as a fallback. Both API keys should be set so the fallback is available.
+The embedding provider is configured via the `EMBEDDING_PROVIDER` environment variable (`vertex`, `cohere`, or `voyage`, default `vertex`). Vertex AI uses `GOOGLE_APPLICATION_CREDENTIALS` (service account JSON path) and automatic Bearer token refresh. If the primary provider fails, the service tries the remaining configured providers in order.
 
 **Why these models:**
 
-- **Matryoshka dimension reduction (Cohere).** The model is trained with Matryoshka representation learning, which preserves semantic structure at reduced dimensions. Using 256 dimensions (via the `output_dimension` API parameter) instead of the full 1536 reduces cosine similarity computation by ~6x and shrinks API payloads and memory footprint, with sufficient accuracy for threshold-based classification.
-- **Multimodal support.** Both models handle text and images in the same vector space, which is critical for understanding code screenshots and error messages in Part B.
+- **Low-cost default path.** Vertex AI `multimodalembedding@001` is inexpensive and keeps Google auth consistent with the default Gemini LLM setup.
+- **Multimodal support.** Vertex, Cohere, and Voyage support text and image embedding, which is critical for code screenshots and error images.
+- **Fast similarity checks.** The service uses 256-dimensional vectors for efficient NumPy cosine similarity in the pre-filter pipeline.
 
 **Implementation:** `backend/app/ai/embedding_service.py`
 
@@ -187,20 +189,20 @@ The service uses a primary/fallback architecture. The `EMBEDDING_PROVIDER` setti
 
 ```python
 class EmbeddingService:
-    def __init__(self, provider: str, cohere_api_key: str = "", voyage_api_key: str = ""):
-        """Primary provider chosen by EMBEDDING_PROVIDER. The other is fallback."""
+    def __init__(self, provider: str, ...):
+        """Primary provider chosen by EMBEDDING_PROVIDER. Remaining providers are fallbacks."""
 
     async def embed_text(self, text: str) -> Optional[list[float]]:
         """Return an embedding vector, using cache when available."""
 
     def check_greeting(self, embedding: list[float]) -> bool:
-        """Synchronous check against pre-embedded greeting anchors."""
+        """Optional synchronous check against pre-embedded greeting anchors."""
 
     def check_off_topic(self, embedding: list[float]) -> bool:
-        """Synchronous check against pre-embedded topic anchors."""
+        """Optional synchronous check using pre-embedded topic and off-topic anchors."""
 
     def check_same_problem(self, current: list[float], previous: list[float]) -> bool:
-        """Synchronous similarity check between two embeddings."""
+        """Optional embedding fallback similarity check between two embeddings."""
 
     def check_elaboration_request(self, embedding: list[float]) -> bool:
         """Synchronous check against pre-embedded elaboration anchors."""
@@ -208,87 +210,86 @@ class EmbeddingService:
 
 **Performance optimisations:**
 
-- **Single embed per message.** The user message is embedded exactly once. All subsequent checks (greeting, off-topic, same-problem) operate on the pre-computed vector using synchronous methods with no additional API calls.
+- **Single embed per message.** The user message is embedded exactly once. Optional semantic checks (greeting/off-topic, and embedding same-problem mode) operate on the pre-computed vector using synchronous methods with no additional API calls.
 - **Persistent HTTP client.** A shared `httpx.AsyncClient` reuses TCP connections across requests, reducing connection overhead.
 - **In-memory LRU cache.** Up to 512 recent embeddings are cached by normalised text key, avoiding redundant API calls for repeated or similar inputs.
-- **Batch initialisation.** Greeting templates and topic anchors are embedded in one batch call when the embedding service is first initialised, rather than individual requests.
+- **Batched anchor initialisation.** Greeting, topic, off-topic, and elaboration anchors are embedded in provider-agnostic batches when the embedding service is first initialised, avoiding provider-specific batch-size limits.
 - **NumPy vectorised similarity.** Anchor embeddings are stored as NumPy `ndarray` matrices. Cosine similarity against all anchors is computed via a single matrix-vector multiply (`matrix @ vec / (norms * vec_norm)`) instead of N individual dot products.
 
-### 2.2 Greeting Detection
+### 2.2 Greeting Detection (Optional, Disabled by Default)
 
 Pre-embed 14 common greetings: "hello", "hi", "hey", "good morning", "good afternoon", "good evening", "how are you", "what's up", "hi there", "hey there", "hello there", "good day", "howdy", "greetings".
 
-When a user message has high cosine similarity with any greeting anchor, return a personalised canned response instantly using the student's username:
+When `CHAT_ENABLE_GREETING_FILTER=true`, a user message with high cosine similarity to a greeting anchor returns a personalised canned response instantly using the student's username:
 
 > "Hello {username}! I am your AI coding tutor. Ask me a question about programming, mathematics, or physics and I will guide you through it."
 
-No LLM call is made. The response is immediate and free.
+No LLM call is made for this branch.
 
-### 2.3 Topic Relevance Gate
+### 2.3 Topic Relevance Gate (Optional, Disabled by Default)
 
-Pre-embed 53 topic anchors covering programming (13), mathematics general (6), linear algebra (7), calculus and analysis (4), numerical methods (10), Fourier analysis (4), physics (7), and applied science (2):
+Pre-embed **52 topic anchors** (specific STEM/coding phrases) and **20 off-topic anchors** (weather, sports, restaurants, entertainment, small talk, personal assistant questions, and recommendation-style prompts).
 
-**Programming (13):** "programming", "coding", "Python", "algorithm", "data structure", "recursion", "sorting algorithm", "object-oriented programming", "debugging code", "error in my code", "syntax error", "code not working", "how to implement"
+The off-topic gate compares both scores:
+- `topic_max`: best similarity to the topic anchors
+- `off_topic_max`: best similarity to the off-topic anchors
 
-**Mathematics general (6):** "mathematics", "calculus", "statistics", "probability", "trigonometry", "formula derivation"
+When `CHAT_ENABLE_OFF_TOPIC_FILTER=true`, the Vertex profile treats a message as off-topic when the off-topic signal is both strong and clearly stronger than the topic signal (plus a low-topic fallback for very weak domain matches).
 
-**Linear algebra (7):** "linear algebra", "matrix", "eigenvalue", "eigenvector", "matrix decomposition", "LU factorization", "Gaussian elimination"
+This relative comparison is more reliable than a topic-only threshold with Vertex `multimodalembedding@001`, especially for short conversational prompts.
 
-**Calculus and analysis (4):** "integral", "derivative", "differential equation", "Taylor series"
-
-**Numerical methods (10):** "numerical methods", "root finding", "bisection method", "Newton-Raphson method", "Euler method", "Runge-Kutta method", "initial value problem", "boundary value problem", "finite difference method", "numerical integration"
-
-**Fourier analysis (4):** "Fourier transform", "discrete Fourier transform", "FFT", "spectral analysis"
-
-**Physics (7):** "physics", "mechanics", "thermodynamics", "electromagnetism", "quantum mechanics", "wave equation", "simulation"
-
-**Applied (2):** "optimization", "computational science"
-
-If the maximum cosine similarity between the user message and all topic anchors falls below the off-topic threshold, the message is rejected:
+If the message is classified as off-topic, it is rejected:
 
 > "I can only help with programming, mathematics, and science questions. Please ask me something related to these subjects."
 
-No LLM call is made. This prevents misuse and reduces unnecessary API calls.
+No LLM call is made for this branch.
 
-### 2.4 Same-Problem Detection via Semantic Similarity
+### 2.4 Same-Problem Detection via LLM (Default)
 
-This is a core concept from natural language processing: Semantic Similarity measured through embeddings. Sentences with similar meaning produce vectors that are close together in the embedding space, regardless of exact wording.
+By default, same-problem detection is handled by the configured LLM (`CHAT_SAME_PROBLEM_DETECTION_MODE=llm`). The classifier receives:
+- the previous user question,
+- the previous assistant answer, and
+- the current user message.
 
-When a user sends a message, its embedding is compared against the previous Q+A context embedding. The Q+A context embedding is computed by concatenating the previous user question and the assistant's response, then embedding the combined text. This provides richer topic context than comparing against the question alone, because follow-ups often refer to terms from the assistant's answer rather than the original question.
+It returns strict JSON:
+- `same_problem`: whether the student is continuing the same underlying task/problem
+- `is_elaboration`: whether the message is a generic follow-up request with little new topic content (for example, "I don't understand", "explain more", "why?", "show me step by step")
 
-All classification decisions are based purely on semantic similarity, with no arbitrary character length thresholds.
+This gives the LLM enough context to distinguish:
+1. **Substantive follow-ups** (same problem, topic-specific): increment hint level and re-classify difficulty.
+2. **Generic elaboration requests** (same problem, low topic content): increment hint level and keep the existing difficulty.
+3. **New problems**: reset hint level and classify a new difficulty.
 
-**Same-problem detection has two branches:**
+**Optional embedding mode:** Set `CHAT_SAME_PROBLEM_DETECTION_MODE=embedding` to use Q+A context similarity plus elaboration anchors. This mode compares the current message embedding against the cached previous Q+A context embedding and uses the elaboration anchor set for generic follow-ups.
 
-1. **Q+A context similarity (substantive follow-ups):** If the current message has high similarity to the previous Q+A context, it is a follow-up on the same topic. The hint level increments by 1 (capped at 5), and difficulty is re-classified because the message contains topic-specific content worth classifying.
-2. **Elaboration request detection (generic follow-ups):** If Q+A similarity is low but the message matches pre-embedded elaboration request anchors, it is a generic request for more help (e.g. "I don't understand", "explain more", "show me step by step", "why?"). The hint level increments by 1, but difficulty is kept unchanged because the message has no new topic content to classify.
-3. **Neither matches → new problem.** The hint level resets. The effective student level is updated based on performance on the previous problem (see Section 1.3).
+**Elaboration anchors (25 phrases, 8 categories):** not understanding, request more detail, step-by-step, examples, hints/answers, clarification, continuation, and simple interrogatives. These are embedded in the same initialisation batches as the greeting, topic, and off-topic anchors for optional embedding-mode semantics.
 
-**Elaboration anchors (25 phrases, 8 categories):** not understanding, request more detail, step-by-step, examples, hints/answers, clarification, continuation, and simple interrogatives. These are embedded in the same initialisation batch as the greeting and topic anchors.
+For the first message in a session, there is no previous Q+A context, so it is always treated as a new problem.
 
-For the first message in a session, there is no previous embedding, so it is always treated as a new problem.
+**Implementation detail:** The student state caches both the previous Q+A text (for LLM same-problem classification) and the Q+A context embedding (for optional embedding mode and multimodal semantics). After each LLM response, the concatenated question and answer are embedded and stored as the new context reference. Canned responses do not update the context state.
 
-**Implementation detail:** The Q+A context embedding is cached in the student state in memory. After each LLM response, the concatenated question and answer are embedded and stored as the new context reference. Canned responses do not update the context embedding.
+**Implementation:** `backend/app/ai/same_problem_classifier.py` and `backend/app/ai/pedagogy_engine.py`
 
-See `docs/semantic-recognition-testing.md` for all threshold values and calibration data.
+See `docs/semantic-recognition-testing.md` for Vertex semantic threshold values and calibration data used by the optional embedding filters and embedding same-problem mode.
 
-**Why embeddings instead of code hashing:** SHA-256 hashing breaks on minor edits (a single whitespace change produces a completely different hash). Semantic similarity is more robust: it captures meaning rather than exact text, works across different phrasings of the same question, and naturally extends to multimodal inputs (text and images) in Part B.
+**Why keep embedding semantics available:** SHA-256 hashing breaks on minor edits (a single whitespace change produces a completely different hash). Embedding similarity is more robust in the optional semantic paths: it captures meaning rather than exact text, works across different phrasings, and naturally extends to multimodal inputs (text and images) in Part B.
 
 ### 2.5 Problem Difficulty Estimation
 
-Problem difficulty is estimated separately for programming and mathematics on a 1-to-5 scale. A lightweight LLM classification call determines both ratings based on the knowledge required to solve the question, using the level definitions from Section 1.2.
+Problem difficulty is estimated separately for programming and mathematics on a 1-to-5 scale. A lightweight classification call to the configured LLM determines both ratings based on the knowledge required to solve the problem, using the level definitions from Section 1.2.
 
 **How it works:**
 
-1. The user's question is sent to the configured LLM with a short classification prompt that includes the level descriptions for both programming and mathematics.
-2. The LLM replies with a JSON object: `{"programming": N, "maths": N}`.
-3. The response is parsed via `json.loads()` with a regex fallback to extract the two integers. Both values are clamped to the range [1, 5].
+1. The current user message is sent to the configured LLM with a short classification prompt that includes the level descriptions for both programming and mathematics.
+2. For substantive same-problem follow-ups, the classifier also receives the previous Q+A so it can rate the underlying problem rather than the short follow-up wording alone.
+3. The LLM replies with a JSON object: `{"programming": N, "maths": N}`.
+4. The response is parsed via `json.loads()` with a regex fallback to extract the two integers. Both values are clamped to the range [1, 5].
 
 **Fallback:** If the LLM call fails (timeout, rate limit, or unparseable output), both difficulties default to the student's current effective level: `round(effective_programming_level)` and `round(effective_maths_level)`.
 
-**Elaboration requests:** Generic follow-ups detected by elaboration anchors (e.g. "I don't understand", "explain more") retain the current difficulty rather than re-classifying, since the message has no topic content to produce a meaningful rating.
+**Elaboration requests:** Generic follow-ups (identified by the same-problem classifier as `is_elaboration=true`, or by elaboration anchors in embedding mode) retain the current difficulty rather than re-classifying, since the message has no topic content to produce a meaningful rating.
 
-**Substantive follow-ups:** Follow-ups detected by Q+A context similarity contain topic-specific content, so the classifier runs again and the difficulty is updated. This allows the system to refine its estimate as the student elaborates on their question.
+**Substantive follow-ups:** Follow-ups identified as same-problem and topic-specific cause the classifier to run again and update the difficulty. This allows the system to refine its estimate as the student adds detail.
 
 **Starting hint level** is derived from whichever dimension has the larger gap:
 
@@ -309,6 +310,10 @@ async def classify_difficulty(
     question: str,
     fallback_programming: int = 3,
     fallback_maths: int = 3,
+    *,
+    previous_question: str | None = None,
+    previous_answer: str | None = None,
+    same_problem_context: bool = False,
 ) -> tuple[int, int]:
     """Return (programming_difficulty, maths_difficulty), each in [1, 5]."""
 ```
@@ -319,15 +324,13 @@ The complete pipeline for each user message:
 
 ```
 1. Embed the user's input once (single API call; cached if seen before).
-2. Greeting check: high similarity to greeting anchors → canned response. Stop.
-3. Topic relevance: low similarity to all topic anchors → reject. Stop.
-4. Same-problem detection (if previous Q+A context exists):
-   a. Q+A context similarity above threshold → same problem.
-      Increment hint level. Re-classify difficulty via LLM.
-   b. Elaboration anchor similarity above threshold → same problem.
-      Increment hint level. Keep current difficulty.
-   c. Neither → new problem. Update effective levels. Classify difficulty via LLM.
-      Set starting hint level from the larger gap.
+2. Optional greeting filter (disabled by default): high similarity to greeting anchors → canned response. Stop.
+3. Optional off-topic filter (disabled by default): off-topic rule triggers → reject. Stop.
+4. Same-problem detection (if previous Q+A exists):
+   a. Default (`CHAT_SAME_PROBLEM_DETECTION_MODE=llm`): LLM returns `same_problem` / `is_elaboration`.
+   b. Optional embedding mode: Q+A context similarity + elaboration anchors.
+   c. Same problem → increment hint; re-classify difficulty only if not an elaboration request.
+   d. New problem → update effective levels, classify difficulty via LLM, set starting hint from the larger gap.
 5. Pass to LLM with appropriate hint level and student level context.
 ```
 
@@ -339,7 +342,7 @@ The complete pipeline for each user message:
 
 - `chat_sessions` and `chat_messages` database tables.
 - Updated `users` table with hidden effective level fields.
-- An embedding service (Cohere `embed-v4.0` or Voyage AI `voyage-multimodal-3.5`, selectable via `EMBEDDING_PROVIDER`) for pre-filtering, same-problem detection, and difficulty estimation.
+- An embedding service (Vertex AI `multimodalembedding@001` by default, with Cohere and Voyage as supported fallbacks) for multimodal semantics, optional greeting/off-topic filtering, and optional embedding same-problem fallback.
 - An LLM abstraction layer supporting three providers with automatic failover.
 - A pedagogy engine that manages hint levels, student adaptation, and dynamic levelling.
 - A WebSocket endpoint (`/ws/chat`) that streams AI responses.
@@ -446,13 +449,13 @@ class LLMProvider(ABC):
 
 #### Provider implementations
 
-The LLM provider is configured via the `LLM_PROVIDER` environment variable (`anthropic`, `openai`, or `google`, default `anthropic`). If the configured provider's API key is not set, the factory falls back to any provider with a valid key.
+The LLM provider is configured via the `LLM_PROVIDER` environment variable (`anthropic`, `openai`, or `google`, default `google`). In this codebase, `google` means **Vertex AI Gemini** using a Google Cloud service account JSON path (`GOOGLE_APPLICATION_CREDENTIALS`) and automatic Bearer token refresh. If the configured provider is unavailable, the factory falls back to any other configured provider.
 
 | Provider  | Model                | Implementation File  |
 | --------- | -------------------- | -------------------- |
-| Anthropic | Claude Sonnet 4.5    | `llm_anthropic.py` |
-| Google    | Gemini 3 Pro Preview | `llm_google.py`    |
-| OpenAI    | GPT-5.2              | `llm_openai.py`    |
+| Anthropic | Claude Sonnet 4.6 / Claude Haiku 4.5 | `llm_anthropic.py` |
+| Google (Vertex AI) | Gemini 3 Flash Preview / Gemini 3.1 Pro Preview | `llm_google.py` |
+| OpenAI    | GPT-5.2 / GPT-5 mini | `llm_openai.py`    |
 
 Each provider implementation:
 
@@ -467,7 +470,7 @@ Each provider implementation:
 ```python
 def get_llm_provider(settings) -> LLMProvider:
     """Return the configured LLM provider.
-    Reads LLM_PROVIDER (default 'anthropic').
+    Reads LLM_PROVIDER (default 'google').
     Falls back to any provider with a valid API key."""
 ```
 
@@ -486,6 +489,8 @@ class StudentState:
     starting_hint_level: int                 # 1 to 4 (set at start of each problem)
     current_programming_difficulty: int      # 1 to 5
     current_maths_difficulty: int            # 1 to 5
+    last_question_text: str | None           # previous user question text (for LLM same-problem classification)
+    last_answer_text: str | None             # previous assistant answer text (for LLM same-problem classification)
     last_context_embedding: list[float]      # embedding of the previous Q+A context
 ```
 
@@ -501,15 +506,16 @@ async def process_message(
     Returns hint_level, programming_difficulty, maths_difficulty, and any filter result.
 
     1. Embed the user message (single API call).
-    2. Check greeting detection. If greeting, return canned response.
-    3. Check topic relevance. If off-topic, return rejection.
+    2. Optionally check greeting detection (disabled by default). If greeting, return canned response.
+    3. Optionally check topic relevance (disabled by default). If off-topic, return rejection.
     4. Same-problem detection (if previous Q+A context exists):
-       a. Q+A context similarity above threshold: increment hint, re-classify difficulty.
-       b. Elaboration anchor similarity above threshold: increment hint, keep difficulty.
-       c. Neither: new problem. Update effective levels, classify difficulty, set starting hint.
+       a. Default mode (`llm`): classify with previous Q+A text + current message.
+       b. Optional mode (`embedding`): Q+A context similarity + elaboration anchors.
+       c. Same problem: increment hint; re-classify difficulty only for substantive follow-ups.
+       d. New problem: update effective levels, classify difficulty, set starting hint.
     5. Return the hint level, programming difficulty, and maths difficulty.
     6. (After the LLM response is generated, the router calls update_context_embedding()
-       to embed the concatenated Q+A and store it for same-problem detection on the next turn.)
+       to store the previous Q+A text and embed the concatenated Q+A for the next turn.)
     """
 ```
 
@@ -579,8 +585,8 @@ The compression function sends older messages to the LLM with a short summarisat
    6. Build combined embeddings (text + images) for semantics.
    7. Persist the user turn with optional attachment IDs.
    8. Run pedagogy processing:
-      - no attachments: greeting/off-topic/same-problem checks are enabled;
-      - with attachments: greeting/off-topic checks are skipped, then same-problem logic continues.
+      - no attachments: optional greeting/off-topic filters may run, then same-problem logic runs;
+      - with attachments: greeting/off-topic filters are skipped, then same-problem logic continues.
    9. If filtered, send a canned response and store it.
    10. Otherwise, build prompt + context, stream LLM tokens, and send a `done` event with hint and difficulty metadata.
    11. Persist the assistant turn and write effective levels back to `users`.
@@ -706,7 +712,7 @@ When a chat message includes uploaded files:
    - PDF via `pypdf`,
    - plain/code files via text decoding,
    - `.ipynb` by reading notebook JSON and concatenating cell sources.
-3. **Multimodal semantics:** Text and image embeddings are merged into one combined vector for same-problem detection and difficulty flow.
+3. **Multimodal semantics:** Text and image embeddings are merged into one combined vector for optional semantic filters, optional embedding same-problem mode, and context tracking.
 4. **Filter behaviour with attachments:** greeting/off-topic filters are skipped for attachment messages so uploaded learning material is always treated as tutoring context.
 
 ### 5.4 Updated Chat Interface

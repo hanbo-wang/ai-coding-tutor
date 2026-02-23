@@ -20,6 +20,16 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     op.add_column("chat_messages", sa.Column("input_tokens", sa.Integer(), nullable=True))
     op.add_column("chat_messages", sa.Column("output_tokens", sa.Integer(), nullable=True))
+    op.add_column("chat_messages", sa.Column("llm_provider", sa.String(length=32), nullable=True))
+    op.add_column("chat_messages", sa.Column("llm_model", sa.String(length=100), nullable=True))
+    op.add_column("chat_messages", sa.Column("estimated_cost_usd", sa.Float(), nullable=True))
+    op.add_column("chat_messages", sa.Column("llm_usage_json", sa.Text(), nullable=True))
+    op.create_index(
+        "ix_chat_messages_role_created",
+        "chat_messages",
+        ["role", "created_at"],
+        unique=False,
+    )
 
     op.create_table(
         "daily_token_usage",
@@ -63,5 +73,10 @@ def downgrade() -> None:
     op.drop_index("ix_daily_token_usage_user_date", table_name="daily_token_usage")
     op.drop_table("daily_token_usage")
 
+    op.drop_index("ix_chat_messages_role_created", table_name="chat_messages")
+    op.drop_column("chat_messages", "llm_usage_json")
+    op.drop_column("chat_messages", "estimated_cost_usd")
+    op.drop_column("chat_messages", "llm_model")
+    op.drop_column("chat_messages", "llm_provider")
     op.drop_column("chat_messages", "output_tokens")
     op.drop_column("chat_messages", "input_tokens")

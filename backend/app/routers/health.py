@@ -39,7 +39,12 @@ async def ai_health_check(force: bool = False):
     results = await verify_all_keys(
         settings.anthropic_api_key,
         settings.openai_api_key,
-        settings.google_api_key,
+        settings.google_application_credentials,
+        settings.google_cloud_project_id,
+        settings.llm_model_google,
+        settings.google_vertex_gemini_location,
+        settings.embedding_model_vertex,
+        settings.google_vertex_embedding_location,
         settings.cohere_api_key,
         settings.voyageai_api_key,
     )

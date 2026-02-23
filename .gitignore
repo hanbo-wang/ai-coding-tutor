@@ -1,11 +1,13 @@
-# Secrets and environment
+# Secrets and runtime environment files
+# Environment templates are tracked under .github/workflows/templates/.
 .env
 .env.prod
-.env.prod.example
 .env.local
 .env.*.local
-!/.env.example
-# Keep the root local development example in the repository.
+ai-coding-tutor-*.json
+.secrets/
+PRIVATE_DEPLOYMENT_RUNBOOK.md
+
 cookies.txt
 
 # Python artefacts

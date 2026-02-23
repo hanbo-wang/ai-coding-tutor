@@ -2,9 +2,10 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
+from app.ai.difficulty_classifier import classify_difficulty
 from app.ai.embedding_service import EmbeddingService
 from app.ai.llm_base import LLMProvider
-from app.ai.difficulty_classifier import classify_difficulty
+from app.ai.same_problem_classifier import classify_same_problem
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,8 @@ class StudentState:
     starting_hint_level: int = 1
     current_programming_difficulty: int = 3
     current_maths_difficulty: int = 3
+    last_question_text: Optional[str] = field(default=None, repr=False)
+    last_answer_text: Optional[str] = field(default=None, repr=False)
     last_context_embedding: Optional[list[float]] = field(default=None, repr=False)
 
 
@@ -32,9 +35,16 @@ class ProcessResult:
 
 
 class PedagogyEngine:
-    def __init__(self, embedding_service: EmbeddingService, llm: LLMProvider):
+    def __init__(
+        self,
+        embedding_service: EmbeddingService,
+        llm: LLMProvider,
+        same_problem_detection_mode: str = "llm",
+    ):
         self.embedding_service = embedding_service
         self.llm = llm
+        mode = (same_problem_detection_mode or "llm").strip().lower()
+        self.same_problem_detection_mode = mode if mode in {"llm", "embedding"} else "llm"
 
     async def process_message(
         self,
@@ -77,20 +87,44 @@ class PedagogyEngine:
                     ),
                 )
 
-        # 4. Same-problem detection — all decisions based on semantics
-        #    a. Similarity to previous Q+A context → substantive follow-up
-        #    b. Match to elaboration request anchors → generic follow-up
-        #    c. Neither → new problem
+        # 4. Same-problem detection
+        #    Default path: LLM classifier over previous Q+A + current message.
+        #    Optional path: embedding similarity + elaboration anchors.
         is_same_problem = False
         is_elaboration = False
+        embedding_fallback_same_problem = False
+        embedding_fallback_is_elaboration = False
         if student_state.last_context_embedding is not None and embedding:
             if self.embedding_service.check_same_problem(
                 embedding, student_state.last_context_embedding
             ):
-                is_same_problem = True
+                embedding_fallback_same_problem = True
             elif self.embedding_service.check_elaboration_request(embedding):
-                is_same_problem = True
-                is_elaboration = True
+                embedding_fallback_same_problem = True
+                embedding_fallback_is_elaboration = True
+        has_previous_exchange = bool(
+            (student_state.last_question_text or "").strip()
+            and (student_state.last_answer_text or "").strip()
+        )
+        if has_previous_exchange:
+            if self.same_problem_detection_mode == "llm":
+                llm_same, llm_elaboration = await classify_same_problem(
+                    self.llm,
+                    current_message=user_message,
+                    previous_question=student_state.last_question_text or "",
+                    previous_answer=student_state.last_answer_text or "",
+                    fallback_same_problem=embedding_fallback_same_problem,
+                    fallback_is_elaboration=embedding_fallback_is_elaboration,
+                )
+                is_same_problem = llm_same
+                is_elaboration = llm_elaboration
+            else:
+                is_same_problem = embedding_fallback_same_problem
+                is_elaboration = embedding_fallback_is_elaboration
+        elif student_state.last_context_embedding is not None and embedding:
+            # Safety fallback when old in-memory state has an embedding but not text context.
+            is_same_problem = embedding_fallback_same_problem
+            is_elaboration = embedding_fallback_is_elaboration
 
         if is_same_problem:
             # Increment hint level (cap at 5)
@@ -99,17 +133,20 @@ class PedagogyEngine:
             maths_diff = student_state.current_maths_difficulty
 
             # Substantive follow-ups (caught by Q+A similarity) re-classify difficulty.
-            # Generic elaboration requests (caught by elaboration anchors) keep difficulty.
+            # Generic elaboration requests keep difficulty.
             if not is_elaboration:
                 prog_diff, maths_diff = await classify_difficulty(
                     self.llm,
                     user_message,
                     fallback_programming=prog_diff,
                     fallback_maths=maths_diff,
+                    previous_question=student_state.last_question_text,
+                    previous_answer=student_state.last_answer_text,
+                    same_problem_context=True,
                 )
         else:
             # New problem: update effective levels from previous interaction
-            if student_state.last_context_embedding is not None:
+            if student_state.last_context_embedding is not None or has_previous_exchange:
                 self._update_effective_levels(student_state)
 
             # Classify difficulty via LLM
@@ -201,3 +238,5 @@ class PedagogyEngine:
             embedding = await self.embedding_service.embed_text(combined)
         if embedding:
             student_state.last_context_embedding = embedding
+        student_state.last_question_text = question
+        student_state.last_answer_text = answer

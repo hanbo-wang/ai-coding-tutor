@@ -18,6 +18,7 @@ class LLMUsage:
     """Token usage reported by the LLM API after a call completes."""
     input_tokens: int = 0
     output_tokens: int = 0
+    usage_details: dict = field(default_factory=dict)
 
 
 class LLMProvider(ABC):
@@ -29,6 +30,8 @@ class LLMProvider(ABC):
 
     def __init__(self) -> None:
         self.last_usage: LLMUsage = LLMUsage()
+        self.provider_id: str = "unknown"
+        self.model_id: str = "unknown"
 
     @abstractmethod
     async def generate_stream(

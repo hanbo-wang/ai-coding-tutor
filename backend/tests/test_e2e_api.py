@@ -1,6 +1,6 @@
 """Backend API end-to-end tests."""
 
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 import pytest_asyncio
@@ -120,9 +120,15 @@ async def test_e2e_usage_and_session_list_for_new_user(e2e_client: AsyncClient) 
     usage_response = await e2e_client.get("/api/chat/usage", headers=headers)
     assert usage_response.status_code == 200
     usage = usage_response.json()
-    assert usage["date"] == date.today().isoformat()
+    week_start = date.today() - timedelta(days=date.today().weekday())
+    week_end = week_start + timedelta(days=6)
+    assert usage["week_start"] == week_start.isoformat()
+    assert usage["week_end"] == week_end.isoformat()
     assert usage["input_tokens_used"] == 0
     assert usage["output_tokens_used"] == 0
+    assert usage["weighted_tokens_used"] == 0.0
+    assert usage["remaining_weighted_tokens"] == 80000.0
+    assert usage["weekly_weighted_limit"] == 80000
     assert usage["usage_percentage"] == 0.0
 
     sessions_response = await e2e_client.get("/api/chat/sessions", headers=headers)

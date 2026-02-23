@@ -17,13 +17,14 @@ class _FakeAggregateResult:
 
 
 class _FakeAsyncSession:
-    def __init__(self, row: tuple[int, int]) -> None:
-        self.row = row
+    def __init__(self, rows: list[tuple]) -> None:
+        self.rows = rows
         self.executed = []
 
     async def execute(self, statement):
         self.executed.append(statement)
-        return _FakeAggregateResult(self.row)
+        row = self.rows.pop(0)
+        return _FakeAggregateResult(row)
 
 
 def test_cost_calculation(monkeypatch) -> None:
@@ -50,11 +51,15 @@ def test_cost_zero_tokens(monkeypatch) -> None:
 async def test_aggregate_usage_returns_totals_and_cost(monkeypatch) -> None:
     """Usage aggregation should include summed tokens and estimated cost."""
     monkeypatch.setattr("app.routers.admin.settings.llm_provider", "anthropic")
-    db = _FakeAsyncSession((1234, 5678))
+    db = _FakeAsyncSession([
+        (1234, 5678),        # daily_token_usage totals
+        (0.1234, 10, 8),     # cost sum, assistant count, cost count
+    ])
 
     usage = await _aggregate_usage(db, start_date=date(2026, 1, 1))
 
-    assert len(db.executed) == 1
+    assert len(db.executed) == 2
     assert usage["input_tokens"] == 1234
     assert usage["output_tokens"] == 5678
-    assert usage["estimated_cost_usd"] == _estimate_cost(1234, 5678)
+    assert usage["estimated_cost_usd"] == 0.1234
+    assert usage["estimated_cost_coverage"] == 0.8

@@ -1,25 +1,27 @@
 # Semantic Recognition Testing
 
-This document records the calibration testing for the four embedding-based pre-filters used in the chat pipeline: greeting detection, off-topic filtering, same-problem detection, and elaboration request detection. All tests use the Cohere `embed-v4.0` model with 256 dimensions (reduced from 1536 via Matryoshka embeddings for faster computation). Voyage AI `voyage-multimodal-3.5` is available as a fallback for all embedding tasks.
+This document records the calibration testing for the **Vertex AI embedding-based semantic checks** used by the chat pipeline: greeting detection, off-topic filtering, optional embedding same-problem detection, and elaboration request detection.
+
+All calibration data in this document comes from **Vertex AI `multimodalembedding@001` (256 dimensions)**, which is the default embedding provider in the application.
 
 Cosine similarity is computed using NumPy vectorised matrix operations.
 
-The test script is at `backend/tests/test_semantic_thresholds.py`.
+The calibration script is at `backend/tests/test_semantic_thresholds.py`. It imports anchors and threshold profiles directly from `backend/app/ai/embedding_service.py` and runs against Vertex AI `multimodalembedding@001`.
 
 ## 1. Overview
 
-Before each user message reaches the LLM, four cosine similarity checks run on the embedding vector:
+The application stores and reuses embeddings for multimodal semantics. When the optional greeting/off-topic filters are enabled, or when embedding same-problem mode is selected, the following cosine-similarity checks are used:
 
-| Check | Purpose | Trigger condition |
-|-------|---------|-------------------|
-| Greeting | Return a canned welcome message | Max similarity to 14 greeting anchors > 0.75 |
-| Off-topic | Reject messages unrelated to STEM | Max similarity to 53 topic anchors < 0.30 |
-| Same-problem | Increment hint level instead of resetting | Similarity to previous Q+A context > 0.35 |
-| Elaboration request | Treat as same problem (keep difficulty) | Max similarity to 25 elaboration anchors > 0.50 |
+| Check | Default status | Purpose | Trigger condition (Vertex profile) |
+|-------|----------------|---------|------------------------------------|
+| Greeting | Disabled | Return a canned welcome message | Max similarity to 14 greeting anchors > 0.915 |
+| Off-topic | Disabled | Reject messages unrelated to STEM | (`off_topic_max >= 0.80` and `off_topic_max - topic_max >= 0.07`) or `topic_max < 0.68` |
+| Same-problem (embedding mode) | Optional | Increment hint level instead of resetting | Similarity to previous Q+A context > 0.73 |
+| Elaboration request | Used in embedding same-problem mode | Treat as same problem (keep difficulty) | Max similarity to 25 elaboration anchors > 0.88 |
 
-Design philosophy: filters should be **lenient**. Only obvious greetings and clearly off-topic messages should bypass the LLM. Borderline cases always pass through so the student gets a helpful, natural response.
+Design philosophy: the semantic gates should be **lenient**. Only obvious greetings and clearly unrelated chat should bypass the LLM when the optional filters are enabled. Borderline cases pass through so the student gets a helpful, natural response.
 
-All classification decisions are based on semantic similarity with no arbitrary character length thresholds.
+The default same-problem and difficulty decisions are made by the configured LLM. This document calibrates the Vertex embedding thresholds used by the optional semantic filters and embedding fallback mode.
 
 ## 2. Reference Anchors
 
@@ -27,25 +29,43 @@ All classification decisions are based on semantic similarity with no arbitrary 
 
 `hello`, `hi`, `hey`, `good morning`, `good afternoon`, `good evening`, `how are you`, `what's up`, `hi there`, `hey there`, `hello there`, `good day`, `howdy`, `greetings`
 
-### 2.2 Topic anchors (53 phrases)
+### 2.2 Topic anchors (52 phrases)
 
-**Programming (13):** `programming`, `coding`, `Python`, `algorithm`, `data structure`, `recursion`, `sorting algorithm`, `object-oriented programming`, `debugging code`, `error in my code`, `syntax error`, `code not working`, `how to implement`
+The topic anchor set uses **specific STEM and coding phrases** (rather than mostly single-word labels) to reduce false matches on general chat with Vertex embeddings.
 
-**Mathematics general (6):** `mathematics`, `calculus`, `statistics`, `probability`, `trigonometry`, `formula derivation`
+It covers:
+- programming and debugging (algorithms, data structures, Python errors, tests)
+- mathematics and calculus (derivatives, integrals, proofs, probability, trigonometry)
+- linear algebra (matrices, eigenvalues, decomposition, LU, SVD)
+- numerical methods (root finding, ODE solvers, IVP/BVP, finite differences, integration)
+- Fourier/signal processing
+- physics (mechanics, thermodynamics, electromagnetism, quantum mechanics, wave equations)
+- applied/scientific computing and optimisation
 
-**Linear algebra (7):** `linear algebra`, `matrix`, `eigenvalue`, `eigenvector`, `matrix decomposition`, `LU factorization`, `Gaussian elimination`
+Representative anchors:
+- `binary search algorithm implementation`
+- `syntax error type error index error debugging`
+- `calculus derivative and integral problem solving`
+- `LU factorisation Gaussian elimination`
+- `solve ODE using Runge Kutta method`
+- `discrete Fourier transform FFT algorithm`
+- `quantum mechanics Schrodinger equation wavefunction`
+- `computational science numerical simulation`
 
-**Calculus and analysis (4):** `integral`, `derivative`, `differential equation`, `Taylor series`
+### 2.3 Off-topic anchors (20 phrases)
 
-**Numerical methods (10):** `numerical methods`, `root finding`, `bisection method`, `Newton-Raphson method`, `Euler method`, `Runge-Kutta method`, `initial value problem`, `boundary value problem`, `finite difference method`, `numerical integration`
+The off-topic anchor set covers common non-tutoring chat categories so the filter can compare **topic vs off-topic** similarity directly.
 
-**Fourier analysis (4):** `Fourier transform`, `discrete Fourier transform`, `FFT`, `spectral analysis`
+It includes:
+- weather (`weather forecast and temperature today`)
+- sports (`football match result and sports scores`)
+- food/restaurants (`pizza restaurant review and takeaway`)
+- entertainment (`movie recommendation and film review`)
+- jokes/small talk (`tell me a joke or funny story`, `general chit chat small talk conversation`)
+- personal assistant questions (`what time is it right now`, `who are you and what is your name`)
+- life/travel/shopping recommendations (`life advice and career choice guidance`, `travel planning and holiday recommendations`)
 
-**Physics (7):** `physics`, `mechanics`, `thermodynamics`, `electromagnetism`, `quantum mechanics`, `wave equation`, `simulation`
-
-**Applied (2):** `optimization`, `computational science`
-
-### 2.3 Elaboration anchors (25 phrases, 8 categories)
+### 2.4 Elaboration anchors (25 phrases, 8 categories)
 
 **Not understanding (4):** `I don't understand`, `I'm confused`, `that doesn't make sense`, `I still don't get it`
 
@@ -67,140 +87,103 @@ All classification decisions are based on semantic similarity with no arbitrary 
 
 ### 3.1 True greetings
 
-| Phrase | Max similarity | Result (> 0.75) |
-|--------|---------------|-----------------|
-| hello | 0.9998 | GREETING |
-| hi there | 0.9998 | GREETING |
-| hey | 0.9998 | GREETING |
-| good morning | 0.9998 | GREETING |
-| howdy | 0.9998 | GREETING |
-| what's up | 1.0000 | GREETING |
-| yo | 0.4642 | pass |
-| greetings | 0.9998 | GREETING |
-| hello hello | 0.7650 | GREETING |
-| hi hi hi | 0.7377 | pass |
-| good day | 0.9999 | GREETING |
-| hey there | 0.9999 | GREETING |
-| hello there | 0.9998 | GREETING |
-| good afternoon | 0.9999 | GREETING |
+| Phrase | Max similarity | Result (> 0.915) |
+|--------|---------------:|------------------|
+| hello | 1.0000 | GREETING |
+| yo | 0.9394 | GREETING |
+| hello hello | 0.9390 | GREETING |
+| hi hi hi | 0.9182 | GREETING |
+| good afternoon | 1.0000 | GREETING |
 
 ### 3.2 False positives (should NOT trigger greeting)
 
-| Phrase | Max similarity | Result (> 0.75) |
-|--------|---------------|-----------------|
-| say hello world in Python | 0.5273 | pass |
-| hello world program | 0.5881 | pass |
-| print hello | 0.6065 | pass |
-| implement a greeting function | 0.6354 | pass |
-| the hello protocol | 0.6393 | pass |
-| good morning routine algorithm | 0.5504 | pass |
-| greetings card design in CSS | 0.4889 | pass |
+| Phrase | Max similarity | Result (> 0.915) |
+|--------|---------------:|------------------|
+| print hello | 0.9126 | pass |
+| implement a greeting function | 0.8720 | pass |
+| the hello protocol | 0.7983 | pass |
+| greetings card design in CSS | 0.8073 | pass |
 
 ### 3.3 Greeting with embedded question (should NOT trigger)
 
-| Phrase | Max similarity | Result (> 0.75) |
-|--------|---------------|-----------------|
-| Hello, how do I reverse a list? | 0.2610 | pass |
-| Hi, can you help me with Python? | 0.4820 | pass |
-| Hey, what is calculus? | 0.3198 | pass |
-| Good morning, I need help with my code | 0.5403 | pass |
-| Hi there, explain eigenvalues please | 0.4131 | pass |
+| Phrase | Max similarity | Result (> 0.915) |
+|--------|---------------:|------------------|
+| Hello, how do I reverse a list? | 0.7748 | pass |
+| Hi, can you help me with Python? | 0.7478 | pass |
+| Good morning, I need help with my code | 0.7980 | pass |
+| Hi there, explain eigenvalues please | 0.7583 | pass |
 
 ### 3.4 Analysis
 
-True greetings that match an anchor template score ~1.00. Non-template greetings like "hello hello" (0.77) and "hi hi hi" (0.74) score lower due to repetition altering the embedding.
+Vertex greeting scores are tightly clustered at the high end, so the greeting threshold is much higher than the other semantic thresholds in this file.
 
-False positives peak at 0.64 ("the hello protocol"), giving a gap of 0.13 from the lowest true positive caught (0.77 "hello hello").
+Observed ranges from the calibration run:
+- True greetings: **0.9182 to 1.0000**
+- Greeting false positives: **0.7983 to 0.9126**
+- Greeting + question: **0.7355 to 0.7980**
 
-Greetings combined with a question (e.g. "Hello, how do I reverse a list?") score below 0.54 and always pass through to the LLM.
-
-**Threshold: > 0.75.** Catches 12 of 14 test greetings (86%). "yo" and "hi hi hi" are missed and handled naturally by the LLM.
+**Threshold: > 0.915.** This run catches **14/14** true greetings, with **0/7** false positives and **0/5** greeting+question prompts crossing the threshold.
 
 ## 4. Off-Topic Filtering
 
+Vertex off-topic filtering uses a **dual-anchor rule**:
+- compare the message against the topic anchors (`topic_max`), and
+- compare the same message against the off-topic anchors (`off_topic_max`).
+
+A message is treated as off-topic when the off-topic signal is both strong and clearly stronger than the topic signal.
+
 ### 4.1 On-topic messages
 
-| Phrase | Max similarity | Result (< 0.30) |
-|--------|---------------|-----------------|
-| how to sort a list in Python | 0.6084 | pass |
-| explain binary search | 0.5187 | pass |
-| implement a linked list | 0.4612 | pass |
-| how do I debug a segfault | 0.4623 | pass |
-| what is a recursive function | 0.7203 | pass |
-| explain object-oriented programming | 0.8527 | pass |
-| how to read a CSV file in Python | 0.4736 | pass |
-| what does this error mean: IndexError | 0.4861 | pass |
-| what is the derivative of x squared | 0.6281 | pass |
-| solve this differential equation | 0.7398 | pass |
-| explain eigenvalues | 0.7513 | pass |
-| how to compute a definite integral | 0.6360 | pass |
-| what is the determinant of a matrix | 0.4928 | pass |
-| explain Bayes theorem | 0.5113 | pass |
-| how to prove by induction | 0.4008 | pass |
-| Newton's second law | 0.5521 | pass |
-| explain the Schrodinger equation | 0.5088 | pass |
-| what is conservation of energy | 0.3830 | pass |
-| how does electromagnetic induction work | 0.5764 | pass |
-| explain the second law of thermodynamics | 0.5612 | pass |
-| find the eigenvalues of this matrix | 0.5848 | pass |
-| how does LU factorization work | 0.8552 | pass |
-| explain the bisection method | 0.9023 | pass |
-| solve this ODE using Runge-Kutta | 0.7989 | pass |
-| what is an initial value problem | 0.8660 | pass |
-| explain the boundary value problem | 0.8886 | pass |
-| compute the Fourier transform of this signal | 0.6140 | pass |
-| what is the FFT algorithm | 0.7866 | pass |
-| how to apply Newton-Raphson method | 0.8557 | pass |
-| explain finite difference method | 0.9141 | pass |
-| numerical integration using trapezoidal rule | 0.7213 | pass |
-| singular value decomposition of a matrix | 0.6443 | pass |
+| Phrase | Topic | Off | Delta (Off-Topic minus Topic) | Result |
+|--------|------:|----:|------------------------------:|--------|
+| how to sort a list in Python | 0.9151 | 0.7487 | -0.1664 | pass |
+| how do I debug a segfault | 0.8046 | 0.7999 | -0.0046 | pass |
+| solve this ODE using Runge-Kutta | 0.6943 | 0.6548 | -0.0395 | pass |
+| explain finite difference method | 0.8781 | 0.8567 | -0.0214 | pass |
 
 ### 4.2 Off-topic messages
 
-| Phrase | Max similarity | Result (< 0.30) |
-|--------|---------------|-----------------|
-| what's the weather today | 0.2398 | OFF-TOPIC |
-| tell me a joke | 0.4675 | pass |
-| who won the football | 0.2628 | OFF-TOPIC |
-| best pizza in London | 0.1538 | OFF-TOPIC |
-| what's your name | 0.1902 | OFF-TOPIC |
-| how old are you | 0.2602 | OFF-TOPIC |
-| what is love | 0.2890 | OFF-TOPIC |
-| recommend a good movie | 0.3968 | pass |
-| what time is it | 0.2646 | OFF-TOPIC |
-| what career should I choose | 0.2392 | OFF-TOPIC |
+| Phrase | Topic | Off | Delta (Off-Topic minus Topic) | Result |
+|--------|------:|----:|------------------------------:|--------|
+| what's the weather today | 0.7357 | 0.8123 | 0.0766 | OFF-TOPIC |
+| tell me a joke | 0.7418 | 0.9429 | 0.2011 | OFF-TOPIC |
+| best pizza in London | 0.7539 | 0.8282 | 0.0743 | OFF-TOPIC |
+| what time is it | 0.7583 | 0.9390 | 0.1807 | OFF-TOPIC |
+| what career should I choose | 0.8005 | 0.8825 | 0.0820 | OFF-TOPIC |
 
 ### 4.3 Borderline messages
 
-| Phrase | Max similarity | Result (< 0.30) |
-|--------|---------------|-----------------|
-| what is machine learning | 0.4539 | pass |
-| how does AI work | 0.3800 | pass |
-| explain neural networks | 0.3888 | pass |
-| what is computer science | 0.6678 | pass |
-| help me with my homework | 0.5941 | pass |
-| I have an exam tomorrow | 0.4408 | pass |
-| can you help me study | 0.3823 | pass |
-| translate this to French | 0.5389 | pass |
+| Phrase | Topic | Off | Delta (Off-Topic minus Topic) | Result |
+|--------|------:|----:|------------------------------:|--------|
+| what is machine learning | 0.8264 | 0.8277 | 0.0013 | pass |
+| help me with my homework | 0.7954 | 0.8468 | 0.0514 | pass |
+| I have an exam tomorrow | 0.7802 | 0.8434 | 0.0632 | pass |
+| translate this to French | 0.7530 | 0.8154 | 0.0624 | pass |
 
 ### 4.4 Analysis
 
-The 53 topic anchors give strong coverage of numerical computation topics. Questions about bisection method (0.90), boundary value problem (0.89), finite difference method (0.91), and LU factorisation (0.86) all score above 0.85.
+The dual-anchor design produces much cleaner separation than a topic-only threshold with Vertex embeddings.
 
-Score distributions:
-- On-topic: 0.38 to 0.91 (minimum: "what is conservation of energy" at 0.38)
-- Off-topic: 0.15 to 0.47 (maximum: "tell me a joke" at 0.47)
-- Borderline: 0.38 to 0.67
+Observed ranges from the calibration run:
+- On-topic: `topic_max` **0.6943 to 0.9507**, `off_topic_max` **0.5883 to 0.8567**, delta **-0.3521 to -0.0046**
+- Off-topic: `topic_max` **0.7357 to 0.8005**, `off_topic_max` **0.8123 to 0.9429**, delta **0.0743 to 0.2011**
+- Borderline: `topic_max` **0.7371 to 0.8461**, `off_topic_max` **0.7988 to 0.8468**, delta **-0.0230 to 0.0632**
 
-A threshold of **0.30** catches 8 of 10 off-topic messages. The two that pass through ("tell me a joke" at 0.47 and "recommend a good movie" at 0.40) are handled by the LLM, which redirects the student naturally. All on-topic messages score above 0.38, giving a gap of 0.08.
+The most useful separator is the **delta** (`off_topic_max - topic_max`):
+- On-topic sample max delta: **-0.0046**
+- Off-topic sample min delta: **0.0743**
+- Borderline sample max delta: **0.0632**
 
-"translate this to French" (0.54) sits in the borderline category because translation is a legitimate language task that the LLM can handle.
+**Vertex rule:** `off_topic_max >= 0.80` and delta `>= 0.07`, with a low-topic fallback `topic_max < 0.68`.
 
-**Threshold: < 0.30.** Catches clearly unrelated inputs while allowing all STEM and borderline content through.
+On this calibration run, that yields:
+- **On-topic:** 32/32 pass
+- **Off-topic:** 10/10 rejected
+- **Borderline:** 8/8 pass
 
-## 5. Same-Problem Detection
+## 5. Same-Problem Detection (Optional Embedding Mode)
 
-Same-problem detection compares the current user message against the previous Q+A context (the concatenated previous question and assistant response). This provides richer topic context than comparing against the question alone because follow-ups often refer to terms from the answer.
+The default same-problem decision in the application is made by the configured LLM using the previous Q+A text and the current message. This section calibrates the **optional embedding-based same-problem mode** (`CHAT_SAME_PROBLEM_DETECTION_MODE=embedding`), which compares the current user message against the previous Q+A context embedding.
 
 ### 5.1 Same-problem pairs (Q+A context)
 
@@ -211,136 +194,114 @@ Each pair shows the original question, the assistant's answer snippet, and the f
 - A: "You can use slicing with [::-1] or the built-in reversed() function."
 
 | Follow-up | vs Q+A |
-|-----------|--------|
-| can you explain the reversal more? | 0.3907 |
+|-----------|-------:|
+| can you explain the reversal more? | 0.7537 |
 
 **Pair 2:**
 - Q: "what is the derivative of sin(x)"
 - A: "The derivative of sin(x) is cos(x). This follows from the limit definition."
 
 | Follow-up | vs Q+A |
-|-----------|--------|
-| I don't understand, show me step by step | 0.2031 |
+|-----------|-------:|
+| I don't understand, show me step by step | 0.6058 |
 
 **Pair 3:**
 - Q: "implement binary search"
 - A: "Binary search works by repeatedly dividing the search interval in half. Check the middle element."
 
 | Follow-up | vs Q+A |
-|-----------|--------|
-| what about the edge cases for binary search? | 0.5002 |
-
-**Pair 4:**
-- Q: "how to sort a list in Python"
-- A: "You could use quicksort or mergesort. Python's built-in sorted() uses Timsort."
-
-| Follow-up | vs Q+A |
-|-----------|--------|
-| tell me more about mergesort | 0.4409 |
-
-**Pair 5:**
-- Q: "explain the Schrodinger equation"
-- A: "The time-dependent Schrodinger equation describes the wavefunction evolution: ih_bar d/dt psi = H psi."
-
-| Follow-up | vs Q+A |
-|-----------|--------|
-| can you show the derivation? | 0.1086 |
+|-----------|-------:|
+| what about the edge cases for binary search? | 0.7396 |
 
 ### 5.2 Different-problem pairs
 
 | Question A | Question B | Similarity |
-|-----------|-----------|-----------|
-| how to reverse a list in Python | what is the derivative of sin(x) | 0.2221 |
-| implement binary search | explain Newton's second law | 0.2125 |
-| explain eigenvalues | how to read a CSV file in Python | 0.1756 |
-| what is conservation of energy | explain object-oriented programming | 0.2890 |
+|-----------|-----------|-----------:|
+| how to reverse a list in Python | what is the derivative of sin(x) | 0.6613 |
+| implement binary search | explain Newton's second law | 0.7085 |
+| explain eigenvalues | how to read a CSV file in Python | 0.6720 |
+| what is conservation of energy | explain object-oriented programming | 0.6973 |
 
 ### 5.3 Vague follow-ups vs Q+A context
 
 Base Q: "how to reverse a list in Python"
+
 Base A: "You can use slicing with [::-1] or the built-in reversed() function. The slice notation creates a new list in reverse order."
 
 | Follow-up | vs Q+A |
-|-----------|--------|
-| I don't understand | 0.1226 |
-| explain more | 0.0435 |
-| show me the answer | 0.0283 |
-| can you elaborate? | 0.0291 |
-| why? | 0.2263 |
-| what do you mean | 0.0594 |
+|-----------|-------:|
+| I don't understand | 0.7210 |
+| explain more | 0.7305 |
+| show me the answer | 0.7064 |
+| can you elaborate? | 0.6094 |
+| why? | 0.6720 |
+| what do you mean | 0.7275 |
 
 ### 5.4 Analysis
 
-Same-problem pairs with Q+A context:
-- Topic-specific follow-ups: 0.39 to 0.50 (caught by threshold)
-- Generic follow-ups: 0.10 to 0.20 (below threshold, caught instead by elaboration request detection in section 6)
+Vertex same-problem scores overlap with different-problem scores in this calibration set, so the threshold is tuned for precision rather than recall.
 
-Different-problem pairs score 0.18 to 0.29. A threshold of **0.35** sits between different problems (max 0.29) and the weakest topical follow-up (0.39), giving a margin of 0.06 on each side.
+Observed ranges from the calibration run:
+- Same-problem pairs: **0.6058 to 0.7537**
+- Different-problem pairs: **0.6613 to 0.7085**
+- Vague follow-ups vs Q+A: **0.6094 to 0.7305**
 
-Q+A context improves detection when the follow-up refers to terms from the assistant's answer. "tell me more about mergesort" scores 0.44 against Q+A because the answer mentioned mergesort, even though the original question was about sorting a list.
-
-Vague follow-ups ("I don't understand", "explain more", "why?") all score below 0.23 against Q+A context. These are caught by elaboration request detection instead.
-
-**Threshold: > 0.35.** Captures follow-ups that share topic vocabulary with the Q+A context.
+**Threshold: > 0.73.** In this run it catches **3/5** explicit same-problem follow-ups, **0/4** different-problem pairs, and **1/6** vague follow-ups. Generic follow-ups are also covered by the elaboration detector in embedding mode.
 
 ## 6. Elaboration Request Detection
 
-Elaboration request detection identifies generic follow-ups that ask for clarification, more detail, examples, or continuation. These messages do not share topic vocabulary with the previous Q+A context (so they fail same-problem detection), but they clearly refer to the ongoing conversation.
-
-The check runs only when a previous Q+A context exists and same-problem similarity is below threshold. If a message matches elaboration anchors, it is treated as same-problem with the current difficulty preserved (no re-classification needed since the message has no new topic content).
-
-Test phrases are **variations** of the anchors, not exact copies, to verify generalisation.
+Elaboration detection captures generic follow-up messages such as confusion, requests for more detail, and continuation prompts. These can be treated as same-problem even when topic vocabulary is sparse.
 
 ### 6.1 True positives (should score HIGH)
 
-| Phrase | Max similarity | Result (> 0.50) |
-|--------|---------------|-----------------|
-| I really don't understand this | 0.8475 | ELABORATION |
-| I'm so confused right now | 0.8574 | ELABORATION |
-| that makes no sense to me | 0.7955 | ELABORATION |
-| can you explain that more | 0.8206 | ELABORATION |
-| please elaborate on that | 0.6272 | ELABORATION |
-| show me how step by step | 0.9686 | ELABORATION |
-| give me an example please | 0.8991 | ELABORATION |
-| just give me the answer | 0.7808 | ELABORATION |
-| what does that mean | 0.6252 | ELABORATION |
-| please continue | 0.6984 | ELABORATION |
-| why is that | 0.6251 | ELABORATION |
-| how come | 0.5614 | ELABORATION |
-| solve this equation | 0.6348 | ELABORATION |
+| Phrase | Max similarity | Result (> 0.88) |
+|--------|---------------:|-----------------|
+| I really don't understand this | 0.9491 | ELABORATION |
+| show me how step by step | 0.9535 | ELABORATION |
+| give me an example please | 0.9792 | ELABORATION |
+| how come | 0.8927 | ELABORATION |
+| solve this equation | 0.7628 | pass |
 
 ### 6.2 False positives (should score LOW)
 
-| Phrase | Max similarity | Result (> 0.50) |
-|--------|---------------|-----------------|
-| what is calculus | 0.2474 | pass |
-| explain eigenvalues | 0.3473 | pass |
-| how to sort a list | 0.3202 | pass |
-| what is recursion | 0.3214 | pass |
-| define a matrix | 0.2783 | pass |
-| what is the FFT | 0.3111 | pass |
+| Phrase | Max similarity | Result (> 0.88) |
+|--------|---------------:|-----------------|
+| what is calculus | 0.8074 | pass |
+| explain eigenvalues | 0.8014 | pass |
+| how to sort a list | 0.8620 | pass |
+| what is recursion | 0.7476 | pass |
 
 ### 6.3 Analysis
 
-True positives range from 0.56 to 0.97. All 13 test phrases score well above the threshold, demonstrating good generalisation from the 25 anchors.
+Vertex elaboration similarities sit in a high band, but this check remains useful with a higher threshold.
 
-"solve this equation" (0.63) is correctly classified as an elaboration request. It is an imperative demand semantically close to anchors like "just tell me" and "show me the answer". In the context of the pipeline, this message would only reach the elaboration check if it did not match the previous Q+A context, meaning it is being used generically rather than referring to a specific new equation.
+Observed ranges from the calibration run:
+- Elaboration true positives: **0.7628 to 0.9792**
+- Elaboration false positives: **0.7476 to 0.8620**
 
-False positives: all 6 new-topic questions score below 0.35 (max: "explain eigenvalues" at 0.35). The gap between the lowest true positive (0.56 "how come") and the highest false positive (0.35) is 0.21, giving very clean separation.
-
-**Threshold: > 0.50.** Catches all 13 true positive variations. No false positives cross the threshold.
+**Threshold: > 0.88.** This run catches **12/13** elaboration-style prompts and **0/6** false positives. The missed phrase ("solve this equation") is a reasonable pass-through case for the LLM.
 
 ## 7. Threshold Summary
 
-| Check | Threshold | Rationale |
-|-------|-----------|-----------|
-| Greeting | > 0.75 | Catches 12 obvious greetings (0.77 to 1.00). All false positives below 0.64. Gap of 0.13. |
-| Off-topic | < 0.30 | Catches 8 clearly unrelated inputs (0.15 to 0.29). All on-topic above 0.38. Gap of 0.08. |
-| Same-problem | > 0.35 | Catches topical follow-ups (0.39+). Different problems at 0.29 max. Gap of 0.06 each side. |
-| Elaboration request | > 0.50 | Catches generic follow-ups (0.56+). New-topic questions below 0.35. Gap of 0.21. |
+| Check | Threshold (Vertex profile) | Behaviour on this calibration run |
+|-------|----------------------------|-----------------------------------|
+| Greeting | > 0.915 | Clean separation in this sample: 14/14 true greetings, no false positives. |
+| Off-topic | `off_topic_max >= 0.80` and delta `>= 0.07` (fallback `topic_max < 0.68`) | 10/10 off-topic rejected, 32/32 on-topic passed, 8/8 borderline passed. |
+| Same-problem (embedding mode) | > 0.73 | Precision-biased; catches explicit topical follow-ups and avoids cross-topic matches in this sample. |
+| Elaboration request | > 0.88 | Strong signal for generic follow-ups; 12/13 true positives with no false positives in this sample. |
+
+These values match the `vertex` threshold profile in `backend/app/ai/embedding_service.py`.
 
 ## 8. Limitations
 
-1. Off-topic detection has partial overlap between on-topic and off-topic score distributions. "tell me a joke" (0.47) scores higher than some on-topic queries. The threshold catches only clearly irrelevant inputs. The LLM handles borderline off-topic content naturally.
-2. Same-problem detection misses generic follow-ups that lack topic vocabulary (e.g. "I don't understand" scores 0.12). These are caught by elaboration request detection instead.
-3. At 256 dimensions, scores are slightly less precise than at 1536 dimensions, but the threshold gaps remain sufficient for reliable classification.
+1. This is a calibration snapshot, not a benchmark. Scores will vary slightly as providers evolve their models.
+2. The off-topic filter depends on both the topic-anchor set and the off-topic-anchor set. Re-calibrate when either set changes materially.
+3. Embedding same-problem detection is precision-biased for Vertex. Some valid follow-ups are handled through the elaboration detector or the default LLM same-problem classifier.
+4. Re-run calibration after major anchor changes or provider/model changes.
+
+## Reproducing the Calibration
+
+```bash
+cd backend
+python -m tests.test_semantic_thresholds
+```

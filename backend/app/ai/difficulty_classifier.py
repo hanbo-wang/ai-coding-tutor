@@ -68,16 +68,36 @@ async def classify_difficulty(
     question: str,
     fallback_programming: int = 3,
     fallback_maths: int = 3,
+    *,
+    previous_question: str | None = None,
+    previous_answer: str | None = None,
+    same_problem_context: bool = False,
 ) -> tuple[int, int]:
     """Classify a question's programming and maths difficulty via the LLM.
 
     Returns (programming_difficulty, maths_difficulty), each in [1, 5].
     Falls back to the provided defaults on any failure.
     """
+    user_payload = {
+        "current_message": question,
+    }
+    if same_problem_context and previous_question and previous_answer:
+        user_payload["previous_question"] = previous_question
+        user_payload["previous_answer"] = previous_answer
+        user_payload["instruction"] = (
+            "Rate the difficulty of the SAME underlying problem being discussed. "
+            "Use the previous tutoring exchange as context. "
+            "Ignore the fact that the current message may be short or conversational."
+        )
+    else:
+        user_payload["instruction"] = (
+            "Rate the difficulty of the problem in the current message."
+        )
+
     try:
         response = await llm.generate(
             system_prompt=CLASSIFY_PROMPT,
-            messages=[{"role": "user", "content": question}],
+            messages=[{"role": "user", "content": json.dumps(user_payload)}],
             max_tokens=30,
         )
         result = _parse_response(response)

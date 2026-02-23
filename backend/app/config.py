@@ -5,20 +5,18 @@ import json
 import re
 from typing import Literal
 
-from pydantic import ConfigDict
+from pydantic import ConfigDict, field_validator
 from pydantic_settings import BaseSettings
 
+from app.ai.model_registry import (
+    normalise_embedding_provider,
+    normalise_llm_provider,
+    normalise_model_alias,
+)
+from app.ai.pricing import LLM_MODEL_PRICING, LLM_PRICING
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BACKEND_DIR = Path(__file__).resolve().parents[1]
-
-# LLM pricing per million tokens (used for cost estimation only).
-LLM_PRICING = {
-    "anthropic": {"input_per_mtok": 3.00, "output_per_mtok": 15.00},
-    "google":    {"input_per_mtok": 2.00, "output_per_mtok": 12.00},
-    "openai":    {"input_per_mtok": 1.75, "output_per_mtok": 14.00},
-}
-
 
 def _parse_admin_email_set(raw: str) -> set[str]:
     """Parse a flexible admin email string into a normalised set."""
@@ -65,24 +63,33 @@ class Settings(BaseSettings):
     backend_reload: bool = False
 
     # LLM providers
-    llm_provider: str
-    anthropic_api_key: str
-    openai_api_key: str
-    google_api_key: str
+    llm_provider: str = "google"
+    llm_model_google: str = "gemini-3-flash-preview"
+    llm_model_anthropic: str = "claude-sonnet-4-6"
+    llm_model_openai: str = "gpt-5.2"
+    anthropic_api_key: str = ""
+    openai_api_key: str = ""
+    google_api_key: str = ""  # optional legacy path; Vertex provider uses service account
+    google_application_credentials: str = ""
+    google_application_credentials_host_path: str = ""
+    google_cloud_project_id: str = ""
+    google_vertex_gemini_location: str = "global"
 
     # Embedding providers
-    embedding_provider: str
-    cohere_api_key: str
-    voyageai_api_key: str
+    embedding_provider: str = "vertex"
+    embedding_model_vertex: str = "multimodalembedding@001"
+    google_vertex_embedding_location: str = "us-central1"
+    cohere_api_key: str = ""
+    voyageai_api_key: str = ""
 
     # Chat and token limits
     llm_max_context_tokens: int
     llm_max_user_input_tokens: int
     context_compression_threshold: float
-    user_daily_input_token_limit: int
-    user_daily_output_token_limit: int
+    user_weekly_weighted_token_limit: int = 80000
     chat_enable_greeting_filter: bool = False
     chat_enable_off_topic_filter: bool = False
+    chat_same_problem_detection_mode: Literal["llm", "embedding"] = "llm"
 
     # Rate limiting
     rate_limit_user_per_minute: int = 5
@@ -115,6 +122,32 @@ class Settings(BaseSettings):
     @property
     def admin_email_set(self) -> set[str]:
         return _parse_admin_email_set(self.admin_email)
+
+    @field_validator("llm_provider", mode="before")
+    @classmethod
+    def _normalise_llm_provider(cls, value: str) -> str:
+        return normalise_llm_provider(str(value))
+
+    @field_validator("embedding_provider", mode="before")
+    @classmethod
+    def _normalise_embedding_provider(cls, value: str) -> str:
+        return normalise_embedding_provider(str(value))
+
+    @field_validator("chat_same_problem_detection_mode", mode="before")
+    @classmethod
+    def _normalise_same_problem_mode(cls, value: str) -> str:
+        return str(value).strip().lower()
+
+    @field_validator(
+        "llm_model_google",
+        "llm_model_anthropic",
+        "llm_model_openai",
+        "embedding_model_vertex",
+        mode="before",
+    )
+    @classmethod
+    def _normalise_model_aliases(cls, value: str) -> str:
+        return normalise_model_alias(str(value))
 
     model_config = ConfigDict(
         env_file=(str(REPO_ROOT / ".env"), str(BACKEND_DIR / ".env")),

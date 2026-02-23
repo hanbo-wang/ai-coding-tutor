@@ -10,14 +10,14 @@
 
 - Per user and global rate limiting for LLM requests.
 - Concurrent WebSocket connection limits per user.
-- Daily token budgets enforced per user.
+- Weekly weighted token budgets enforced per user.
 - Cost estimation and usage visibility in the admin dashboard.
 - An audit log tracking every Learning Hub module file change.
 - A comprehensive automated test suite covering all features.
 - Structured JSON logging for significant events.
 - Improved error handling on both frontend and backend.
 
-The health check endpoint is `GET /api/health/ai`.
+The application exposes two health-related endpoints: `GET /health` for basic liveness and `GET /api/health/ai` for AI provider verification.
 This phase defines token-governance and audit schema details used by runtime monitoring and controls.
 
 ---
@@ -80,27 +80,40 @@ Token accounting is stored in two tables:
 
 Unique index: `ix_daily_token_usage_user_date` on `(user_id, date)`.
 
+The weekly budget calculation reuses this table by summing the current Monday-to-Sunday rows for each user.
+
 ### 3.2 Usage API Contract
 
-`GET /api/chat/usage` returns today's usage snapshot for the authenticated user.
+`GET /api/chat/usage` returns the current week's usage snapshot for the authenticated user.
 
 `TokenUsageOut` fields:
 
-- `date`
+- `week_start`
+- `week_end`
 - `input_tokens_used`
 - `output_tokens_used`
-- `daily_input_limit`
-- `daily_output_limit`
+- `weighted_tokens_used`
+- `remaining_weighted_tokens`
+- `weekly_weighted_limit`
 - `usage_percentage`
 
-`usage_percentage` is calculated from the higher of input/output utilisation and capped at `100`.
+Weighted usage is calculated as:
 
-### 3.3 Per User Daily Limits
+```text
+weighted_tokens_used = (input_tokens_used / 6) + output_tokens_used
+```
 
-Each user has separate input and output budgets per calendar day:
+`usage_percentage` is calculated from `weighted_tokens_used / weekly_weighted_limit` and capped at `100`.
 
-- `USER_DAILY_INPUT_TOKEN_LIMIT` (default: 50,000)
-- `USER_DAILY_OUTPUT_TOKEN_LIMIT` (default: 50,000)
+### 3.3 Per User Weekly Limit
+
+Each user has one weekly weighted budget (Monday to Sunday):
+
+- `USER_WEEKLY_WEIGHTED_TOKEN_LIMIT` (default: 80,000)
+
+The weighting rule treats input tokens as cheaper for budget control:
+- input contribution = `input_tokens / 6`
+- output contribution = `output_tokens`
 
 ### 3.4 Per Message Input Guard
 
@@ -126,19 +139,19 @@ For each `/ws/chat` message:
 1. Parse and validate payload.
 2. Resolve notebook and attachment references, then validate attachment mix limits.
 3. Build enriched user text and apply the per-message input guard.
-4. Run `check_daily_limit()` and reject if either daily budget is exhausted.
+4. Run `check_weekly_limit()` and reject if the weekly weighted budget is exhausted.
 5. Run pedagogy checks and stream the LLM response.
 6. Capture precise `input_tokens` and `output_tokens` from `llm.last_usage`.
 7. Persist usage through `record_token_usage()` with an atomic upsert into `daily_token_usage`.
 
 ### 3.7 Profile Display Behaviour
 
-The profile page shows a progress bar and text in the form: `X% of daily limit used`.
+The profile page shows a weekly budget card with:
+- billing week range (Monday to Sunday),
+- a progress bar with a capped percentage, and
+- a formal percentage label (`xx.x% used`).
 
-UI constraints:
-
-- display percentage only;
-- do not display raw numeric token limits.
+This keeps the display formal and clear. The backend still uses the weighted budgeting rule (`input / 6 + output`) for enforcement and usage calculations.
 
 ### 3.8 Migration Ownership
 
@@ -155,13 +168,16 @@ UI constraints:
 
 ### 4.1 LLM Pricing
 
-Provider pricing constants are defined in `config.py`:
+Model pricing constants are defined in `backend/app/ai/pricing.py` and used for **estimated** runtime cost visibility:
 
 | Provider | Model | Input (per MTok) | Output (per MTok) |
 |----------|-------|------------------:|-------------------:|
-| Anthropic | Claude Sonnet 4.5 | $3.00 | $15.00 |
-| Google | Gemini 3 Pro Preview | $2.00 | $12.00 |
-| OpenAI | GPT-5.2 | $1.75 | $14.00 |
+| Google (Vertex AI) | Gemini 3 Flash Preview (`gemini-3-flash-preview`) | \$0.50 | \$3.00 |
+| Google (Vertex AI) | Gemini 3.1 Pro Preview (`gemini-3.1-pro-preview`) | \$2.00 | \$12.00 |
+| Anthropic | Claude Sonnet 4.6 (`claude-sonnet-4-6`) | \$3.00 | \$15.00 |
+| Anthropic | Claude Haiku 4.5 (`claude-haiku-4-5`) | \$1.00 | \$5.00 |
+| OpenAI | GPT-5.2 (`gpt-5.2`) | \$1.25 | \$10.00 |
+| OpenAI | GPT-5 mini (`gpt-5-mini`) | \$0.25 | \$2.00 |
 
 After each LLM response, the estimated cost is calculated:
 
@@ -169,7 +185,7 @@ After each LLM response, the estimated cost is calculated:
 cost = (input_tokens / 1_000_000) * input_price + (output_tokens / 1_000_000) * output_price
 ```
 
-This estimate is logged alongside the LLM call details (see Section 9).
+The application stores the actual `provider` and `model` used for each assistant message, together with an `estimated_cost_usd` value. Admin totals are then aggregated from stored per-message cost values.
 
 ### 4.2 Admin Usage Endpoint
 
@@ -182,22 +198,25 @@ Returns aggregated usage data across all users:
   "today": {
     "input_tokens": 285000,
     "output_tokens": 310000,
-    "estimated_cost_usd": 0.52
+    "estimated_cost_usd": 0.52,
+    "estimated_cost_coverage": 1.0
   },
   "this_week": {
     "input_tokens": 1780000,
     "output_tokens": 1950000,
-    "estimated_cost_usd": 3.28
+    "estimated_cost_usd": 3.28,
+    "estimated_cost_coverage": 0.94
   },
   "this_month": {
     "input_tokens": 6400000,
     "output_tokens": 7000000,
-    "estimated_cost_usd": 11.80
+    "estimated_cost_usd": 11.80,
+    "estimated_cost_coverage": 0.89
   }
 }
 ```
 
-This is a visibility tool, not a billing system. It helps prevent surprise bills during development and early deployment.
+This is a visibility tool, not a billing system. The `estimated_cost_coverage` field shows the fraction of assistant messages in the time window that include stored model-level cost metadata (older messages may predate this tracking).
 
 ---
 
@@ -277,7 +296,7 @@ The suite mixes:
 
 `backend/pytest.ini` sets `asyncio_mode=auto` so async tests run consistently without command-line flags.
 
-Current automated total: **65 tests**.
+Current automated total (default offline run, excluding `external_ai` smoke tests): **88 tests**.
 
 ### 7.2 Test Files
 
@@ -285,7 +304,9 @@ Current automated total: **65 tests**.
 |------|------:|-------|------------|
 | `test_auth.py` | 5 | Auth helpers and token lifecycle | Password hashing/verification, access/refresh token claims, invalid token rejection, refresh cookie flags. |
 | `test_chat.py` | 11 | Chat router helper logic | WebSocket token resolution, upload split and limit validation, enriched message generation, multimodal part generation, context truncation helpers. |
-| `test_pedagogy.py` | 7 | Pedagogy engine behaviour | Greeting/off-topic filtering, default filter disablement, hint escalation, new-problem reset, hint cap, effective-level EMA update. |
+| `test_chat_usage_budget.py` | 2 | Weekly budget helper logic | Monday-Sunday week bounds and weighted usage formula (`input / 6 + output`). |
+| `test_pedagogy.py` | 8 | Pedagogy engine behaviour | Greeting/off-topic filtering, default filter disablement, LLM same-problem handling, hint escalation, new-problem reset, hint cap, effective-level EMA update. |
+| `test_same_problem_classifier.py` | 5 | LLM same-problem classifier parsing | Strict JSON parse, regex fallback, elaboration normalisation, fallback behaviour on invalid payload, missing-context fallback. |
 | `test_context_builder.py` | 3 | Token-aware context assembly | Empty history handling, truncation under small budgets, full-history inclusion when budget allows. |
 | `test_rate_limiter.py` | 4 | Sliding-window request limits | Per-user allowance, per-user rejection, global cap enforcement, 60-second expiry pruning. |
 | `test_connection_tracker.py` | 3 | Concurrent WebSocket caps | Add/remove accounting, max-connection rejection, per-user isolation. |
@@ -304,7 +325,7 @@ cd backend
 PYTHONPATH=. pytest tests/ -q -s
 ```
 
-`test_semantic_thresholds.py` is a manual calibration script, not an automated `pytest` test:
+`test_semantic_thresholds.py` is a manual calibration script, not an automated `pytest` test. It runs against Vertex AI `multimodalembedding@001`:
 
 ```bash
 python -m tests.test_semantic_thresholds
@@ -329,7 +350,7 @@ Standard error codes:
 | `AUTH_INVALID` | Token is missing, expired, or malformed |
 | `AUTH_FORBIDDEN` | User does not own the requested resource |
 | `RATE_LIMITED` | Message rate limit exceeded |
-| `DAILY_LIMIT` | Daily token budget exhausted |
+| `WEEKLY_LIMIT` | Weekly weighted token budget exhausted |
 | `LLM_UNAVAILABLE` | All LLM providers failed after retry |
 | `NOT_FOUND` | Resource does not exist |
 | `VALIDATION` | Request body failed Pydantic validation |
@@ -380,14 +401,14 @@ In development, log to stdout in human readable format. In production (detected 
 - [ ] Opening a 4th browser tab with the chat page rejects the WebSocket connection with code 4002.
 - [ ] All tests pass: `cd backend && PYTHONPATH=. pytest tests/ -q -s`.
 - [ ] Pedagogy tests confirm hint escalation 1, 2, 3, 4, 5 and reset on new problem.
-- [ ] The health endpoint at `/api/health/ai` returns 200.
+- [ ] The basic health endpoint at `/health` returns 200.
+- [ ] The AI provider verification endpoint at `/api/health/ai` returns 200.
 - [ ] Backend logs show structured entries for LLM calls with cost estimates.
 - [ ] When the LLM API key is deliberately invalidated, the user sees a clear error message.
-- [ ] `GET /api/chat/usage` returns usage fields and a capped `usage_percentage`.
-- [ ] The profile page shows usage as `X% of daily limit used`.
-- [ ] Raw numeric token limits are not shown in the profile UI.
+- [ ] `GET /api/chat/usage` returns weekly usage fields and a capped `usage_percentage`.
+- [ ] The profile page shows a weekly budget card with the billing week range, a progress bar, and a percentage used label.
 - [ ] The admin usage endpoint returns accurate token totals and cost estimates.
 - [ ] The admin audit log shows recent Learning Hub changes with admin emails and timestamps.
-- [ ] Exceeding the daily token limit shows a friendly usage limit notice.
+- [ ] Exceeding the weekly budget shows a friendly usage limit notice.
 - [ ] Oversized attachment messages are rejected with "Files are too large for one message. Please split them and try again."
 - [ ] All rate limit and connection limit values match the `.env` configuration.

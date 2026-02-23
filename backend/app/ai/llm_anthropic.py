@@ -12,12 +12,13 @@ from app.ai.llm_base import LLMError, LLMMessage, LLMProvider, LLMUsage
 logger = logging.getLogger(__name__)
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
-ANTHROPIC_MODEL = "claude-sonnet-4-5-20250929"
 
 
 class AnthropicProvider(LLMProvider):
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, model_id: str):
         super().__init__()
+        self.provider_id = "anthropic"
+        self.model_id = model_id
         self.api_key = api_key
 
     async def generate_stream(
@@ -38,7 +39,7 @@ class AnthropicProvider(LLMProvider):
             "content-type": "application/json",
         }
         payload = {
-            "model": ANTHROPIC_MODEL,
+            "model": self.model_id,
             "max_tokens": max_tokens,
             "system": system_prompt,
             "messages": [
@@ -97,6 +98,10 @@ class AnthropicProvider(LLMProvider):
                             if event_type == "message_start":
                                 usage = event.get("message", {}).get("usage", {})
                                 self.last_usage.input_tokens = usage.get("input_tokens", 0)
+                                if isinstance(usage, dict):
+                                    self.last_usage.usage_details.setdefault(
+                                        "message_start_usage", usage
+                                    )
 
                             # content_block_delta contains streamed text.
                             elif event_type == "content_block_delta":
@@ -109,6 +114,8 @@ class AnthropicProvider(LLMProvider):
                             elif event_type == "message_delta":
                                 usage = event.get("usage", {})
                                 self.last_usage.output_tokens = usage.get("output_tokens", 0)
+                                if isinstance(usage, dict):
+                                    self.last_usage.usage_details["message_delta_usage"] = usage
 
                         return
 

@@ -12,12 +12,13 @@ from app.ai.llm_base import LLMError, LLMMessage, LLMProvider, LLMUsage
 logger = logging.getLogger(__name__)
 
 OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
-OPENAI_MODEL = "gpt-5.2"
 
 
 class OpenAIProvider(LLMProvider):
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, model_id: str):
         super().__init__()
+        self.provider_id = "openai"
+        self.model_id = model_id
         self.api_key = api_key
 
     async def generate_stream(
@@ -45,8 +46,8 @@ class OpenAIProvider(LLMProvider):
             })
 
         payload = {
-            "model": OPENAI_MODEL,
-            "max_tokens": max_tokens,
+            "model": self.model_id,
+            "max_completion_tokens": max_tokens,
             "messages": api_messages,
             "stream": True,
             "stream_options": {"include_usage": True},
@@ -97,6 +98,8 @@ class OpenAIProvider(LLMProvider):
                             if usage:
                                 self.last_usage.input_tokens = usage.get("prompt_tokens", 0)
                                 self.last_usage.output_tokens = usage.get("completion_tokens", 0)
+                                if isinstance(usage, dict):
+                                    self.last_usage.usage_details = {"usage": usage}
 
                             choices = event.get("choices", [])
                             if choices:

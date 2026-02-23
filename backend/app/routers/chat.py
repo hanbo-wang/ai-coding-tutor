@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ai.context_builder import build_context_messages, build_system_prompt
 from app.ai.llm_base import LLMError
 from app.ai.llm_factory import get_llm_provider
+from app.ai.pricing import estimate_llm_cost_usd
 from app.config import settings
 from app.db.session import AsyncSessionLocal
 from app.dependencies import get_current_user, get_db
@@ -120,22 +121,23 @@ async def get_usage(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """Return today's token usage for the current user."""
-    usage = await chat_service.get_daily_usage(db, current_user.id)
-    input_limit = settings.user_daily_input_token_limit
-    output_limit = settings.user_daily_output_token_limit
-    input_pct = (usage.input_tokens_used / input_limit * 100) if input_limit > 0 else 0
-    output_pct = (
-        (usage.output_tokens_used / output_limit * 100) if output_limit > 0 else 0
+    """Return the current week's weighted token usage summary for the current user."""
+    usage = await chat_service.get_weekly_usage_summary(db, current_user.id)
+    weekly_limit = settings.user_weekly_weighted_token_limit
+    usage_pct = (
+        (usage.weighted_tokens_used / weekly_limit * 100) if weekly_limit > 0 else 0.0
     )
-    display_pct = round(max(input_pct, output_pct), 1)
+    weighted_used = round(usage.weighted_tokens_used, 1)
+    remaining = round(max(0.0, float(weekly_limit) - usage.weighted_tokens_used), 1)
     return TokenUsageOut(
-        date=usage.date,
+        week_start=usage.week_start,
+        week_end=usage.week_end,
         input_tokens_used=usage.input_tokens_used,
         output_tokens_used=usage.output_tokens_used,
-        daily_input_limit=input_limit,
-        daily_output_limit=output_limit,
-        usage_percentage=min(100.0, display_pct),
+        weighted_tokens_used=weighted_used,
+        remaining_weighted_tokens=remaining,
+        weekly_weighted_limit=weekly_limit,
+        usage_percentage=round(min(100.0, usage_pct), 1),
     )
 
 
@@ -470,11 +472,11 @@ async def websocket_chat(
                     })
                     continue
 
-                # Pre-call daily budget check (precise recording happens after API call).
-                if not await chat_service.check_daily_limit(db, user.id):
+                # Pre-call weekly budget check (precise recording happens after API call).
+                if not await chat_service.check_weekly_limit(db, user.id):
                     await websocket.send_json({
                         "type": "error",
-                        "message": "Daily token limit reached. Try again tomorrow.",
+                        "message": "Weekly token allowance reached. Please try again next week.",
                     })
                     continue
 
@@ -573,6 +575,14 @@ async def websocket_chat(
                 # Use precise token counts from the API response.
                 input_tokens = llm.last_usage.input_tokens
                 output_tokens = llm.last_usage.output_tokens
+                usage_details = llm.last_usage.usage_details or {}
+                estimated_cost_usd = estimate_llm_cost_usd(
+                    llm.provider_id,
+                    llm.model_id,
+                    input_tokens,
+                    output_tokens,
+                    usage_details=usage_details,
+                )
 
                 await pedagogy_engine.update_context_embedding(
                     student_state, enriched_user_message, assistant_text,
@@ -587,6 +597,10 @@ async def websocket_chat(
                     maths_difficulty=result.maths_difficulty,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
+                    llm_provider=llm.provider_id,
+                    llm_model=llm.model_id,
+                    estimated_cost_usd=estimated_cost_usd,
+                    llm_usage=usage_details,
                 )
 
                 # Record precise usage to daily totals.

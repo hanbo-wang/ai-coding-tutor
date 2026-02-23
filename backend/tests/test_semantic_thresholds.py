@@ -1,18 +1,20 @@
-"""Semantic recognition threshold calibration test.
+"""Semantic recognition threshold calibration test (Vertex only).
 
-Embeds test phrases via Cohere Embed v4 (256 dimensions) and measures cosine
-similarity against the greeting templates, topic anchors, and elaboration
-anchors used by EmbeddingService. Also tests same-problem detection with
-Q+A context pairs.
+Embeds test phrases via Vertex AI `multimodalembedding@001` and measures cosine
+similarity against the greeting templates, topic anchors, off-topic anchors,
+and elaboration anchors used by EmbeddingService. Also tests optional
+embedding-based same-problem detection with Q+A context pairs.
 
 Usage:
     cd backend
     python -m tests.test_semantic_thresholds
+
 """
 
 import asyncio
 import os
 import sys
+from pathlib import Path
 
 import numpy as np
 
@@ -23,7 +25,16 @@ from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 
-from app.ai.embedding_cohere import CohereEmbeddingService
+from app.ai.embedding_service import (
+    EMBEDDING_THRESHOLDS,
+    ELABORATION_ANCHORS,
+    GREETING_ANCHORS as GREETING_TEMPLATES,
+    OFF_TOPIC_ANCHORS,
+    TOPIC_ANCHORS,
+)
+from app.ai.embedding_vertex import VertexEmbeddingService
+from app.ai.google_auth import GoogleServiceAccountTokenProvider, resolve_google_project_id
+from app.config import settings
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -45,63 +56,7 @@ def max_similarity(anchors: list[list[float]], vec: list[float]) -> float:
     return float(np.max(sims))
 
 
-# ── Reference anchors (same as embedding_service.py) ──
-
-GREETING_TEMPLATES = [
-    "hello", "hi", "hey", "good morning", "good afternoon",
-    "good evening", "how are you", "what's up", "hi there",
-    "hey there", "hello there", "good day", "howdy", "greetings",
-]
-
-TOPIC_ANCHORS = [
-    # Programming
-    "programming", "coding", "Python", "algorithm", "data structure",
-    "recursion", "sorting algorithm", "object-oriented programming",
-    "debugging code", "error in my code", "syntax error",
-    "code not working", "how to implement",
-    # Mathematics general
-    "mathematics", "calculus", "statistics",
-    "probability", "trigonometry", "formula derivation",
-    # Linear algebra
-    "linear algebra", "matrix", "eigenvalue", "eigenvector",
-    "matrix decomposition", "LU factorization", "Gaussian elimination",
-    # Calculus and analysis
-    "integral", "derivative", "differential equation", "Taylor series",
-    # Numerical methods
-    "numerical methods", "root finding", "bisection method",
-    "Newton-Raphson method", "Euler method", "Runge-Kutta method",
-    "initial value problem", "boundary value problem",
-    "finite difference method", "numerical integration",
-    # Fourier analysis
-    "Fourier transform", "discrete Fourier transform",
-    "FFT", "spectral analysis",
-    # Physics
-    "physics", "mechanics", "thermodynamics", "electromagnetism",
-    "quantum mechanics", "wave equation", "simulation",
-    # Applied
-    "optimization", "computational science",
-]
-
-ELABORATION_ANCHORS = [
-    # Not understanding
-    "I don't understand", "I'm confused",
-    "that doesn't make sense", "I still don't get it",
-    # Request more detail
-    "explain more", "can you elaborate",
-    "give me more details", "tell me more",
-    # Step-by-step
-    "show me step by step", "break it down for me", "walk me through it",
-    # Examples
-    "show me an example", "give me an example",
-    # Hints/answers
-    "give me a hint", "show me the answer", "just tell me",
-    # Clarification
-    "what do you mean", "can you explain that again", "could you clarify",
-    # Continuation
-    "go on", "continue", "what's next", "and then what",
-    # Simple interrogatives
-    "why", "how",
-]
+# ── Reference anchors (imported from embedding_service.py) ──
 
 # ── Test phrases ──
 
@@ -282,27 +237,51 @@ VAGUE_FOLLOWUPS = [
 
 
 async def main() -> None:
-    api_key = os.environ.get("COHERE_API_KEY", "")
-    if not api_key:
-        print("ERROR: COHERE_API_KEY not set in environment or .env file")
-        sys.exit(1)
+    threshold_profile = EMBEDDING_THRESHOLDS["vertex"]
 
-    provider = CohereEmbeddingService(api_key)
+    repo_root = Path(__file__).resolve().parents[2]
+    creds_candidates = [
+        (settings.google_application_credentials or "").strip(),
+        os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH", "").strip(),
+        str(repo_root / "ai-coding-tutor-488300-8641d2e48a27.json"),
+    ]
+    creds_path = next((p for p in creds_candidates if p and Path(p).exists()), "")
+    if not creds_path:
+        print("ERROR: GOOGLE_APPLICATION_CREDENTIALS not set for Vertex calibration")
+        sys.exit(1)
+    provider = VertexEmbeddingService(
+        token_provider=GoogleServiceAccountTokenProvider(creds_path),
+        project_id=resolve_google_project_id(creds_path, settings.google_cloud_project_id),
+        location=settings.google_vertex_embedding_location,
+        model_id=settings.embedding_model_vertex,
+        dimension=256,
+    )
+    provider_name = "Vertex AI"
+    model_name = settings.embedding_model_vertex
 
     try:
+        print(f"Provider: {provider_name}")
+        print(f"Model:    {model_name}")
         # Embed all anchors
         print(f"Embedding {len(GREETING_TEMPLATES)} greeting, "
               f"{len(TOPIC_ANCHORS)} topic, "
+              f"{len(OFF_TOPIC_ANCHORS)} off-topic, "
               f"{len(ELABORATION_ANCHORS)} elaboration anchors (256d)...")
-        anchor_texts = GREETING_TEMPLATES + TOPIC_ANCHORS + ELABORATION_ANCHORS
-        anchor_embs = await provider.embed_batch(anchor_texts)
+        anchor_texts = GREETING_TEMPLATES + TOPIC_ANCHORS + OFF_TOPIC_ANCHORS + ELABORATION_ANCHORS
+        anchor_embs: list[list[float]] = []
+        for i in range(0, len(anchor_texts), 64):
+            anchor_embs.extend(await provider.embed_batch(anchor_texts[i : i + 64]))
         greeting_embs = anchor_embs[:len(GREETING_TEMPLATES)]
         topic_embs = anchor_embs[len(GREETING_TEMPLATES):len(GREETING_TEMPLATES) + len(TOPIC_ANCHORS)]
-        elaboration_embs = anchor_embs[len(GREETING_TEMPLATES) + len(TOPIC_ANCHORS):]
+        off_topic_start = len(GREETING_TEMPLATES) + len(TOPIC_ANCHORS)
+        off_topic_anchor_embs = anchor_embs[
+            off_topic_start:off_topic_start + len(OFF_TOPIC_ANCHORS)
+        ]
+        elaboration_embs = anchor_embs[off_topic_start + len(OFF_TOPIC_ANCHORS):]
 
         print(f"  Dimension: {len(greeting_embs[0])}")
 
-        # Collect all test phrases — split into batches of 96 (Cohere limit)
+        # Collect all test phrases.
         all_tests = (
             GREETING_TRUE
             + GREETING_FALSE_POSITIVES
@@ -313,7 +292,7 @@ async def main() -> None:
             + ELABORATION_TRUE
             + ELABORATION_FALSE
         )
-        batch_size = 96
+        batch_size = 64
         print(f"Embedding {len(all_tests)} test phrases...")
         all_embs: list[list[float]] = []
         for i in range(0, len(all_tests), batch_size):
@@ -343,8 +322,33 @@ async def main() -> None:
         def max_topic_sim(emb: list[float]) -> float:
             return max_similarity(topic_embs, emb)
 
+        def max_off_topic_sim(emb: list[float]) -> float:
+            return max_similarity(off_topic_anchor_embs, emb)
+
         def max_elab_sim(emb: list[float]) -> float:
             return max_similarity(elaboration_embs, emb)
+
+        def classify_off_topic(emb: list[float]) -> tuple[bool, float, float, float]:
+            topic_max = max_topic_sim(emb)
+            off_topic_max = max_off_topic_sim(emb)
+            delta = off_topic_max - topic_max
+
+            neg_min = threshold_profile.get("off_topic_negative_min_similarity")
+            margin_min = threshold_profile.get("off_topic_margin_min_similarity")
+            if (
+                isinstance(neg_min, (int, float))
+                and isinstance(margin_min, (int, float))
+                and off_topic_max >= float(neg_min)
+                and delta >= float(margin_min)
+            ):
+                return True, topic_max, off_topic_max, delta
+
+            return (
+                topic_max < float(threshold_profile["off_topic_max_similarity"]),
+                topic_max,
+                off_topic_max,
+                delta,
+            )
 
         # ── 1. GREETING DETECTION ──
 
@@ -380,29 +384,38 @@ async def main() -> None:
         print("\n" + "=" * 70)
         print("2A. ON-TOPIC MESSAGES (should be HIGH)")
         print("=" * 70)
-        print(f"{'Phrase':<45} {'Max Sim':>8}")
-        print("-" * 55)
+        print(f"{'Phrase':<45} {'Topic':>8} {'Off':>8} {'Delta':>8} {'Result':>10}")
+        print("-" * 85)
         for phrase, emb in zip(ON_TOPIC, on_topic_embs):
-            sim = max_topic_sim(emb)
-            print(f"{phrase:<45} {sim:>8.4f}")
+            is_off, topic_sim, off_sim, delta = classify_off_topic(emb)
+            result = "OFF-TOPIC" if is_off else "pass"
+            print(
+                f"{phrase:<45} {topic_sim:>8.4f} {off_sim:>8.4f} {delta:>8.4f} {result:>10}"
+            )
 
         print("\n" + "=" * 70)
         print("2B. OFF-TOPIC MESSAGES (should be LOW)")
         print("=" * 70)
-        print(f"{'Phrase':<45} {'Max Sim':>8}")
-        print("-" * 55)
+        print(f"{'Phrase':<45} {'Topic':>8} {'Off':>8} {'Delta':>8} {'Result':>10}")
+        print("-" * 85)
         for phrase, emb in zip(OFF_TOPIC, off_topic_embs):
-            sim = max_topic_sim(emb)
-            print(f"{phrase:<45} {sim:>8.4f}")
+            is_off, topic_sim, off_sim, delta = classify_off_topic(emb)
+            result = "OFF-TOPIC" if is_off else "pass"
+            print(
+                f"{phrase:<45} {topic_sim:>8.4f} {off_sim:>8.4f} {delta:>8.4f} {result:>10}"
+            )
 
         print("\n" + "=" * 70)
         print("2C. BORDERLINE MESSAGES")
         print("=" * 70)
-        print(f"{'Phrase':<45} {'Max Sim':>8}")
-        print("-" * 55)
+        print(f"{'Phrase':<45} {'Topic':>8} {'Off':>8} {'Delta':>8} {'Result':>10}")
+        print("-" * 85)
         for phrase, emb in zip(BORDERLINE, borderline_embs):
-            sim = max_topic_sim(emb)
-            print(f"{phrase:<45} {sim:>8.4f}")
+            is_off, topic_sim, off_sim, delta = classify_off_topic(emb)
+            result = "OFF-TOPIC" if is_off else "pass"
+            print(
+                f"{phrase:<45} {topic_sim:>8.4f} {off_sim:>8.4f} {delta:>8.4f} {result:>10}"
+            )
 
         # ── 3. SAME-PROBLEM DETECTION (Q+A context) ──
 

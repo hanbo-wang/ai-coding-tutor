@@ -30,6 +30,7 @@ services:
     volumes:
       - uploads_data:/data/uploads
       - notebooks_data:/data/notebooks
+      - ${GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH:?set GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH}:${GOOGLE_APPLICATION_CREDENTIALS:?set GOOGLE_APPLICATION_CREDENTIALS}:ro
     depends_on:
       db:
         condition: service_healthy

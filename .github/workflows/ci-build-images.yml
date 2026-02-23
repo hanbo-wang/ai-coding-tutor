@@ -38,8 +38,8 @@ jobs:
             frontend/package-lock.json
             jupyterlite-bridge/package-lock.json
 
-      - name: Seed test env from workflow template
-        run: cp .github/workflows/templates/ci.env.sample .env
+      - name: Seed test env from shared dev template
+        run: cp .github/workflows/templates/env.dev.example .env
 
       - name: Install backend test dependencies
         run: |

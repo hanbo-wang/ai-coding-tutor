@@ -11,6 +11,18 @@ on:
         description: "Remote directory containing .env and compose deployment files"
         required: true
         default: "/opt/ai-coding-tutor"
+      reset_mode:
+        description: "Data reset mode (destructive options require confirmation)"
+        required: true
+        type: choice
+        default: "none"
+        options:
+          - none
+          - all_volumes
+      reset_confirm:
+        description: "Required only for reset_mode=all_volumes: type RESET_ALL_VOLUMES"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -59,6 +71,8 @@ jobs:
         env:
           DEPLOY_PATH: ${{ inputs.deploy_path }}
           IMAGE_TAG: ${{ inputs.image_tag }}
+          RESET_MODE: ${{ inputs.reset_mode }}
+          RESET_CONFIRM: ${{ inputs.reset_confirm }}
           GHCR_OWNER: ${{ steps.vars.outputs.owner_lc }}
           GHCR_IMAGE_PREFIX: ${{ steps.vars.outputs.repo_lc }}
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
@@ -68,15 +82,76 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT || '22' }}
-          envs: DEPLOY_PATH,IMAGE_TAG,GHCR_OWNER,GHCR_IMAGE_PREFIX,GHCR_USERNAME,GHCR_TOKEN
+          envs: DEPLOY_PATH,IMAGE_TAG,RESET_MODE,RESET_CONFIRM,GHCR_OWNER,GHCR_IMAGE_PREFIX,GHCR_USERNAME,GHCR_TOKEN
           script: |
             set -euo pipefail
             cd "$DEPLOY_PATH"
 
             if [ ! -f .env ]; then
-              echo "Missing $DEPLOY_PATH/.env (use .github/workflows/templates/prod.env.sample as your template)"
+              echo "Missing $DEPLOY_PATH/.env (use .github/workflows/templates/env.prod.example as your template)"
               exit 1
             fi
+
+            get_env_value() {
+              __env_key="$1"
+              __env_line="$(grep -E "^${__env_key}=" .env | tail -n 1 || true)"
+              if [ -z "$__env_line" ]; then
+                return 1
+              fi
+              __env_value="${__env_line#*=}"
+              __env_value="${__env_value%$'\r'}"
+              case "$__env_value" in
+                \"*\")
+                  __env_value="${__env_value#\"}"
+                  __env_value="${__env_value%\"}"
+                  ;;
+                \'*\')
+                  __env_value="${__env_value#\'}"
+                  __env_value="${__env_value%\'}"
+                  ;;
+              esac
+              printf '%s' "$__env_value"
+            }
+
+            GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH="$(get_env_value GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH || true)"
+            GOOGLE_APPLICATION_CREDENTIALS_PATH_IN_CONTAINER="$(get_env_value GOOGLE_APPLICATION_CREDENTIALS || true)"
+
+            if [ -z "${GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH:-}" ]; then
+              echo "Missing GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH in $DEPLOY_PATH/.env"
+              echo "Use .github/workflows/templates/env.prod.example as the template."
+              exit 1
+            fi
+
+            case "$GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH" in
+              /*)
+                ;;
+              *)
+                echo "GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH must be an absolute server path in production .env."
+                echo "Current value: $GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH"
+                echo "Example: /opt/ai-coding-tutor/secrets/ai-coding-tutor-service-account.json"
+                exit 1
+                ;;
+            esac
+
+            if [ -z "${GOOGLE_APPLICATION_CREDENTIALS_PATH_IN_CONTAINER:-}" ]; then
+              echo "Missing GOOGLE_APPLICATION_CREDENTIALS in $DEPLOY_PATH/.env"
+              echo "Use .github/workflows/templates/env.prod.example as the template."
+              exit 1
+            fi
+
+            if [ ! -f "$GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH" ]; then
+              echo "Google service account JSON file not found: $GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH"
+              echo "Place the JSON file on the server first and keep the path in .env in sync."
+              exit 1
+            fi
+
+            if [ ! -r "$GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH" ]; then
+              echo "Google service account JSON file is not readable: $GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH"
+              exit 1
+            fi
+
+            echo "Verified Google service account JSON file: $GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH"
+            echo "Container mount path: $GOOGLE_APPLICATION_CREDENTIALS_PATH_IN_CONTAINER"
 
             if [ -n "${GHCR_TOKEN:-}" ] && [ -n "${GHCR_USERNAME:-}" ]; then
               echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
@@ -86,13 +161,46 @@ jobs:
             export GHCR_IMAGE_PREFIX
             export IMAGE_TAG
 
+            docker compose -f docker-compose.prod.yml config >/dev/null
+
+            case "${RESET_MODE:-none}" in
+              none)
+                ;;
+              all_volumes)
+                echo "WARNING: reset_mode=all_volumes will delete all Docker Compose volumes for this stack (PostgreSQL, uploads, notebooks, certbot)."
+                echo "WARNING: This is destructive. Take a backup before continuing."
+                if [ "${RESET_CONFIRM:-}" != "RESET_ALL_VOLUMES" ]; then
+                  echo "Refusing destructive reset because reset_confirm did not match RESET_ALL_VOLUMES."
+                  exit 1
+                fi
+                docker compose -f docker-compose.prod.yml down -v
+                ;;
+              *)
+                echo "Unsupported reset_mode: ${RESET_MODE}"
+                exit 1
+                ;;
+            esac
+
             docker compose -f docker-compose.prod.yml pull
             docker compose -f docker-compose.prod.yml up -d
             docker compose -f docker-compose.prod.yml ps
 
             docker compose -f docker-compose.prod.yml exec -T backend python - <<'PY'
             import json
+            import sys
             import urllib.request
-            data = urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=10).read()
-            print(json.loads(data.decode("utf-8")))
+            def fetch(url: str):
+                with urllib.request.urlopen(url, timeout=15) as response:
+                    return json.loads(response.read().decode("utf-8"))
+
+            health = fetch("http://127.0.0.1:8000/health")
+            print({"health": health})
+
+            ai_health = fetch("http://127.0.0.1:8000/api/health/ai?force=true")
+            print({"ai_health": ai_health})
+
+            if not ai_health.get("google"):
+                sys.exit("Vertex Gemini health check failed (google=false)")
+            if "vertex_embedding" in ai_health and not ai_health.get("vertex_embedding"):
+                sys.exit("Vertex embedding health check failed (vertex_embedding=false)")
             PY

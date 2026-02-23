@@ -55,11 +55,13 @@ export interface ChatSession {
 }
 
 export interface TokenUsage {
-  date: string;
+  week_start: string;
+  week_end: string;
   input_tokens_used: number;
   output_tokens_used: number;
-  daily_input_limit: number;
-  daily_output_limit: number;
+  weighted_tokens_used: number;
+  remaining_weighted_tokens: number;
+  weekly_weighted_limit: number;
   usage_percentage: number;
 }
 

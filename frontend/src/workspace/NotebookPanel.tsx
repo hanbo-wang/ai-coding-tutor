@@ -45,12 +45,75 @@ interface NotebookPanelProps {
 const AUTO_SAVE_INTERVAL_MS = 30000;
 const WORKSPACE_KERNEL_NAME = "Numerical Computing";
 const LOAD_NOTEBOOK_RETRY_COUNT = 2;
+const NOTEBOOK_BRIDGE_PROTOCOL_VERSION = "bridge-single-notebook-18";
+const NOTEBOOK_BRIDGE_PLUGIN_ID = "guided-cursor-jupyterlite-bridge";
 
 function isTimeoutError(error: unknown): boolean {
   if (!(error instanceof Error)) {
     return false;
   }
   return error.message.toLowerCase().includes("timed out");
+}
+
+function isBridgeReadyTimeoutError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const text = error.message.toLowerCase();
+  return (
+    text.includes("notebook bridge is not ready") ||
+    (text.includes("timed out") && text.includes("ping"))
+  );
+}
+
+function describeNotebookBridgeFailure(
+  iframe: HTMLIFrameElement,
+  error: unknown
+): string {
+  const fallback =
+    error instanceof Error ? error.message : "Failed to load notebook content.";
+  if (!isBridgeReadyTimeoutError(error)) {
+    return fallback;
+  }
+
+  try {
+    const iframeWindow = iframe.contentWindow as
+      | (Window & {
+          jupyterapp?: { hasPlugin?: (id: string) => boolean };
+          __guidedCursorNotebookBridge?: {
+            ready?: boolean;
+            startupWarnings?: string[];
+          };
+        })
+      | null;
+    const iframeDocument = iframe.contentDocument;
+    if (!iframeWindow || !iframeDocument) {
+      return fallback;
+    }
+
+    const app = iframeWindow.jupyterapp;
+    const bridgeRuntime = iframeWindow.__guidedCursorNotebookBridge;
+    const hasBridgePlugin =
+      typeof app?.hasPlugin === "function"
+        ? app.hasPlugin(NOTEBOOK_BRIDGE_PLUGIN_ID)
+        : null;
+
+    if (hasBridgePlugin === false) {
+      return "JupyterLite loaded without the Guided Cursor bridge extension. Rebuild the JupyterLite assets with `bash scripts/build-jupyterlite.sh`, then restart the frontend.";
+    }
+
+    if (Array.isArray(bridgeRuntime?.startupWarnings) && bridgeRuntime.startupWarnings.length > 0) {
+      return `JupyterLite bridge started with runtime warnings and did not become ready: ${bridgeRuntime.startupWarnings[0]}`;
+    }
+
+    if (iframeDocument.readyState !== "complete") {
+      return "JupyterLite is still loading. Please retry once.";
+    }
+
+    return "Notebook bridge did not respond in time. Refresh the notebook panel. If it persists, rebuild JupyterLite assets with `bash scripts/build-jupyterlite.sh`.";
+  } catch {
+    return fallback;
+  }
 }
 
 function withWorkspaceKernel(
@@ -125,12 +188,15 @@ export const NotebookPanel = forwardRef<NotebookPanelHandle, NotebookPanelProps>
     const loadedSignatureRef = useRef<string | null>(null);
     const dirtyUnsubscribeRef = useRef<(() => void) | null>(null);
     const saveRequestUnsubscribeRef = useRef<(() => void) | null>(null);
+    const bridgeRecoverySignatureRef = useRef<string | null>(null);
+    const iframeSessionVersionRef = useRef(`${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
 
     const [isIframeLoaded, setIsIframeLoaded] = useState(false);
     const [isIframeReady, setIsIframeReady] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
     const [loadError, setLoadError] = useState<string | null>(null);
     const [saveStatus, setSaveStatus] = useState<NotebookSaveStatus>("saved");
+    const [bridgeReloadNonce, setBridgeReloadNonce] = useState(0);
 
     const loadPath = useMemo(() => {
       if (mode === "zone") {
@@ -150,8 +216,9 @@ export const NotebookPanel = forwardRef<NotebookPanelHandle, NotebookPanelProps>
 
     const iframeSrc = useMemo(() => {
       const key = encodeURIComponent(workspaceKey ?? `${mode}:${zoneId ?? ""}:${notebookId}`);
-      return `/jupyterlite/lab/index.html?v=bridge-single-notebook-17&reload=${reloadKey}&wk=${key}`;
-    }, [mode, notebookId, reloadKey, workspaceKey, zoneId]);
+      const sessionVersion = iframeSessionVersionRef.current;
+      return `/jupyterlite/lab/index.html?v=${NOTEBOOK_BRIDGE_PROTOCOL_VERSION}-${sessionVersion}-${bridgeReloadNonce}&reload=${reloadKey}&wk=${key}`;
+    }, [bridgeReloadNonce, mode, notebookId, reloadKey, workspaceKey, zoneId]);
 
     const setStatus = useCallback(
       (status: NotebookSaveStatus) => {
@@ -206,6 +273,7 @@ export const NotebookPanel = forwardRef<NotebookPanelHandle, NotebookPanelProps>
       savingRef.current = false;
       setStatus("saved");
       loadedSignatureRef.current = null;
+      bridgeRecoverySignatureRef.current = null;
       if (dirtyUnsubscribeRef.current) {
         dirtyUnsubscribeRef.current();
         dirtyUnsubscribeRef.current = null;
@@ -348,10 +416,20 @@ export const NotebookPanel = forwardRef<NotebookPanelHandle, NotebookPanelProps>
           setIsLoading(false);
         } catch (err) {
           if (cancelled) return;
+          if (
+            isBridgeReadyTimeoutError(err) &&
+            bridgeRecoverySignatureRef.current !== signature
+          ) {
+            bridgeRecoverySignatureRef.current = signature;
+            setIsIframeLoaded(false);
+            setIsIframeReady(false);
+            setLoadError(null);
+            setIsLoading(true);
+            setBridgeReloadNonce((value) => value + 1);
+            return;
+          }
           const message =
-            err instanceof Error
-              ? err.message
-              : "Failed to load notebook content.";
+            describeNotebookBridgeFailure(iframe, err);
           setIsIframeReady(false);
           setLoadError(message);
           setIsLoading(false);

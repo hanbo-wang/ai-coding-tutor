@@ -2,7 +2,8 @@
 
 import uuid
 import json
-from datetime import date, datetime, timezone
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import and_, delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -17,6 +18,29 @@ from app.services.upload_service import attachment_payload
 def _utc_now_naive() -> datetime:
     """Return a naive UTC datetime without deprecated utcnow()."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+@dataclass(frozen=True)
+class WeeklyTokenUsageSummary:
+    week_start: date
+    week_end: date
+    input_tokens_used: int
+    output_tokens_used: int
+    weighted_tokens_used: float
+
+
+def get_week_bounds(day: date) -> tuple[date, date]:
+    """Return the Monday-Sunday range containing the given date."""
+    week_start = day - timedelta(days=day.weekday())
+    week_end = week_start + timedelta(days=6)
+    return week_start, week_end
+
+
+def calculate_weighted_token_usage(input_tokens: int, output_tokens: int) -> float:
+    """Return weighted usage for budgeting: input/6 + output."""
+    safe_input = max(0, int(input_tokens or 0))
+    safe_output = max(0, int(output_tokens or 0))
+    return (safe_input / 6.0) + float(safe_output)
 
 
 async def get_or_create_session(
@@ -92,6 +116,10 @@ async def save_message(
     maths_difficulty: int | None = None,
     input_tokens: int | None = None,
     output_tokens: int | None = None,
+    llm_provider: str | None = None,
+    llm_model: str | None = None,
+    estimated_cost_usd: float | None = None,
+    llm_usage: dict | None = None,
     attachment_ids: list[str] | None = None,
 ) -> ChatMessage:
     """Persist a chat message to the database."""
@@ -104,6 +132,10 @@ async def save_message(
         maths_difficulty=maths_difficulty,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        estimated_cost_usd=estimated_cost_usd,
+        llm_usage_json=json.dumps(llm_usage) if llm_usage else None,
         attachments_json=json.dumps(attachment_ids) if attachment_ids else None,
     )
     db.add(msg)
@@ -284,18 +316,48 @@ async def get_daily_usage(db: AsyncSession, user_id: uuid.UUID) -> DailyTokenUsa
     return usage
 
 
-async def check_daily_limit(db: AsyncSession, user_id: uuid.UUID) -> bool:
-    """Return True if the user still has daily token budget remaining.
+async def get_weekly_usage_summary(
+    db: AsyncSession, user_id: uuid.UUID, for_date: date | None = None
+) -> WeeklyTokenUsageSummary:
+    """Return the current week's usage summary from daily aggregates."""
+    target_day = for_date or date.today()
+    week_start, week_end = get_week_bounds(target_day)
+
+    row = (
+        (
+            await db.execute(
+                select(
+                    func.coalesce(func.sum(DailyTokenUsage.input_tokens_used), 0),
+                    func.coalesce(func.sum(DailyTokenUsage.output_tokens_used), 0),
+                ).where(
+                    DailyTokenUsage.user_id == user_id,
+                    DailyTokenUsage.date >= week_start,
+                    DailyTokenUsage.date <= week_end,
+                )
+            )
+        )
+        .one()
+    )
+    input_used = int(row[0] or 0)
+    output_used = int(row[1] or 0)
+    weighted_used = calculate_weighted_token_usage(input_used, output_used)
+    return WeeklyTokenUsageSummary(
+        week_start=week_start,
+        week_end=week_end,
+        input_tokens_used=input_used,
+        output_tokens_used=output_used,
+        weighted_tokens_used=weighted_used,
+    )
+
+
+async def check_weekly_limit(db: AsyncSession, user_id: uuid.UUID) -> bool:
+    """Return True if the user still has weekly weighted token budget remaining.
 
     This is a pre-call check only. Precise usage is recorded after the
     LLM call via record_token_usage().
     """
-    usage = await get_daily_usage(db, user_id)
-    if usage.input_tokens_used >= settings.user_daily_input_token_limit:
-        return False
-    if usage.output_tokens_used >= settings.user_daily_output_token_limit:
-        return False
-    return True
+    usage = await get_weekly_usage_summary(db, user_id)
+    return usage.weighted_tokens_used < float(settings.user_weekly_weighted_token_limit)
 
 
 async def record_token_usage(

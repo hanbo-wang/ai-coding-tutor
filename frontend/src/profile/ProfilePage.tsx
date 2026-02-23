@@ -16,6 +16,11 @@ export function ProfilePage() {
 
   const [usage, setUsage] = useState<TokenUsage | null>(null);
 
+  const oneDpFormatter = new Intl.NumberFormat("en-GB", {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  });
+
   useEffect(() => {
     apiFetch<TokenUsage>("/api/chat/usage")
       .then(setUsage)
@@ -46,6 +51,12 @@ export function ProfilePage() {
   }
 
   const levelLabels = ["Beginner", "Elementary", "Intermediate", "Advanced", "Expert"];
+  const formatDate = (value: string) =>
+    new Date(`${value}T00:00:00`).toLocaleDateString("en-GB", {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    });
 
   return (
     <div className="h-full overflow-y-auto">
@@ -167,18 +178,22 @@ export function ProfilePage() {
         </form>
       </div>
 
-      {/* Daily usage */}
+      {/* Weekly usage */}
       {usage && (
         <div className="bg-white rounded-lg shadow-md p-6">
-          <h2 className="text-lg font-bold text-brand mb-3">Daily Usage</h2>
-          <div className="w-full bg-gray-200 rounded-full h-4 mb-2">
+          <h2 className="text-lg font-bold text-brand mb-1">Weekly Token Budget</h2>
+          <p className="text-sm text-gray-600 mb-4">
+            {formatDate(usage.week_start)} to {formatDate(usage.week_end)}
+          </p>
+
+          <div className="w-full bg-gray-200 rounded-full h-4 mb-2" aria-label="Weekly token budget usage">
             <div
               className="bg-accent h-4 rounded-full transition-all"
               style={{ width: `${Math.min(usage.usage_percentage, 100)}%` }}
             />
           </div>
           <p className="text-sm text-gray-600">
-            {usage.usage_percentage.toFixed(1)}% of daily limit used
+            {oneDpFormatter.format(usage.usage_percentage)}% used
           </p>
         </div>
       )}

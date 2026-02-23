@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     # Additional AI and upload settings are also defined here.
 ```
 
-A single global `settings` instance is created at module level and imported everywhere. Keep all keys from `.env.example` in `.env`, because `config.py` defines structure only and does not hard-code runtime values.
+A single global `settings` instance is created at module level and imported everywhere. Keep all keys from `.github/workflows/templates/env.dev.example` in `.env`, because `config.py` defines structure only and does not hard-code runtime values.
 
 ### 3. Database setup
 
@@ -159,7 +159,7 @@ Migrations are the single source of truth for schema changes. `init_db()` runs `
 - `db` service: PostgreSQL 15 with a named volume (`postgres_data`) for data persistence. Includes a health check using `pg_isready` (5 second interval, 5 retries). Exposed on port 5432.
 - `backend` service: Builds from `backend/Dockerfile`, depends on `db` (waits for healthy status), loads `.env` file, mounts `./backend:/app` for live code reloading, runs Uvicorn with `--reload` on port 8000.
 
-**`.env.example`** (project root): Template with all required environment variables including `DATABASE_URL`, `JWT_SECRET_KEY`, `CORS_ORIGINS`, and LLM API keys.
+**`.github/workflows/templates/env.dev.example`**: Template with all required environment variables including `DATABASE_URL`, `JWT_SECRET_KEY`, `CORS_ORIGINS`, and LLM API keys.
 
 **`start.bat`** (project root): Windows one-click startup script. It checks Docker engine connectivity (15-second timeout), starts `db` and `backend`, waits for `/health`, verifies provider connectivity via `/api/health/ai`, then starts the frontend only when at least one LLM provider is available. If a check fails, it prints diagnostics and recent logs.
 

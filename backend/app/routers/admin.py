@@ -1,16 +1,17 @@
 """Admin router: zone management, usage visibility, and audit log."""
 
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai.pricing import estimate_llm_cost_usd
 from app.config import LLM_PRICING, settings
 from app.dependencies import get_admin_user, get_db
-from app.models.chat import DailyTokenUsage
+from app.models.chat import ChatMessage, DailyTokenUsage
 from app.models.user import User
 from app.schemas.zone import (
     ZoneCreate,
@@ -51,6 +52,15 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 def _estimate_cost(input_tokens: int, output_tokens: int) -> float:
     """Estimate cost in USD using the configured provider's pricing."""
     provider = settings.llm_provider.lower()
+    default_model_by_provider = {
+        "anthropic": settings.llm_model_anthropic,
+        "openai": settings.llm_model_openai,
+        "google": settings.llm_model_google,
+    }
+    model_id = default_model_by_provider.get(provider, "")
+    if model_id:
+        return estimate_llm_cost_usd(provider, model_id, input_tokens, output_tokens)
+
     pricing = LLM_PRICING.get(provider, LLM_PRICING.get("anthropic", {}))
     input_cost = (input_tokens / 1_000_000) * pricing.get("input_per_mtok", 0)
     output_cost = (output_tokens / 1_000_000) * pricing.get("output_per_mtok", 0)
@@ -68,10 +78,29 @@ async def _aggregate_usage(db: AsyncSession, start_date: date) -> dict:
     row = result.one()
     input_tokens = int(row[0])
     output_tokens = int(row[1])
+
+    start_dt = datetime.combine(start_date, time.min)
+    cost_result = await db.execute(
+        select(
+            func.coalesce(func.sum(ChatMessage.estimated_cost_usd), 0.0),
+            func.count(ChatMessage.id),
+            func.count(ChatMessage.estimated_cost_usd),
+        ).where(
+            ChatMessage.role == "assistant",
+            ChatMessage.created_at >= start_dt,
+        )
+    )
+    cost_row = cost_result.one()
+    estimated_cost_usd = round(float(cost_row[0] or 0.0), 4)
+    assistant_count = int(cost_row[1] or 0)
+    cost_count = int(cost_row[2] or 0)
+    coverage = 1.0 if assistant_count == 0 else round(cost_count / assistant_count, 4)
+
     return {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
-        "estimated_cost_usd": _estimate_cost(input_tokens, output_tokens),
+        "estimated_cost_usd": estimated_cost_usd,
+        "estimated_cost_coverage": coverage,
     }
 
 

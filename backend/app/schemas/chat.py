@@ -45,9 +45,11 @@ class ChatSessionListItem(BaseModel):
 
 
 class TokenUsageOut(BaseModel):
-    date: date
+    week_start: date
+    week_end: date
     input_tokens_used: int
     output_tokens_used: int
-    daily_input_limit: int
-    daily_output_limit: int
+    weighted_tokens_used: float
+    remaining_weighted_tokens: float
+    weekly_weighted_limit: int
     usage_percentage: float

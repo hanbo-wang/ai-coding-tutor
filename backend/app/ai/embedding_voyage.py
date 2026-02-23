@@ -84,7 +84,37 @@ class VoyageEmbeddingService:
     ) -> Optional[list[float]]:
         """Embed an image via Voyage multimodal embeddings."""
         image_b64 = base64.b64encode(image_bytes).decode("ascii")
+        data_url = f"data:{content_type};base64,{image_b64}"
         payload_candidates = [
+            {
+                "model": VOYAGE_MODEL,
+                "input_type": "query",
+                "inputs": [
+                    {
+                        "content": [
+                            {
+                                "type": "image_base64",
+                                # Voyage expects a data URL string in image_base64.
+                                "image_base64": data_url,
+                            }
+                        ]
+                    }
+                ],
+            },
+            {
+                "model": VOYAGE_MODEL,
+                "input_type": "query",
+                "inputs": [
+                    {
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": data_url,
+                            }
+                        ]
+                    }
+                ],
+            },
             {
                 "model": VOYAGE_MODEL,
                 "inputs": [
@@ -92,34 +122,7 @@ class VoyageEmbeddingService:
                         "content": [
                             {
                                 "type": "image_base64",
-                                "image_base64": image_b64,
-                                "media_type": content_type,
-                            }
-                        ]
-                    }
-                ],
-            },
-            {
-                "model": VOYAGE_MODEL,
-                "inputs": [
-                    {
-                        "content": [
-                            {
-                                "type": "image",
-                                "image": f"data:{content_type};base64,{image_b64}",
-                            }
-                        ]
-                    }
-                ],
-            },
-            {
-                "model": VOYAGE_MODEL,
-                "inputs": [
-                    {
-                        "content": [
-                            {
-                                "type": "image_url",
-                                "image_url": f"data:{content_type};base64,{image_b64}",
+                                "image_base64": data_url,
                             }
                         ]
                     }

@@ -61,7 +61,21 @@ function postToParent(message: Record<string, unknown>): void {
   window.parent.postMessage(message, window.location.origin);
 }
 
+function markBridgeRuntime(partial: Record<string, unknown>): void {
+  const runtimeWindow = window as unknown as Record<string, unknown>;
+  const existing =
+    runtimeWindow.__guidedCursorNotebookBridge &&
+    typeof runtimeWindow.__guidedCursorNotebookBridge === "object"
+      ? (runtimeWindow.__guidedCursorNotebookBridge as Record<string, unknown>)
+      : {};
+  runtimeWindow.__guidedCursorNotebookBridge = {
+    ...existing,
+    ...partial,
+  };
+}
+
 function announceReady(): void {
+  markBridgeRuntime({ ready: true, readyAt: Date.now() });
   postToParent({ command: "ready" });
 }
 
@@ -1048,39 +1062,12 @@ const plugin: JupyterFrontEndPlugin<void> = {
   id: "guided-cursor-jupyterlite-bridge",
   autoStart: true,
   activate: (app: JupyterFrontEnd) => {
-    enforceWorkspaceShellMode(app);
-    injectWorkspaceChromeStyles();
-    installDownloadCommandOverride(app);
-    void app.started.then(async () => {
-      await clearRecentDocuments(app);
+    markBridgeRuntime({
+      pluginId: "guided-cursor-jupyterlite-bridge",
+      activatedAt: Date.now(),
+      ready: false,
+      startupWarnings: [],
     });
-
-    app.commands.commandExecuted.connect((_, args: { id?: unknown }) => {
-      const commandId = typeof args.id === "string" ? args.id : "";
-      if (!MANUAL_SAVE_COMMANDS.has(commandId)) {
-        return;
-      }
-      postToParent({ command: "notebook-save-requested" });
-    });
-
-    if (app.shell.currentChanged) {
-      app.shell.currentChanged.connect(() => {
-        const widget = app.shell.currentWidget;
-        if (widget instanceof NotebookPanel) {
-          if (widget.context.path !== activeNotebookPath) {
-            closeWidgetWithoutPrompt(widget);
-            scheduleWorkspaceRestore(app, activeNotebookPath, activeNotebookTitle);
-            return;
-          }
-          setActiveNotebookPanel(widget);
-          applyNotebookPresentation(widget, activeNotebookTitle, app);
-          return;
-        }
-        if (!widget) {
-          scheduleWorkspaceRestore(app, activeNotebookPath, activeNotebookTitle);
-        }
-      });
-    }
 
     window.addEventListener("message", async (event: MessageEvent<BridgeMessage>) => {
       if (event.origin !== window.location.origin) {
@@ -1199,6 +1186,62 @@ const plugin: JupyterFrontEndPlugin<void> = {
         reply(message, { error: text });
       }
     });
+
+    const startupWarnings: string[] = [];
+    const runStartupStep = (label: string, fn: () => void) => {
+      try {
+        fn();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        startupWarnings.push(`${label}: ${message}`);
+        console.error(`[jupyterlite-bridge] ${label} failed`, error);
+      }
+    };
+
+    runStartupStep("enforceWorkspaceShellMode", () => {
+      enforceWorkspaceShellMode(app);
+    });
+    runStartupStep("injectWorkspaceChromeStyles", () => {
+      injectWorkspaceChromeStyles();
+    });
+    runStartupStep("installDownloadCommandOverride", () => {
+      installDownloadCommandOverride(app);
+    });
+
+    void app.started.then(async () => {
+      await clearRecentDocuments(app);
+    });
+
+    app.commands.commandExecuted.connect((_, args: { id?: unknown }) => {
+      const commandId = typeof args.id === "string" ? args.id : "";
+      if (!MANUAL_SAVE_COMMANDS.has(commandId)) {
+        return;
+      }
+      postToParent({ command: "notebook-save-requested" });
+    });
+
+    if (app.shell.currentChanged) {
+      app.shell.currentChanged.connect(() => {
+        const widget = app.shell.currentWidget;
+        if (widget instanceof NotebookPanel) {
+          if (widget.context.path !== activeNotebookPath) {
+            closeWidgetWithoutPrompt(widget);
+            scheduleWorkspaceRestore(app, activeNotebookPath, activeNotebookTitle);
+            return;
+          }
+          setActiveNotebookPanel(widget);
+          applyNotebookPresentation(widget, activeNotebookTitle, app);
+          return;
+        }
+        if (!widget) {
+          scheduleWorkspaceRestore(app, activeNotebookPath, activeNotebookTitle);
+        }
+      });
+    }
+
+    if (startupWarnings.length > 0) {
+      markBridgeRuntime({ startupWarnings });
+    }
 
     // Emit ready more than once to avoid a one-off timing race on fast loads.
     announceReady();
