@@ -36,7 +36,7 @@ The table below defines what each level means internally. These descriptions are
 
 ### 1.3 Hidden Effective Levels and Dynamic Adjustment
 
-The system maintains two hidden floating-point values per student: `effective_programming_level` and `effective_maths_level` (range 1.0 to 5.0). These are initialised from the self-assessment integers on the student's first chat interaction.
+The system maintains two hidden floating-point values per student: `effective_programming_level` and `effective_maths_level` (range 1.0 to 5.0). These are initialised from the self-assessment integers on the student's first chat interaction. When the student updates a self-assessed skill level in Profile, the corresponding hidden effective level is rebased to that new value.
 
 After each completed problem (detected when the student moves on to a new topic, see Section 2.4), the effective levels are updated using an Exponential Moving Average (EMA). Each dimension is updated independently using its own difficulty rating (see Section 2.5).
 
@@ -272,7 +272,7 @@ The response controller supports three modes for `/ws/chat`:
 
 For the first message in a session, there is no previous Q+A context, so the hidden metadata is expected to mark a new problem.
 
-**Implementation detail:** The student state caches the previous Q+A text and the Q+A context embedding. After each LLM response, the concatenated question and answer are embedded and stored as the next context reference. Canned responses do not update the context state.
+**Implementation detail:** The student state caches the previous Q+A text and the Q+A context embedding. After each LLM response, the concatenated question and answer are embedded and stored as the next context reference. Canned responses do not update the context state. The WebSocket handler keeps this hidden pedagogy runtime state per chat session (not shared across different session IDs on the same socket), and the `auto` response-controller degradation counters follow the same session boundary.
 
 **Implementation:** `backend/app/ai/pedagogy_engine.py`, `backend/app/ai/prompts.py`, and `backend/app/services/stream_meta_parser.py`
 
@@ -402,7 +402,7 @@ Index on `(session_id, created_at)` for efficient history retrieval.
 
 **`backend/app/services/chat_service.py`:**
 
-- `get_or_create_session(db, user_id, session_id=None) -> ChatSession`: reuses an existing session when provided and owned by the user, otherwise creates a new general session.
+- `get_or_create_session(db, user_id, session_id=None) -> ChatSession`: reuses a provided session only when it is owned by the user and matches the incoming request scope; otherwise it ignores the mismatched `session_id` and resolves or creates a session for the current scope.
 - `save_message(...) -> ChatMessage`: stores user/assistant turns with metadata (`hint_level_used`, difficulty values, and optional attachment IDs).
 - `get_chat_history(db, session_id) -> list[dict]`: loads chronological role/content history for context building.
 - `get_session_messages(db, user_id, session_id) -> list[dict] | None`: ownership-checked history endpoint payload, including resolved attachment metadata.
@@ -580,7 +580,7 @@ The chat response path uses the hidden rolling summary cache (stored on `chat_se
 
 1. Client connects with JWT as query parameter: `/ws/chat?token=<access_token>`.
 2. Backend validates the token. On failure, closes the connection with code 4001.
-3. Backend initialises embedding + pedagogy services and builds student state from the profile.
+3. Backend initialises embedding + pedagogy services and manages a session-scoped hidden pedagogy runtime state, seeded from the profile.
 4. On each message from the client:
    1. Parse the JSON payload. Core fields include `{content, session_id, upload_ids}`.
    2. Validate upload ID count and UUID format.
@@ -594,7 +594,7 @@ The chat response path uses the hidden rolling summary cache (stored on `chat_se
       - all paths compute embedding-based pedagogy signals for the hidden metadata prompt context.
    9. If filtered, send a canned response and store it.
    10. Otherwise, build prompt + context (using the hidden summary cache where available).
-   11. In single-pass mode, stream one LLM response with a hidden metadata header; in preflight mode, run one merged metadata JSON preflight call and then stream one tutor reply.
+   11. Use the current chat session's hidden pedagogy runtime state (previous Q+A context, hint/difficulty state, and auto-mode degradation counters): in single-pass mode, stream one LLM response with a hidden metadata header; in preflight mode, run one merged metadata JSON preflight call and then stream one tutor reply.
    12. Send a `meta` event as soon as metadata is available, then stream visible `token` events.
    13. Persist the assistant turn, apply pedagogy metadata, write effective levels back to `users`, and send the final `done` event.
    14. Schedule an asynchronous hidden summary-cache refresh for the session.

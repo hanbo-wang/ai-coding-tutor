@@ -94,6 +94,7 @@ export function ZoneNotebookWorkspacePage() {
           </div>
           <div className="min-w-0 h-full">
             <WorkspaceChatPanel
+              key={`workspace-chat:zone:${zoneId}:${notebookId}`}
               sessionType="zone"
               moduleId={notebookId}
               getCellContext={getCellContext}

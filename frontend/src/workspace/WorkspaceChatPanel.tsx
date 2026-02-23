@@ -22,6 +22,7 @@ export function WorkspaceChatPanel({
   getCellContext,
 }: WorkspaceChatPanelProps) {
   const [isResettingSession, setIsResettingSession] = useState(false);
+  const [isLoadingScopedSession, setIsLoadingScopedSession] = useState(false);
   const {
     messages,
     setMessages,
@@ -40,6 +41,12 @@ export function WorkspaceChatPanel({
   useEffect(() => {
     let cancelled = false;
 
+    setIsLoadingScopedSession(true);
+    setSessionId(null);
+    setMessages([]);
+    setStreamingContent("");
+    setStreamingMeta(null);
+
     const loadScopedSession = async () => {
       try {
         const params = new URLSearchParams({
@@ -51,10 +58,7 @@ export function WorkspaceChatPanel({
         );
         if (!existing?.id) {
           if (!cancelled) {
-            setSessionId(null);
-            setMessages([]);
-            setStreamingContent("");
-            setStreamingMeta(null);
+            setIsLoadingScopedSession(false);
           }
           return;
         }
@@ -66,6 +70,7 @@ export function WorkspaceChatPanel({
           setMessages(sessionMessages);
           setStreamingContent("");
           setStreamingMeta(null);
+          setIsLoadingScopedSession(false);
         }
       } catch {
         if (!cancelled) {
@@ -73,6 +78,7 @@ export function WorkspaceChatPanel({
           setMessages([]);
           setStreamingContent("");
           setStreamingMeta(null);
+          setIsLoadingScopedSession(false);
         }
       }
     };
@@ -81,10 +87,17 @@ export function WorkspaceChatPanel({
     return () => {
       cancelled = true;
     };
-  }, [sessionType, moduleId, setSessionId, setMessages, setStreamingContent]);
+  }, [
+    sessionType,
+    moduleId,
+    setSessionId,
+    setMessages,
+    setStreamingContent,
+    setStreamingMeta,
+  ]);
 
   const handleSend = async (content: string, files: File[]) => {
-    if (!socketRef.current || isStreaming) return;
+    if (!socketRef.current || isStreaming || isLoadingScopedSession) return;
 
     const prepared = await prepareSendPayload(content, files).catch((err) => {
       const message =
@@ -120,11 +133,12 @@ export function WorkspaceChatPanel({
   };
 
   const handleNewChat = async () => {
-    if (isStreaming || isResettingSession) return;
+    if (isStreaming || isResettingSession || isLoadingScopedSession) return;
 
     if (!sessionId) {
       setMessages([]);
       setStreamingContent("");
+      setStreamingMeta(null);
       return;
     }
 
@@ -157,10 +171,14 @@ export function WorkspaceChatPanel({
         <button
           type="button"
           onClick={() => void handleNewChat()}
-          disabled={isStreaming || isResettingSession}
+          disabled={isStreaming || isResettingSession || isLoadingScopedSession}
           className="rounded-md border border-gray-300 px-2.5 py-1 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {isResettingSession ? "Resetting..." : "New chat"}
+          {isLoadingScopedSession
+            ? "Loading..."
+            : isResettingSession
+              ? "Resetting..."
+              : "New chat"}
         </button>
       </div>
 
@@ -185,7 +203,9 @@ export function WorkspaceChatPanel({
 
       <ChatInput
         onSend={handleSend}
-        disabled={isStreaming || !connected || isResettingSession}
+        disabled={
+          isStreaming || !connected || isResettingSession || isLoadingScopedSession
+        }
       />
     </div>
   );

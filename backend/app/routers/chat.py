@@ -5,6 +5,7 @@ import base64
 import json
 import logging
 import uuid as uuid_mod
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 
@@ -49,6 +50,16 @@ from app.services.zone_service import get_zone_notebook_for_context
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["chat"])
+
+
+@dataclass
+class _SessionRuntimeState:
+    """Per-session hidden pedagogy runtime state for a single WebSocket connection."""
+
+    student_state: "StudentState"
+    single_pass_header_failure_streak: int = 0
+    auto_degraded_to_preflight: bool = False
+    preflight_turns_since_degrade: int = 0
 
 
 # ── REST endpoints ──────────────────────────────────────────────────
@@ -412,19 +423,25 @@ async def websocket_chat(
         return
 
     from app.ai.pedagogy_engine import StudentState
-    student_state = StudentState(
-        user_id=user_id_str,
-        effective_programming_level=(
-            user.effective_programming_level
-            if user.effective_programming_level is not None
-            else float(user.programming_level)
-        ),
-        effective_maths_level=(
-            user.effective_maths_level
-            if user.effective_maths_level is not None
-            else float(user.maths_level)
-        ),
-    )
+
+    def _new_session_runtime_state(db_user: User) -> _SessionRuntimeState:
+        return _SessionRuntimeState(
+            student_state=StudentState(
+                user_id=user_id_str,
+                effective_programming_level=(
+                    db_user.effective_programming_level
+                    if db_user.effective_programming_level is not None
+                    else float(db_user.programming_level)
+                ),
+                effective_maths_level=(
+                    db_user.effective_maths_level
+                    if db_user.effective_maths_level is not None
+                    else float(db_user.maths_level)
+                ),
+            ),
+            auto_degraded_to_preflight=(settings.chat_pedagogy_response_mode == "preflight"),
+        )
+
     pedagogy_response_mode = settings.chat_pedagogy_response_mode
     single_pass_failures_before_preflight = max(
         1, int(settings.chat_single_pass_header_failures_before_preflight or 1)
@@ -432,9 +449,7 @@ async def websocket_chat(
     preflight_turns_before_single_pass_retry = max(
         1, int(settings.chat_preflight_turns_before_single_pass_retry or 1)
     )
-    single_pass_header_failure_streak = 0
-    auto_degraded_to_preflight = pedagogy_response_mode == "preflight"
-    preflight_turns_since_degrade = 0
+    session_runtime_states: dict[str, _SessionRuntimeState] = {}
 
     try:
         while True:
@@ -493,6 +508,13 @@ async def websocket_chat(
                 continue
 
             async with AsyncSessionLocal() as db:
+                db_user_result = await db.execute(select(User).where(User.id == user.id))
+                db_user = db_user_result.scalar_one_or_none()
+                if db_user is None:
+                    await websocket.send_json({"type": "error", "message": "Authentication failed"})
+                    await websocket.close(code=4001, reason="Authentication failed")
+                    return
+
                 session_type = "general"
                 module_id: uuid_mod.UUID | None = None
                 notebook_context: str | None = None
@@ -567,6 +589,22 @@ async def websocket_chat(
                     session_type=session_type,
                     module_id=module_id,
                 )
+                session_key = str(session.id)
+                runtime_state = session_runtime_states.get(session_key)
+                if runtime_state is None:
+                    runtime_state = _new_session_runtime_state(db_user)
+                    session_runtime_states[session_key] = runtime_state
+                student_state = runtime_state.student_state
+                student_state.effective_programming_level = (
+                    db_user.effective_programming_level
+                    if db_user.effective_programming_level is not None
+                    else float(db_user.programming_level)
+                )
+                student_state.effective_maths_level = (
+                    db_user.effective_maths_level
+                    if db_user.effective_maths_level is not None
+                    else float(db_user.maths_level)
+                )
 
                 stored_content = user_message if user_message else "Sent attachments."
                 await chat_service.save_message(
@@ -583,7 +621,7 @@ async def websocket_chat(
                 fast_signals = await pedagogy_engine.prepare_fast_signals(
                     enriched_user_message,
                     student_state,
-                    username=user.username,
+                    username=db_user.username,
                     embedding_override=combined_embedding,
                     enable_greeting_filter=(
                         topic_filters_allowed and settings.chat_enable_greeting_filter
@@ -616,7 +654,10 @@ async def websocket_chat(
                 summary_cache = chat_service.get_summary_cache_snapshot(session)
                 use_preflight_reply = bool(
                     pedagogy_response_mode == "preflight"
-                    or (pedagogy_response_mode == "auto" and auto_degraded_to_preflight)
+                    or (
+                        pedagogy_response_mode == "auto"
+                        and runtime_state.auto_degraded_to_preflight
+                    )
                 )
 
                 preflight_usage_input_tokens = 0
@@ -756,37 +797,37 @@ async def websocket_chat(
 
                 if not use_preflight_reply and pedagogy_response_mode == "auto":
                     if single_pass_meta_source == "header" and not single_pass_parse_failed:
-                        single_pass_header_failure_streak = 0
+                        runtime_state.single_pass_header_failure_streak = 0
                     else:
-                        single_pass_header_failure_streak += 1
+                        runtime_state.single_pass_header_failure_streak += 1
                         if (
-                            not auto_degraded_to_preflight
-                            and single_pass_header_failure_streak
+                            not runtime_state.auto_degraded_to_preflight
+                            and runtime_state.single_pass_header_failure_streak
                             >= single_pass_failures_before_preflight
                         ):
-                            auto_degraded_to_preflight = True
-                            preflight_turns_since_degrade = 0
+                            runtime_state.auto_degraded_to_preflight = True
+                            runtime_state.preflight_turns_since_degrade = 0
                             logger.warning(
                                 "Auto-degrading chat pedagogy response path to merged preflight "
                                 "after %d consecutive header parse failures",
-                                single_pass_header_failure_streak,
+                                runtime_state.single_pass_header_failure_streak,
                             )
                 elif (
                     use_preflight_reply
                     and pedagogy_response_mode == "auto"
-                    and auto_degraded_to_preflight
+                    and runtime_state.auto_degraded_to_preflight
                 ):
                     if getattr(stream_meta, "source", None) == "preflight":
-                        preflight_turns_since_degrade += 1
+                        runtime_state.preflight_turns_since_degrade += 1
                     else:
-                        preflight_turns_since_degrade = 0
+                        runtime_state.preflight_turns_since_degrade = 0
                     if (
-                        preflight_turns_since_degrade
+                        runtime_state.preflight_turns_since_degrade
                         >= preflight_turns_before_single_pass_retry
                     ):
-                        auto_degraded_to_preflight = False
-                        preflight_turns_since_degrade = 0
-                        single_pass_header_failure_streak = 0
+                        runtime_state.auto_degraded_to_preflight = False
+                        runtime_state.preflight_turns_since_degrade = 0
+                        runtime_state.single_pass_header_failure_streak = 0
                         logger.info(
                             "Auto mode retrying single-pass chat pedagogy response path "
                             "after %d successful preflight turns",
@@ -833,11 +874,8 @@ async def websocket_chat(
                 # Record precise usage to daily totals.
                 await chat_service.record_token_usage(db, user.id, input_tokens, output_tokens)
 
-                db_user_result = await db.execute(select(User).where(User.id == user.id))
-                db_user = db_user_result.scalar_one_or_none()
-                if db_user:
-                    db_user.effective_programming_level = student_state.effective_programming_level
-                    db_user.effective_maths_level = student_state.effective_maths_level
+                db_user.effective_programming_level = student_state.effective_programming_level
+                db_user.effective_maths_level = student_state.effective_maths_level
 
                 await db.commit()
 

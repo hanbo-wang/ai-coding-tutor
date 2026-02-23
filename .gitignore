@@ -20,15 +20,24 @@ venv/
 *.egg-info/
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
+.hypothesis/
+.tox/
+.nox/
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
 
 # Node and frontend
 node_modules/
 node_modules.*/
+node_modules_pre_ci_backup_*/
 dist/
 .vite/
 *.tsbuildinfo
+playwright-report/
+test-results/
 
 # JupyterLite build output
 frontend/public/jupyterlite/

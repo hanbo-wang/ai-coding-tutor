@@ -81,7 +81,7 @@ The `Base` class declared here is imported by all other models and by Alembic me
 - `UserCreate`: email (validated via `EmailStr`), username (str, 3 to 50 characters), password (minimum 8 characters), programming_level (optional, default 3, range 1 to 5), maths_level (optional, default 3, range 1 to 5).
 - `UserLogin`: email, password.
 - `UserProfile`: id, email, username, programming_level, maths_level, created_at. Uses `from_attributes = True` to map directly from ORM objects.
-- `UserProfileUpdate`: username (optional str), programming_level (optional, range 1 to 5), maths_level (optional, range 1 to 5). Used for the `PUT /api/auth/me` endpoint.
+- `UserProfileUpdate`: username (optional str), programming_level (optional, range 1 to 5), maths_level (optional, range 1 to 5). Used for the `PUT /api/auth/me` endpoint. When a skill level is updated, the backend also resets the corresponding hidden effective level baseline to the same value.
 - `ChangePassword`: current_password (str), new_password (str, minimum 8 characters).
 - `TokenResponse`: access_token, token_type (defaults to `"bearer"`).
 
@@ -210,7 +210,7 @@ React context providing: `user`, `login()`, `register()`, `logout()`, `updatePro
 - `login()` sends credentials (email + password) to `/api/auth/login`, stores the access token, and fetches the user profile.
 - `register()` sends data to `/api/auth/register`, stores the access token, and fetches the user profile.
 - `logout()` calls `/api/auth/logout`, then clears the in-memory token and user state.
-- `updateProfile()` sends updated username and skill levels to `PUT /api/auth/me` and updates the local user state.
+- `updateProfile()` sends updated username and skill levels to `PUT /api/auth/me` and updates the local user state. The backend keeps hidden effective levels aligned with any changed self-assessed skill sliders.
 - `changePassword()` sends current and new password to `PUT /api/auth/me/password`.
 
 ### 15. Auth pages
@@ -232,7 +232,7 @@ Validates that the two passwords match and that the password is at least 8 chara
 
 ### 16. Profile page
 
-**`frontend/src/profile/ProfilePage.tsx`**: Displays the user's email (read-only) and "Member since" date. Provides an editable username field. Provides range sliders for programming_level and maths_level (labelled Beginner to Expert). Includes a "Change Password" link that navigates to a separate page. Calls `updateProfile()` on form submission. Shows a green success message or a red error message after saving.
+**`frontend/src/profile/ProfilePage.tsx`**: Displays the user's email (read-only) and "Member since" date. Provides an editable username field. Provides range sliders for programming_level and maths_level (labelled Beginner to Expert). Includes a "Change Password" link that navigates to a separate page. Calls `updateProfile()` on form submission. Saving updated skill sliders also rebases the corresponding hidden effective tutor levels on the backend. Shows a green success message or a red error message after saving.
 
 **`frontend/src/profile/ChangePasswordPage.tsx`**: A standalone page at `/change-password`. Contains fields for current password, new password, and confirm new password. Validates that the two new passwords match and the new password is at least 8 characters. Calls `changePassword()` from the auth context. Shows success or error messages. Includes a link back to the profile page.
 
@@ -265,7 +265,7 @@ Validates that the two passwords match and that the password is at least 8 chara
 - [ ] Registering with a duplicate email returns 400 with "Email already registered".
 - [ ] `POST /api/auth/login` accepts email and password, returns an access token and sets a refresh cookie.
 - [ ] `GET /api/auth/me` returns the user profile with both email and username.
-- [ ] `PUT /api/auth/me` updates username and skill levels. Returns the updated profile.
+- [ ] `PUT /api/auth/me` updates username and skill levels, and rebases the corresponding hidden effective levels when a skill slider changes. Returns the updated profile.
 - [ ] `PUT /api/auth/me/password` changes the password after verifying the current password.
 - [ ] `POST /api/auth/refresh` returns a new access token and rotates the refresh cookie.
 - [ ] Frontend register page shows "Tell us about you" heading with email, username, password, and skill level sliders.

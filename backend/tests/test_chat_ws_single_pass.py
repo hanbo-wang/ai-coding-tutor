@@ -106,6 +106,28 @@ class _FakePedagogyEngine:
         return None
 
 
+class _SessionAwareFallbackPedagogyEngine(_FakePedagogyEngine):
+    """Pedagogy stub that exposes previous-Q+A carry-over via fallback metadata."""
+
+    def build_fallback_stream_meta(self, student_state, fast_signals):
+        has_previous_exchange = bool(
+            (getattr(student_state, "last_question_text", "") or "").strip()
+            and (getattr(student_state, "last_answer_text", "") or "").strip()
+        )
+        return StreamPedagogyMeta(
+            same_problem=has_previous_exchange,
+            is_elaboration=False,
+            programming_difficulty=3,
+            maths_difficulty=3,
+            hint_level=2,
+            source="fallback",
+        )
+
+    async def update_context_embedding(self, student_state, question, answer, **kwargs) -> None:
+        student_state.last_question_text = question
+        student_state.last_answer_text = answer
+
+
 async def _create_user(session_factory: async_sessionmaker[AsyncSession]) -> User:
     async with session_factory() as db:
         user = User(
@@ -140,7 +162,11 @@ def _make_ws_app() -> FastAPI:
 
 
 def _setup_ws_test_env(
-    tmp_path, monkeypatch: pytest.MonkeyPatch, chunks: list[str] | list[list[str]]
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    chunks: list[str] | list[list[str]],
+    *,
+    pedagogy: _FakePedagogyEngine | None = None,
 ):
     db_path = tmp_path / "ws_chat.sqlite3"
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
@@ -149,7 +175,7 @@ def _setup_ws_test_env(
     user = _run(_create_user(session_factory))
 
     llm = _FakeStreamLLM(chunks)
-    pedagogy = _FakePedagogyEngine()
+    pedagogy = pedagogy or _FakePedagogyEngine()
     scheduled: list[str] = []
 
     async def _fake_authenticate_ws(token: str):
@@ -305,7 +331,8 @@ def test_ws_auto_mode_degrades_to_preflight_after_header_failures(tmp_path, monk
         with client.websocket_connect("/ws/chat?token=test") as ws:
             ws.send_text(json.dumps({"content": "first"}))
             events1 = _collect_until_done(ws)
-            ws.send_text(json.dumps({"content": "second"}))
+            session_id = next(e for e in events1 if e["type"] == "session")["session_id"]
+            ws.send_text(json.dumps({"content": "second", "session_id": session_id}))
             events2 = _collect_until_done(ws)
 
         meta1 = next(e for e in events1 if e["type"] == "meta")
@@ -352,9 +379,10 @@ def test_ws_auto_mode_retries_single_pass_after_stable_preflight_turns(
         with client.websocket_connect("/ws/chat?token=test") as ws:
             ws.send_text(json.dumps({"content": "first"}))
             events1 = _collect_until_done(ws)
-            ws.send_text(json.dumps({"content": "second"}))
+            session_id = next(e for e in events1 if e["type"] == "session")["session_id"]
+            ws.send_text(json.dumps({"content": "second", "session_id": session_id}))
             events2 = _collect_until_done(ws)
-            ws.send_text(json.dumps({"content": "third"}))
+            ws.send_text(json.dumps({"content": "third", "session_id": session_id}))
             events3 = _collect_until_done(ws)
 
         meta1 = next(e for e in events1 if e["type"] == "meta")
@@ -410,9 +438,10 @@ def test_ws_auto_mode_does_not_retry_single_pass_after_preflight_fallback_meta(
         with client.websocket_connect("/ws/chat?token=test") as ws:
             ws.send_text(json.dumps({"content": "first"}))
             events1 = _collect_until_done(ws)
-            ws.send_text(json.dumps({"content": "second"}))
+            session_id = next(e for e in events1 if e["type"] == "session")["session_id"]
+            ws.send_text(json.dumps({"content": "second", "session_id": session_id}))
             events2 = _collect_until_done(ws)
-            ws.send_text(json.dumps({"content": "third"}))
+            ws.send_text(json.dumps({"content": "third", "session_id": session_id}))
             events3 = _collect_until_done(ws)
 
         meta1 = next(e for e in events1 if e["type"] == "meta")
@@ -425,6 +454,91 @@ def test_ws_auto_mode_does_not_retry_single_pass_after_preflight_fallback_meta(
         assert llm.call_count == 3
         assert "".join(e["content"] for e in events3 if e["type"] == "token") == "Still preflight"
         assert len(scheduled) == 3
+    finally:
+        client.close()
+        _run(engine.dispose())
+
+
+def test_ws_hidden_pedagogy_state_is_isolated_between_new_sessions(
+    tmp_path, monkeypatch
+) -> None:
+    """A new session on the same socket should not inherit previous-Q+A pedagogy state."""
+
+    chunks = [["First reply"], ["Second reply"]]
+    pedagogy = _SessionAwareFallbackPedagogyEngine()
+    client, _session_factory, engine, scheduled, _llm, _pedagogy = _setup_ws_test_env(
+        tmp_path,
+        monkeypatch,
+        chunks,
+        pedagogy=pedagogy,
+    )
+    try:
+        with client.websocket_connect("/ws/chat?token=test") as ws:
+            ws.send_text(json.dumps({"content": "first"}))
+            events1 = _collect_until_done(ws)
+            ws.send_text(json.dumps({"content": "second"}))
+            events2 = _collect_until_done(ws)
+
+        session1 = next(e for e in events1 if e["type"] == "session")["session_id"]
+        session2 = next(e for e in events2 if e["type"] == "session")["session_id"]
+        meta1 = next(e for e in events1 if e["type"] == "meta")
+        meta2 = next(e for e in events2 if e["type"] == "meta")
+
+        assert session1 != session2
+        assert meta1["source"] == "fallback"
+        assert meta2["source"] == "fallback"
+        assert meta1["same_problem"] is False
+        assert meta2["same_problem"] is False
+        assert len(scheduled) == 2
+    finally:
+        client.close()
+        _run(engine.dispose())
+
+
+def test_ws_auto_mode_header_failure_degrade_is_isolated_per_session(
+    tmp_path, monkeypatch
+) -> None:
+    """Auto-mode degradation state should not leak from one session to another."""
+
+    monkeypatch.setattr("app.routers.chat.settings.chat_pedagogy_response_mode", "auto")
+    monkeypatch.setattr(
+        "app.routers.chat.settings.chat_single_pass_header_failures_before_preflight", 1
+    )
+    llm_calls = [
+        ["No", " header"],
+        [
+            "<<GC_META_V1>>",
+            '{"same_problem":false,"is_elaboration":false,'
+            '"programming_difficulty":3,"maths_difficulty":2,"hint_level":2}',
+            "<<END_GC_META>>",
+            "Fresh",
+            " session",
+        ],
+    ]
+    client, _session_factory, engine, scheduled, llm, pedagogy = _setup_ws_test_env(
+        tmp_path,
+        monkeypatch,
+        llm_calls,
+    )
+    try:
+        with client.websocket_connect("/ws/chat?token=test") as ws:
+            ws.send_text(json.dumps({"content": "first"}))
+            events1 = _collect_until_done(ws)
+            ws.send_text(json.dumps({"content": "second"}))
+            events2 = _collect_until_done(ws)
+
+        meta1 = next(e for e in events1 if e["type"] == "meta")
+        meta2 = next(e for e in events2 if e["type"] == "meta")
+        session1 = next(e for e in events1 if e["type"] == "session")["session_id"]
+        session2 = next(e for e in events2 if e["type"] == "session")["session_id"]
+
+        assert session1 != session2
+        assert meta1["source"] == "fallback"
+        assert meta2["source"] == "header"
+        assert "".join(e["content"] for e in events2 if e["type"] == "token") == "Fresh session"
+        assert pedagogy.preflight_calls == 0
+        assert llm.call_count == 2
+        assert len(scheduled) == 2
     finally:
         client.close()
         _run(engine.dispose())

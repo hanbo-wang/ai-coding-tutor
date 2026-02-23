@@ -254,12 +254,13 @@ Zone and notebook name updates are recorded in `admin_audit_log` with change det
   - `general`
   - `notebook`
   - `zone`
+- Reuses a provided `session_id` only when it matches the current scope; mismatched IDs are ignored and the current scope is resolved instead.
 - Keeps general sidebar clean by returning only `general` sessions from `/api/chat/sessions`.
 - Adds `/api/chat/sessions/find` for scoped session restore in workspace.
 
 **Service logic:** `backend/app/services/chat_service.py`
 
-- `get_or_create_session(...)` resolves and reuses scoped sessions.
+- `get_or_create_session(...)` resolves and reuses scoped sessions, and validates that any provided `session_id` matches the active request scope before reuse.
 - Handles unique-index races with `IntegrityError` fallback lookup.
 
 ### 4.6 Admin Email Rules
@@ -342,8 +343,10 @@ Key behaviours:
 
 - Resolves scoped session via `/api/chat/sessions/find`.
 - Restores scoped message history when available.
+- Clears local chat state and temporarily disables input while scoped session restore is in progress.
 - Sends messages with notebook scope and live cell/error context.
 - Provides `New chat` button that deletes current scoped session and starts fresh.
+- Workspace pages key the chat panel by scope so route changes remount the panel and close the previous WebSocket connection.
 
 ### 5.5 Zone Notebook Workspace
 
@@ -396,6 +399,7 @@ The project uses the official `react-split` package directly:
 - [ ] Shared zone files are manageable in admin dashboard and are not shown in student zone pages.
 - [ ] Rename a zone or zone notebook in admin dashboard: audit log entry includes change details.
 - [ ] Click `New chat` in workspace chat: scoped history resets for that notebook only.
+- [ ] Switch between two notebook routes and send a message immediately after the page loads: the message is stored in the active notebook's scoped chat session only.
 - [ ] Click `Reset to Original` in zone workspace: user progress is removed and original content reloads.
 
 ---

@@ -175,8 +175,10 @@ async def update_me(
 
     if update_data.programming_level is not None:
         current_user.programming_level = update_data.programming_level
+        current_user.effective_programming_level = float(update_data.programming_level)
     if update_data.maths_level is not None:
         current_user.maths_level = update_data.maths_level
+        current_user.effective_maths_level = float(update_data.maths_level)
 
     await db.commit()
     await db.refresh(current_user)

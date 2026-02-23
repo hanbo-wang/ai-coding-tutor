@@ -56,7 +56,13 @@ async def get_or_create_session(
     session_type: str = "general",
     module_id: uuid.UUID | None = None,
 ) -> ChatSession:
-    """Return the given session or create a new scoped session."""
+    """Return a matching owned session or create one for the requested scope.
+
+    A provided `session_id` is reused only when it belongs to the user and
+    matches the incoming request scope (`general`, `notebook`, or `zone`).
+    Otherwise it is ignored and the function resolves or creates a session
+    for the current scope.
+    """
     if session_id:
         result = await db.execute(
             select(ChatSession).where(
@@ -64,7 +70,11 @@ async def get_or_create_session(
             )
         )
         session = result.scalar_one_or_none()
-        if session:
+        if session and _session_matches_request_scope(
+            session,
+            session_type=session_type,
+            module_id=module_id,
+        ):
             return session
 
     if module_id is not None and session_type in {"notebook", "zone"}:
@@ -94,6 +104,22 @@ async def get_or_create_session(
     db.add(session)
     await db.flush()
     return session
+
+
+def _session_matches_request_scope(
+    session: ChatSession,
+    *,
+    session_type: str,
+    module_id: uuid.UUID | None,
+) -> bool:
+    """Return whether an existing session matches the current request scope."""
+    if session_type in {"notebook", "zone"}:
+        return (
+            session.session_type == session_type
+            and session.module_id is not None
+            and session.module_id == module_id
+        )
+    return session.session_type == "general"
 
 
 async def get_session_by_scope(

@@ -16,13 +16,13 @@
 The **pedagogy engine** controls every AI response:
 
 1. **Graduated hints**: five levels from Socratic questions, through conceptual nudges, structural outlines, and concrete examples, to full solutions. New problems always start at a lower hint level; follow-ups escalate one level at a time.
-2. **Adaptive student levels**: effective programming and maths levels (1.0–5.0) update automatically via exponential moving average, shaping how the tutor explains concepts.
+2. **Adaptive student levels**: effective programming and maths levels (1.0–5.0) update automatically via exponential moving average, shaping how the tutor explains concepts. When a student updates their self-assessed level in Profile, the corresponding effective level is rebased to that value.
 3. **Same-problem detection**: the LLM (or optionally embeddings) determines whether the student is continuing the same problem or asking something new, and adjusts the hint level accordingly.
 4. **Difficulty classification**: each message is rated for programming and maths difficulty so the tutor can calibrate the gap between the problem and the student's level.
 
 ## Features
 
-- **Streaming AI chat** over WebSocket with session management and chat history.
+- **Streaming AI chat** over WebSocket with session management, chat history, and session-isolated hidden pedagogy state.
 - **Three LLM providers with failover**: Vertex AI Gemini (default), Anthropic Claude, OpenAI GPT.
 - **File and image uploads**: drag-and-drop, file picker, or paste. Up to 3 images and 2 documents per message. PDFs, code files, and notebooks are parsed for context.
 - **Notebook workspace**: open `.ipynb` files in a split-pane layout with JupyterLite (browser-side Python via Pyodide) on the left and AI tutor chat on the right. Pre-loaded with NumPy, SciPy, Pandas, Matplotlib, and SymPy.

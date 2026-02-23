@@ -47,6 +47,7 @@ export function NotebookWorkspacePage() {
         </div>
         <div className="min-w-0 h-full">
           <WorkspaceChatPanel
+            key={`workspace-chat:notebook:${notebookId}`}
             sessionType="notebook"
             moduleId={notebookId}
             getCellContext={getCellContext}

@@ -142,14 +142,15 @@ For each `/ws/chat` message:
 2. Resolve notebook and attachment references, then validate attachment mix limits.
 3. Build enriched user text and apply the per-message input guard.
 4. Run `check_weekly_limit()` and reject if the weekly weighted budget is exhausted.
-5. Run fast pedagogy checks (including optional greeting/off-topic filters and embedding-only signals).
-6. Build prompt + context using the hidden rolling summary cache where available.
-7. Use the response controller mode:
+5. Load the latest profile values for the user and sync the session-scoped hidden pedagogy runtime state with the current hidden effective levels.
+6. Run fast pedagogy checks (including optional greeting/off-topic filters and embedding-only signals).
+7. Build prompt + context using the hidden rolling summary cache where available.
+8. Use the response controller mode (tracked per chat session on the socket):
    - single-pass path: stream one LLM response, parse the hidden metadata header, send a `meta` WebSocket event, then forward visible answer tokens;
    - merged preflight backup path: run one compact JSON metadata preflight call, send `meta`, then stream one visible tutor reply.
-8. Capture precise `input_tokens` and `output_tokens` (including merged preflight usage when the backup path runs).
-9. Persist usage through `record_token_usage()` with an atomic upsert into `daily_token_usage`.
-10. Schedule an asynchronous hidden summary-cache refresh task for the session.
+9. Capture precise `input_tokens` and `output_tokens` (including merged preflight usage when the backup path runs).
+10. Persist usage through `record_token_usage()` with an atomic upsert into `daily_token_usage`.
+11. Schedule an asynchronous hidden summary-cache refresh task for the session.
 
 ### 3.6A Merged Preflight Backup Path (Auto Degradation)
 
@@ -329,8 +330,10 @@ Current automated total (default offline run, excluding `external_ai` smoke test
 | File | Tests | Scope | Key checks |
 |------|------:|-------|------------|
 | `test_auth.py` | 5 | Auth helpers and token lifecycle | Password hashing/verification, access/refresh token claims, invalid token rejection, refresh cookie flags. |
+| `test_auth_profile_update_levels.py` | 3 | Profile update effective-level baseline resets | Per-dimension hidden effective-level rebasing when self-assessed skill levels change, and no reset on username-only updates. |
 | `test_chat.py` | 11 | Chat router helper logic | WebSocket token resolution, upload split and limit validation, enriched message generation, multimodal part generation, context truncation helpers. |
-| `test_chat_ws_single_pass.py` | 5 | WebSocket single-pass and preflight auto-mode flow | `meta` before first visible token, hidden-header stripping, fallback metadata path, auto degradation to merged preflight, guarded auto retry of single-pass, and clean assistant message persistence. |
+| `test_chat_service_scoping.py` | 4 | Chat session scope-matching and session reuse | Scope-safe session reuse, mismatched `session_id` fallback to current scope, and general/scoped separation. |
+| `test_chat_ws_single_pass.py` | 7 | WebSocket single-pass and preflight auto-mode flow | `meta` before first visible token, hidden-header stripping, fallback metadata path, auto degradation to merged preflight, guarded auto retry of single-pass, session-scoped hidden pedagogy isolation, and session-scoped auto-mode degradation isolation. |
 | `test_chat_usage_budget.py` | 2 | Weekly budget helper logic | Monday-Sunday week bounds and weighted usage formula (`input / 6 + output`). |
 | `test_chat_summary_cache.py` | 3 | Hidden rolling summary cache service | Summary write/clear behaviour, prefix-count persistence, and per-session refresh coalescing while a task is already running. |
 | `test_pedagogy.py` | 12 | Pedagogy engine behaviour | Embedding fast-signal filtering and elaboration hints, stream-metadata coercion/fallback, merged preflight metadata parsing/fallback, compact preflight payload trimming, Q+A context embedding updates, and effective-level EMA update. |
