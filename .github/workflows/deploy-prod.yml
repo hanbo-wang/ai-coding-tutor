@@ -185,7 +185,7 @@ jobs:
             docker compose -f docker-compose.prod.yml up -d
             docker compose -f docker-compose.prod.yml ps
 
-            docker compose -f docker-compose.prod.yml exec -T backend python - <<'PY'
+            if ! docker compose -f docker-compose.prod.yml exec -T backend python - <<'PY'
             import json
             import sys
             import urllib.request
@@ -204,3 +204,8 @@ jobs:
             if "vertex_embedding" in ai_health and not ai_health.get("vertex_embedding"):
                 sys.exit("Vertex embedding health check failed (vertex_embedding=false)")
             PY
+            then
+              echo "Post-deploy health check failed. Printing recent backend logs..."
+              docker compose -f docker-compose.prod.yml logs --tail=200 backend || true
+              exit 1
+            fi

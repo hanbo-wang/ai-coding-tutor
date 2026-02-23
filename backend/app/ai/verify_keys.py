@@ -108,8 +108,13 @@ async def verify_google_key(
         token, resolved_project_id = await _get_vertex_auth_context(
             credentials_path, project_id
         )
+        host = (
+            "aiplatform.googleapis.com"
+            if location == "global"
+            else f"{location}-aiplatform.googleapis.com"
+        )
         url = (
-            f"https://{location}-aiplatform.googleapis.com/v1/projects/"
+            f"https://{host}/v1/projects/"
             f"{resolved_project_id}/locations/{location}/publishers/google/models/"
             f"{model_id}:generateContent"
         )
