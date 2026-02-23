@@ -2,8 +2,24 @@ import { getAccessToken } from "./http";
 
 export type WsEvent =
   | { type: "session"; session_id: string }
+  | {
+      type: "meta";
+      hint_level: number;
+      programming_difficulty: number;
+      maths_difficulty: number;
+      same_problem: boolean;
+      is_elaboration: boolean;
+      source: "header" | "fallback" | string;
+    }
   | { type: "token"; content: string }
-  | { type: "done"; hint_level: number; programming_difficulty: number; maths_difficulty: number }
+  | {
+      type: "done";
+      hint_level: number;
+      programming_difficulty: number;
+      maths_difficulty: number;
+      input_tokens: number;
+      output_tokens: number;
+    }
   | { type: "error"; message: string }
   | { type: "canned"; content: string; filter: string };
 

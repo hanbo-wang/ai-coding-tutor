@@ -244,54 +244,55 @@ If the message is classified as off-topic, it is rejected:
 
 No LLM call is made for this branch.
 
-### 2.4 Same-Problem Detection via LLM (Default)
+### 2.4 Same-Problem and Elaboration Metadata (Single-Pass with Preflight Backup)
 
-By default, same-problem detection is handled by the configured LLM (`CHAT_SAME_PROBLEM_DETECTION_MODE=llm`). The classifier receives:
-- the previous user question,
-- the previous assistant answer, and
-- the current user message.
+The chat path uses a hidden metadata schema with five fields:
+- `same_problem`
+- `is_elaboration`
+- `programming_difficulty`
+- `maths_difficulty`
+- `hint_level`
 
-It returns strict JSON:
-- `same_problem`: whether the student is continuing the same underlying task/problem
-- `is_elaboration`: whether the message is a generic follow-up request with little new topic content (for example, "I don't understand", "explain more", "why?", "show me step by step")
+In the primary response path, one streamed LLM call emits a hidden metadata header before the visible tutor answer. The backend provides hidden pedagogy context to the model:
+- previous Q+A text (when available),
+- current effective levels,
+- current hint and difficulty state, and
+- embedding-based same-problem / elaboration signals.
 
-This gives the LLM enough context to distinguish:
-1. **Substantive follow-ups** (same problem, topic-specific): increment hint level and re-classify difficulty.
-2. **Generic elaboration requests** (same problem, low topic content): increment hint level and keep the existing difficulty.
-3. **New problems**: reset hint level and classify a new difficulty.
+The embedding signals are advisory only. The model still applies the protocol definitions for `same_problem` and `is_elaboration`, and the backend continues to validate and clamp the final metadata.
 
-**Optional embedding mode:** Set `CHAT_SAME_PROBLEM_DETECTION_MODE=embedding` to use Q+A context similarity plus elaboration anchors. This mode compares the current message embedding against the cached previous Q+A context embedding and uses the elaboration anchor set for generic follow-ups.
+This allows the model to decide whether the message continues the same underlying task and whether it is a generic elaboration request, whilst also selecting the next difficulty and hint level in the same streamed response.
 
-**Elaboration anchors (25 phrases, 8 categories):** not understanding, request more detail, step-by-step, examples, hints/answers, clarification, continuation, and simple interrogatives. These are embedded in the same initialisation batches as the greeting, topic, and off-topic anchors for optional embedding-mode semantics.
+The response controller supports three modes for `/ws/chat`:
+- `auto` (default): prefer the single-pass hidden-header stream, automatically switch to merged preflight JSON after repeated header parse failures, and retry the faster single-pass path after stable preflight turns.
+- `single_pass`: always use the hidden-header stream.
+- `preflight`: always use one merged preflight JSON call followed by one streamed tutor reply.
 
-For the first message in a session, there is no previous Q+A context, so it is always treated as a new problem.
+**Elaboration anchors (25 phrases, 8 categories):** not understanding, request more detail, step-by-step, examples, hints/answers, clarification, continuation, and simple interrogatives. These are embedded in the same initialisation batches as the greeting, topic, and off-topic anchors and feed the hidden pedagogy context.
 
-**Implementation detail:** The student state caches both the previous Q+A text (for LLM same-problem classification) and the Q+A context embedding (for optional embedding mode and multimodal semantics). After each LLM response, the concatenated question and answer are embedded and stored as the new context reference. Canned responses do not update the context state.
+For the first message in a session, there is no previous Q+A context, so the hidden metadata is expected to mark a new problem.
 
-**Implementation:** `backend/app/ai/same_problem_classifier.py` and `backend/app/ai/pedagogy_engine.py`
+**Implementation detail:** The student state caches the previous Q+A text and the Q+A context embedding. After each LLM response, the concatenated question and answer are embedded and stored as the next context reference. Canned responses do not update the context state.
+
+**Implementation:** `backend/app/ai/pedagogy_engine.py`, `backend/app/ai/prompts.py`, and `backend/app/services/stream_meta_parser.py`
 
 See `docs/semantic-recognition-testing.md` for Vertex semantic threshold values and calibration data used by the optional embedding filters and embedding same-problem mode.
 
 **Why keep embedding semantics available:** SHA-256 hashing breaks on minor edits (a single whitespace change produces a completely different hash). Embedding similarity is more robust in the optional semantic paths: it captures meaning rather than exact text, works across different phrasings, and naturally extends to multimodal inputs (text and images) in Part B.
 
-### 2.5 Problem Difficulty Estimation
+### 2.5 Problem Difficulty and Hint Selection
 
-Problem difficulty is estimated separately for programming and mathematics on a 1-to-5 scale. A lightweight classification call to the configured LLM determines both ratings based on the knowledge required to solve the problem, using the level definitions from Section 1.2.
+Problem difficulty is tracked separately for programming and mathematics on a 1-to-5 scale, and the next hint level is selected using the same metadata schema in both response paths:
+- the hidden header in single-pass mode; or
+- one merged preflight JSON call in preflight mode.
 
-**How it works:**
+The backend validates and clamps metadata fields to `[1, 5]`, applies them to the student state, and then persists the final values with the assistant message. If single-pass header parsing fails, the current turn falls back to conservative metadata derived from the embedding signals and the current student state. In `auto` mode, repeated header failures switch subsequent turns to the merged preflight path for stability, and successful preflight turns later trigger a retry of the faster single-pass path.
 
-1. The current user message is sent to the configured LLM with a short classification prompt that includes the level descriptions for both programming and mathematics.
-2. For substantive same-problem follow-ups, the classifier also receives the previous Q+A so it can rate the underlying problem rather than the short follow-up wording alone.
-3. The LLM replies with a JSON object: `{"programming": N, "maths": N}`.
-4. The response is parsed via `json.loads()` with a regex fallback to extract the two integers. Both values are clamped to the range [1, 5].
+**Elaboration requests:** Generic same-problem follow-ups typically keep the current difficulty and move the hint level forward.
 
-**Fallback:** If the LLM call fails (timeout, rate limit, or unparseable output), both difficulties default to the student's current effective level: `round(effective_programming_level)` and `round(effective_maths_level)`.
+**New problems:** The metadata selects fresh difficulty values and a new hint level. The backend then updates effective levels using the previous completed interaction before applying the new values.
 
-**Elaboration requests:** Generic follow-ups (identified by the same-problem classifier as `is_elaboration=true`, or by elaboration anchors in embedding mode) retain the current difficulty rather than re-classifying, since the message has no topic content to produce a meaningful rating.
-
-**Substantive follow-ups:** Follow-ups identified as same-problem and topic-specific cause the classifier to run again and update the difficulty. This allows the system to refine its estimate as the student adds detail.
-
-**Starting hint level** is derived from whichever dimension has the larger gap:
+**Starting hint level behaviour** remains tied to the gap between estimated difficulty and effective level:
 
 ```
 prog_gap = programming_difficulty - round(effective_programming_level)
@@ -302,21 +303,7 @@ starting_hint_level = max(1, min(4, 1 + gap))
 
 **Effective level updates** use the corresponding difficulty for each dimension independently. `programming_difficulty` feeds the EMA update for `effective_programming_level`, and `maths_difficulty` feeds the EMA update for `effective_maths_level`. The formula from Section 1.3 applies to each.
 
-**Implementation:** `backend/app/ai/difficulty_classifier.py`
-
-```python
-async def classify_difficulty(
-    llm: LLMProvider,
-    question: str,
-    fallback_programming: int = 3,
-    fallback_maths: int = 3,
-    *,
-    previous_question: str | None = None,
-    previous_answer: str | None = None,
-    same_problem_context: bool = False,
-) -> tuple[int, int]:
-    """Return (programming_difficulty, maths_difficulty), each in [1, 5]."""
-```
+**Implementation:** `backend/app/ai/pedagogy_engine.py`
 
 ### 2.6 Pre-Filter Pipeline Summary
 
@@ -326,12 +313,12 @@ The complete pipeline for each user message:
 1. Embed the user's input once (single API call; cached if seen before).
 2. Optional greeting filter (disabled by default): high similarity to greeting anchors → canned response. Stop.
 3. Optional off-topic filter (disabled by default): off-topic rule triggers → reject. Stop.
-4. Same-problem detection (if previous Q+A exists):
-   a. Default (`CHAT_SAME_PROBLEM_DETECTION_MODE=llm`): LLM returns `same_problem` / `is_elaboration`.
-   b. Optional embedding mode: Q+A context similarity + elaboration anchors.
-   c. Same problem → increment hint; re-classify difficulty only if not an elaboration request.
-   d. New problem → update effective levels, classify difficulty via LLM, set starting hint from the larger gap.
-5. Pass to LLM with appropriate hint level and student level context.
+4. Build embedding-only fast pedagogy signals (same-problem / elaboration hints) from the current message and previous Q+A context.
+5. Build prompt + context using either full history or the hidden rolling summary cache plus recent raw turns (no inline summarisation on the `/ws/chat` critical path).
+6. In the primary path, make one streamed LLM call that emits a hidden metadata header first, then the visible tutor answer.
+7. In the backup path, make one merged preflight JSON LLM call for metadata (with a compact token-trimmed payload), then one streamed LLM call for the visible tutor answer.
+8. Send a `meta` WebSocket event as soon as metadata is available, stream visible tokens, apply pedagogy metadata to state, and persist the assistant turn.
+9. Refresh the hidden rolling summary cache asynchronously after the turn completes.
 ```
 
 ---
@@ -489,33 +476,37 @@ class StudentState:
     starting_hint_level: int                 # 1 to 4 (set at start of each problem)
     current_programming_difficulty: int      # 1 to 5
     current_maths_difficulty: int            # 1 to 5
-    last_question_text: str | None           # previous user question text (for LLM same-problem classification)
-    last_answer_text: str | None             # previous assistant answer text (for LLM same-problem classification)
+    last_question_text: str | None           # previous user question text (for hidden pedagogy metadata context)
+    last_answer_text: str | None             # previous assistant answer text (for hidden pedagogy metadata context)
     last_context_embedding: list[float]      # embedding of the previous Q+A context
 ```
 
 #### Processing flow
 
 ```python
-async def process_message(
+async def prepare_fast_signals(
     self,
     user_message: str,
     student_state: StudentState,
-) -> ProcessResult:
+) -> PedagogyFastSignals:
     """
-    Returns hint_level, programming_difficulty, maths_difficulty, and any filter result.
+    Returns optional canned-filter output plus embedding-only pedagogy signals.
 
     1. Embed the user message (single API call).
     2. Optionally check greeting detection (disabled by default). If greeting, return canned response.
     3. Optionally check topic relevance (disabled by default). If off-topic, return rejection.
-    4. Same-problem detection (if previous Q+A context exists):
-       a. Default mode (`llm`): classify with previous Q+A text + current message.
-       b. Optional mode (`embedding`): Q+A context similarity + elaboration anchors.
-       c. Same problem: increment hint; re-classify difficulty only for substantive follow-ups.
-       d. New problem: update effective levels, classify difficulty, set starting hint.
-    5. Return the hint level, programming difficulty, and maths difficulty.
-    6. (After the LLM response is generated, the router calls update_context_embedding()
-       to store the previous Q+A text and embed the concatenated Q+A for the next turn.)
+    4. Derive embedding same-problem / elaboration signals from the current message and cached Q+A context.
+    5. Return hidden pedagogy signals for the single-pass metadata prompt.
+    """
+
+def apply_stream_meta(
+    self,
+    student_state: StudentState,
+    meta: StreamPedagogyMeta,
+) -> ProcessResult:
+    """
+    Validates and applies hidden metadata parsed from the streamed LLM header.
+    Updates current hint/difficulty state and effective levels.
     """
 ```
 
@@ -529,8 +520,15 @@ All system prompts stored as string templates:
 - `HINT_LEVEL_INSTRUCTIONS[1..5]`: Instructions for each hint level defining what the AI may and may not reveal.
 - `PROGRAMMING_LEVEL_INSTRUCTIONS[1..5]`: Language adaptation rules for each programming skill tier.
 - `MATHS_LEVEL_INSTRUCTIONS[1..5]`: Language adaptation rules for each maths skill tier.
+- `PEDAGOGY_PREFLIGHT_JSON_PROMPT`: Strict merged preflight JSON metadata prompt for the backup path.
+- `SINGLE_PASS_PEDAGOGY_PROTOCOL_PROMPT`: Hidden metadata-header protocol for the single streamed reply path.
+  - Requires the `<<GC_META_V1>> ... <<END_GC_META>>` header before any visible answer text.
+  - Requires raw JSON (no Markdown code fences) in the metadata block.
+  - Requires the visible answer to follow the chosen `hint_level`.
 
-These are concatenated by the context builder to form the final system prompt.
+The context builder assembles the final system prompt for the standard hint-specific path and the single-pass hidden-metadata path.
+
+For the `/ws/chat` response path, the implementation uses `build_single_pass_system_prompt(...)` in single-pass mode and `build_system_prompt(...)` in preflight mode after merged metadata selection. Embedding fast signals remain available as hidden context, and the path does not reintroduce separate LLM calls for same-problem and difficulty classification.
 
 ### 4.7 Context Builder
 
@@ -540,24 +538,31 @@ These are concatenated by the context builder to form the final system prompt.
 def build_system_prompt(hint_level, programming_level, maths_level) -> str:
     """Assemble the full system prompt from base + hint + student levels."""
 
+def build_single_pass_system_prompt(programming_level, maths_level, *, pedagogy_context) -> str:
+    """Assemble the single-pass prompt (hidden metadata header + visible answer)."""
+
 async def build_context_messages(
     chat_history: list[dict],
     user_message: str,
     llm: LLMProvider,
     max_context_tokens: int,
     compression_threshold: float = 0.8,
+    *,
+    cached_summary: str | None = None,
+    cached_summary_message_count: int | None = None,
+    allow_inline_compression: bool = True,
 ) -> list[dict]:
     """
     Build a context message list with automatic compression.
 
     1. Use full history when the conversation is short.
-    2. Compress older messages into a summary when history grows.
-       Keep the most recent messages intact.
-    3. Fallback: if compression fails, use simple truncation (most recent messages only).
+    2. Prefer a hidden rolling summary cache plus recent raw turns when history grows.
+    3. Optionally compress older messages inline when enabled (used by background refresh paths).
+    4. Fallback: simple truncation (most recent messages only).
     """
 ```
 
-The compression function sends older messages to the LLM with a short summarisation prompt, requesting a 2-3 sentence summary that preserves key topics, problems discussed, and important context.
+The chat response path uses the hidden rolling summary cache (stored on `chat_sessions`) and keeps recent turns intact. The cache is refreshed asynchronously after a completed assistant reply. Inline summarisation remains available as a helper and is used outside the response critical path.
 
 ### 4.8 Chat Endpoints
 
@@ -584,12 +589,15 @@ The compression function sends older messages to the LLM with a short summarisat
    5. Build enriched user text (plain message + extracted document text).
    6. Build combined embeddings (text + images) for semantics.
    7. Persist the user turn with optional attachment IDs.
-   8. Run pedagogy processing:
-      - no attachments: optional greeting/off-topic filters may run, then same-problem logic runs;
-      - with attachments: greeting/off-topic filters are skipped, then same-problem logic continues.
+   8. Run fast pedagogy checks:
+      - no attachments: optional greeting/off-topic filters may run;
+      - all paths compute embedding-based pedagogy signals for the hidden metadata prompt context.
    9. If filtered, send a canned response and store it.
-   10. Otherwise, build prompt + context, stream LLM tokens, and send a `done` event with hint and difficulty metadata.
-   11. Persist the assistant turn and write effective levels back to `users`.
+   10. Otherwise, build prompt + context (using the hidden summary cache where available).
+   11. In single-pass mode, stream one LLM response with a hidden metadata header; in preflight mode, run one merged metadata JSON preflight call and then stream one tutor reply.
+   12. Send a `meta` event as soon as metadata is available, then stream visible `token` events.
+   13. Persist the assistant turn, apply pedagogy metadata, write effective levels back to `users`, and send the final `done` event.
+   14. Schedule an asynchronous hidden summary-cache refresh for the session.
 5. On disconnect, clean up.
 
 ### 4.9 Frontend: WebSocket Helper
@@ -607,7 +615,7 @@ function createChatSocket(
 }
 ```
 
-The helper forwards server events (`session`, `token`, `done`, `canned`, `error`) and sends message payloads with optional `session_id` and `upload_ids`.
+The helper forwards server events (`session`, `meta`, `token`, `done`, `canned`, `error`) and sends message payloads with optional `session_id` and `upload_ids`.
 
 ### 4.10 Frontend: Chat Page
 
@@ -618,6 +626,7 @@ The helper forwards server events (`session`, `token`, `done`, `canned`, `error`
 - Loads the user's chat sessions via `GET /api/chat/sessions` on mount.
 - When the user selects a session from the sidebar, loads its messages via `GET /api/chat/sessions/{id}/messages`.
 - Renders the streaming AI response in real time.
+- Applies the early `meta` event to show a lightweight hint/difficulty preview before the first visible token arrives.
 - At the bottom of the page, below the input area, displays a small disclaimer in muted text.
 
 **`frontend/src/chat/ChatSidebar.tsx`:** Collapsible sidebar on the left side of the chat page.
@@ -628,7 +637,7 @@ The helper forwards server events (`session`, `token`, `done`, `canned`, `error`
 - Each session has a delete button. Clicking it removes the session (with confirmation) via `DELETE /api/chat/sessions/{id}`.
 - The sidebar can be collapsed to a narrow strip with a toggle button, giving more space to the chat area.
 
-**`frontend/src/chat/ChatMessageList.tsx`:** Scrollable message container with auto-scroll to the bottom when new content arrives.
+**`frontend/src/chat/ChatMessageList.tsx`:** Scrollable message container with auto-scroll to the bottom when new content arrives. It also renders the streaming assistant bubble once hidden metadata is parsed, so the hint/difficulty preview can appear before visible answer text.
 
 **`frontend/src/chat/ChatInput.tsx`:** Text input with a send button.
 
@@ -638,6 +647,7 @@ The helper forwards server events (`session`, `token`, `done`, `canned`, `error`
 **`frontend/src/chat/ChatBubble.tsx`:** Renders a single message.
 
 - User messages are displayed as plain text.
+- Assistant messages display a lightweight metadata row (hint level and programming/maths difficulty) above the markdown content.
 - AI messages are rendered via the markdown/LaTeX renderer (see below).
 
 ### 4.11 Markdown, Code, and LaTeX Rendering

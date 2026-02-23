@@ -28,6 +28,5 @@ async def get_ai_services(llm: LLMProvider) -> tuple[EmbeddingService, PedagogyE
         _pedagogy_engine = PedagogyEngine(
             _embedding_service,
             llm,
-            same_problem_detection_mode=settings.chat_same_problem_detection_mode,
         )
     return _embedding_service, _pedagogy_engine

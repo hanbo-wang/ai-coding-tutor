@@ -29,6 +29,12 @@ class WeeklyTokenUsageSummary:
     weighted_tokens_used: float
 
 
+@dataclass(frozen=True)
+class ChatSummaryCacheSnapshot:
+    text: str | None
+    message_count: int
+
+
 def get_week_bounds(day: date) -> tuple[date, date]:
     """Return the Monday-Sunday range containing the given date."""
     week_start = day - timedelta(days=day.weekday())
@@ -104,6 +110,17 @@ async def get_session_by_scope(
         ).order_by(ChatSession.created_at.desc())
     )
     return result.scalars().first()
+
+
+def get_summary_cache_snapshot(session: ChatSession) -> ChatSummaryCacheSnapshot:
+    """Return the hidden summary cache values for a chat session."""
+
+    text = (session.context_summary_text or "").strip() or None
+    try:
+        message_count = int(session.context_summary_message_count or 0)
+    except (TypeError, ValueError):
+        message_count = 0
+    return ChatSummaryCacheSnapshot(text=text, message_count=max(0, message_count))
 
 
 async def save_message(

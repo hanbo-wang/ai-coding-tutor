@@ -1,0 +1,430 @@
+"""WebSocket chat integration tests for single-pass hidden metadata streaming."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import uuid
+from types import SimpleNamespace
+
+import app.models  # noqa: F401
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from app.ai.llm_base import LLMProvider, LLMUsage
+from app.ai.pedagogy_engine import PedagogyFastSignals, ProcessResult, StreamPedagogyMeta
+from app.models.chat import ChatMessage
+from app.models.user import Base, User
+from app.routers.chat import router as chat_router
+
+
+def _run(coro):
+    return asyncio.run(coro)
+
+
+class _FakeStreamLLM(LLMProvider):
+    """LLM stub that streams a predefined sequence of chunks."""
+
+    def __init__(self, chunks: list[str] | list[list[str]]) -> None:
+        super().__init__()
+        if chunks and isinstance(chunks[0], list):  # type: ignore[index]
+            self._calls = [list(call) for call in chunks]  # type: ignore[arg-type]
+        else:
+            self._calls = [list(chunks)]  # type: ignore[arg-type]
+        self.call_count = 0
+        self.system_prompts: list[str] = []
+        self.provider_id = "test"
+        self.model_id = "single-pass-test"
+
+    async def generate_stream(self, system_prompt, messages, max_tokens=2048):
+        self.call_count += 1
+        self.system_prompts.append(system_prompt)
+        self.last_usage = LLMUsage(input_tokens=17, output_tokens=11)
+        call_index = min(self.call_count - 1, len(self._calls) - 1)
+        for chunk in self._calls[call_index]:
+            yield chunk
+
+    def count_tokens(self, text: str) -> int:
+        return max(1, len(text.split()))
+
+
+class _FakePedagogyEngine:
+    """Small pedagogy stub for router integration tests."""
+
+    def __init__(self) -> None:
+        self.preflight_calls = 0
+
+    async def prepare_fast_signals(self, *args, **kwargs) -> PedagogyFastSignals:
+        return PedagogyFastSignals()
+
+    def coerce_stream_meta(self, raw_meta, *, student_state, fast_signals, source="header"):
+        return StreamPedagogyMeta(
+            same_problem=bool(raw_meta.get("same_problem")),
+            is_elaboration=bool(raw_meta.get("is_elaboration")),
+            programming_difficulty=int(raw_meta.get("programming_difficulty", 3)),
+            maths_difficulty=int(raw_meta.get("maths_difficulty", 3)),
+            hint_level=int(raw_meta.get("hint_level", 2)),
+            source=source,
+        )
+
+    def build_fallback_stream_meta(self, student_state, fast_signals):
+        return StreamPedagogyMeta(
+            same_problem=False,
+            is_elaboration=False,
+            programming_difficulty=3,
+            maths_difficulty=3,
+            hint_level=2,
+            source="fallback",
+        )
+
+    async def classify_preflight_meta(self, user_message, *, student_state, fast_signals):
+        self.preflight_calls += 1
+        return StreamPedagogyMeta(
+            same_problem=False,
+            is_elaboration=False,
+            programming_difficulty=3,
+            maths_difficulty=2,
+            hint_level=2,
+            source="preflight",
+        )
+
+    def apply_stream_meta(self, student_state, meta):
+        student_state.current_hint_level = meta.hint_level
+        student_state.current_programming_difficulty = meta.programming_difficulty
+        student_state.current_maths_difficulty = meta.maths_difficulty
+        return ProcessResult(
+            hint_level=meta.hint_level,
+            programming_difficulty=meta.programming_difficulty,
+            maths_difficulty=meta.maths_difficulty,
+            is_same_problem=meta.same_problem,
+        )
+
+    async def update_context_embedding(self, *args, **kwargs) -> None:
+        return None
+
+
+async def _create_user(session_factory: async_sessionmaker[AsyncSession]) -> User:
+    async with session_factory() as db:
+        user = User(
+            email="ws-test@example.com",
+            username="ws_tester",
+            password_hash="x",
+            programming_level=3,
+            maths_level=3,
+        )
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+        return user
+
+
+async def _list_messages(
+    session_factory: async_sessionmaker[AsyncSession], session_id: str
+) -> list[ChatMessage]:
+    async with session_factory() as db:
+        result = await db.execute(
+            select(ChatMessage)
+            .where(ChatMessage.session_id == uuid.UUID(session_id))
+            .order_by(ChatMessage.created_at.asc())
+        )
+        return list(result.scalars().all())
+
+
+def _make_ws_app() -> FastAPI:
+    app = FastAPI(title="ws-chat-test")
+    app.include_router(chat_router)
+    return app
+
+
+def _setup_ws_test_env(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, chunks: list[str] | list[list[str]]
+):
+    db_path = tmp_path / "ws_chat.sqlite3"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    _run(_create_tables(engine))
+    user = _run(_create_user(session_factory))
+
+    llm = _FakeStreamLLM(chunks)
+    pedagogy = _FakePedagogyEngine()
+    scheduled: list[str] = []
+
+    async def _fake_authenticate_ws(token: str):
+        return SimpleNamespace(
+            id=user.id,
+            username=user.username,
+            programming_level=user.programming_level,
+            maths_level=user.maths_level,
+            effective_programming_level=user.effective_programming_level,
+            effective_maths_level=user.effective_maths_level,
+        )
+
+    async def _fake_get_ai_services(incoming_llm):
+        return object(), pedagogy
+
+    async def _fake_check_weekly_limit(*args, **kwargs):
+        return True
+
+    async def _fake_combined_embedding(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.routers.chat.AsyncSessionLocal", session_factory)
+    monkeypatch.setattr("app.routers.chat._authenticate_ws", _fake_authenticate_ws)
+    monkeypatch.setattr("app.routers.chat.get_llm_provider", lambda _settings: llm)
+    monkeypatch.setattr("app.routers.chat.get_ai_services", _fake_get_ai_services)
+    monkeypatch.setattr("app.routers.chat._build_combined_embedding", _fake_combined_embedding)
+    monkeypatch.setattr("app.routers.chat.estimate_llm_cost_usd", lambda *a, **k: 0.0)
+    monkeypatch.setattr("app.routers.chat.chat_service.check_weekly_limit", _fake_check_weekly_limit)
+    monkeypatch.setattr(
+        "app.routers.chat.chat_summary_cache_service.schedule_refresh",
+        lambda session_id: scheduled.append(str(session_id)),
+    )
+    monkeypatch.setattr("app.routers.chat.rate_limiter.check_user", lambda user_id: True)
+    monkeypatch.setattr("app.routers.chat.rate_limiter.check_global", lambda: True)
+    monkeypatch.setattr("app.routers.chat.rate_limiter.record", lambda user_id: None)
+    monkeypatch.setattr("app.routers.chat.connection_tracker.can_connect", lambda user_id: True)
+    monkeypatch.setattr("app.routers.chat.connection_tracker.add", lambda user_id, conn_id: None)
+    monkeypatch.setattr("app.routers.chat.connection_tracker.remove", lambda user_id, conn_id: None)
+
+    client = TestClient(_make_ws_app())
+    return client, session_factory, engine, scheduled, llm, pedagogy
+
+
+async def _create_tables(engine) -> None:
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+
+def _collect_until_done(ws) -> list[dict]:
+    events: list[dict] = []
+    while True:
+        event = ws.receive_json()
+        events.append(event)
+        if event.get("type") == "done":
+            break
+    return events
+
+
+def test_ws_single_pass_emits_meta_before_token_and_strips_header(tmp_path, monkeypatch) -> None:
+    """The router should hide metadata headers and emit `meta` before visible tokens."""
+
+    chunks = [
+        "<<GC_META_V1>>",
+        '{"same_problem":false,"is_elaboration":false,',
+        '"programming_difficulty":3,"maths_difficulty":2,"hint_level":2}',
+        "<<END_GC_META>>",
+        "Hello",
+        " world",
+    ]
+    client, session_factory, engine, scheduled, _llm, _pedagogy = _setup_ws_test_env(
+        tmp_path, monkeypatch, chunks
+    )
+    try:
+        with client.websocket_connect("/ws/chat?token=test") as ws:
+            ws.send_text(json.dumps({"content": "Explain binary search"}))
+            events = _collect_until_done(ws)
+
+        event_types = [e["type"] for e in events]
+        assert "meta" in event_types
+        assert "token" in event_types
+        assert event_types.index("meta") < event_types.index("token")
+
+        token_text = "".join(e["content"] for e in events if e["type"] == "token")
+        assert token_text == "Hello world"
+        assert "<<GC_META_V1>>" not in token_text
+        assert "<<END_GC_META>>" not in token_text
+
+        meta_event = next(e for e in events if e["type"] == "meta")
+        done_event = next(e for e in events if e["type"] == "done")
+        assert meta_event["source"] == "header"
+        assert done_event["hint_level"] == meta_event["hint_level"]
+        assert done_event["programming_difficulty"] == meta_event["programming_difficulty"]
+        assert done_event["maths_difficulty"] == meta_event["maths_difficulty"]
+
+        session_event = next(e for e in events if e["type"] == "session")
+        stored_messages = _run(_list_messages(session_factory, session_event["session_id"]))
+        assert [m.role for m in stored_messages] == ["user", "assistant"]
+        assert stored_messages[1].content == "Hello world"
+        assert "<<GC_META_V1>>" not in stored_messages[1].content
+        assert len(scheduled) == 1
+    finally:
+        client.close()
+        _run(engine.dispose())
+
+
+def test_ws_single_pass_missing_header_uses_fallback_meta_and_streams_tokens(tmp_path, monkeypatch) -> None:
+    """Missing headers should still produce a `meta` event and visible streamed tokens."""
+
+    chunks = ["Hello", " ", "world"]
+    client, session_factory, engine, scheduled, _llm, _pedagogy = _setup_ws_test_env(
+        tmp_path, monkeypatch, chunks
+    )
+    try:
+        with client.websocket_connect("/ws/chat?token=test") as ws:
+            ws.send_text(json.dumps({"content": "Short reply"}))
+            events = _collect_until_done(ws)
+
+        event_types = [e["type"] for e in events]
+        assert "meta" in event_types
+        assert "token" in event_types
+        assert event_types.index("meta") < event_types.index("token")
+
+        meta_event = next(e for e in events if e["type"] == "meta")
+        assert meta_event["source"] == "fallback"
+
+        token_events = [e for e in events if e["type"] == "token"]
+        assert [e["content"] for e in token_events] == ["Hello", " ", "world"]
+
+        session_event = next(e for e in events if e["type"] == "session")
+        stored_messages = _run(_list_messages(session_factory, session_event["session_id"]))
+        assert stored_messages[1].content == "Hello world"
+        assert len(scheduled) == 1
+    finally:
+        client.close()
+        _run(engine.dispose())
+
+
+def test_ws_auto_mode_degrades_to_preflight_after_header_failures(tmp_path, monkeypatch) -> None:
+    """Auto mode should switch to merged preflight after repeated header parse failures."""
+
+    monkeypatch.setattr("app.routers.chat.settings.chat_pedagogy_response_mode", "auto")
+    monkeypatch.setattr(
+        "app.routers.chat.settings.chat_single_pass_header_failures_before_preflight", 1
+    )
+    llm_calls = [
+        ["No", " header"],  # First turn: single-pass parser fallback
+        ["Recovered", " reply"],  # Second turn: preflight mode main reply
+    ]
+    client, session_factory, engine, scheduled, llm, pedagogy = _setup_ws_test_env(
+        tmp_path, monkeypatch, llm_calls
+    )
+    try:
+        with client.websocket_connect("/ws/chat?token=test") as ws:
+            ws.send_text(json.dumps({"content": "first"}))
+            events1 = _collect_until_done(ws)
+            ws.send_text(json.dumps({"content": "second"}))
+            events2 = _collect_until_done(ws)
+
+        meta1 = next(e for e in events1 if e["type"] == "meta")
+        meta2 = next(e for e in events2 if e["type"] == "meta")
+        assert meta1["source"] == "fallback"
+        assert meta2["source"] == "preflight"
+        assert "".join(e["content"] for e in events2 if e["type"] == "token") == "Recovered reply"
+        assert pedagogy.preflight_calls == 1
+        assert llm.call_count == 2
+        assert len(scheduled) == 2
+    finally:
+        client.close()
+        _run(engine.dispose())
+
+
+def test_ws_auto_mode_retries_single_pass_after_stable_preflight_turns(
+    tmp_path, monkeypatch
+) -> None:
+    """Auto mode should retry the faster single-pass path after stable preflight turns."""
+
+    monkeypatch.setattr("app.routers.chat.settings.chat_pedagogy_response_mode", "auto")
+    monkeypatch.setattr(
+        "app.routers.chat.settings.chat_single_pass_header_failures_before_preflight", 1
+    )
+    monkeypatch.setattr(
+        "app.routers.chat.settings.chat_preflight_turns_before_single_pass_retry", 1
+    )
+    llm_calls = [
+        ["No", " header"],  # First turn: single-pass parser fallback, triggers degradation
+        ["Preflight", " ok"],  # Second turn: preflight main reply
+        [  # Third turn: auto retries single-pass and receives a valid hidden header
+            "<<GC_META_V1>>",
+            '{"same_problem":false,"is_elaboration":false,'
+            '"programming_difficulty":3,"maths_difficulty":2,"hint_level":2}',
+            "<<END_GC_META>>",
+            "Back",
+            " again",
+        ],
+    ]
+    client, session_factory, engine, scheduled, llm, pedagogy = _setup_ws_test_env(
+        tmp_path, monkeypatch, llm_calls
+    )
+    try:
+        with client.websocket_connect("/ws/chat?token=test") as ws:
+            ws.send_text(json.dumps({"content": "first"}))
+            events1 = _collect_until_done(ws)
+            ws.send_text(json.dumps({"content": "second"}))
+            events2 = _collect_until_done(ws)
+            ws.send_text(json.dumps({"content": "third"}))
+            events3 = _collect_until_done(ws)
+
+        meta1 = next(e for e in events1 if e["type"] == "meta")
+        meta2 = next(e for e in events2 if e["type"] == "meta")
+        meta3 = next(e for e in events3 if e["type"] == "meta")
+        assert meta1["source"] == "fallback"
+        assert meta2["source"] == "preflight"
+        assert meta3["source"] == "header"
+        assert "".join(e["content"] for e in events3 if e["type"] == "token") == "Back again"
+        assert pedagogy.preflight_calls == 1
+        assert llm.call_count == 3
+        assert len(scheduled) == 3
+    finally:
+        client.close()
+        _run(engine.dispose())
+
+
+def test_ws_auto_mode_does_not_retry_single_pass_after_preflight_fallback_meta(
+    tmp_path, monkeypatch
+) -> None:
+    """Auto mode should only retry single-pass after successful preflight metadata turns."""
+
+    monkeypatch.setattr("app.routers.chat.settings.chat_pedagogy_response_mode", "auto")
+    monkeypatch.setattr(
+        "app.routers.chat.settings.chat_single_pass_header_failures_before_preflight", 1
+    )
+    monkeypatch.setattr(
+        "app.routers.chat.settings.chat_preflight_turns_before_single_pass_retry", 1
+    )
+    llm_calls = [
+        ["No", " header"],  # First turn: single-pass fallback, triggers degradation
+        ["Preflight", " fallback"],  # Second turn: preflight main reply
+        ["Still", " preflight"],  # Third turn should remain preflight
+    ]
+    client, session_factory, engine, scheduled, llm, pedagogy = _setup_ws_test_env(
+        tmp_path, monkeypatch, llm_calls
+    )
+
+    async def _preflight_fallback_meta(user_message, *, student_state, fast_signals):
+        pedagogy.preflight_calls += 1
+        return StreamPedagogyMeta(
+            same_problem=False,
+            is_elaboration=False,
+            programming_difficulty=3,
+            maths_difficulty=3,
+            hint_level=2,
+            source="fallback",
+        )
+
+    pedagogy.classify_preflight_meta = _preflight_fallback_meta  # type: ignore[method-assign]
+
+    try:
+        with client.websocket_connect("/ws/chat?token=test") as ws:
+            ws.send_text(json.dumps({"content": "first"}))
+            events1 = _collect_until_done(ws)
+            ws.send_text(json.dumps({"content": "second"}))
+            events2 = _collect_until_done(ws)
+            ws.send_text(json.dumps({"content": "third"}))
+            events3 = _collect_until_done(ws)
+
+        meta1 = next(e for e in events1 if e["type"] == "meta")
+        meta2 = next(e for e in events2 if e["type"] == "meta")
+        meta3 = next(e for e in events3 if e["type"] == "meta")
+        assert meta1["source"] == "fallback"
+        assert meta2["source"] == "fallback"
+        assert meta3["source"] == "fallback"
+        assert pedagogy.preflight_calls == 2
+        assert llm.call_count == 3
+        assert "".join(e["content"] for e in events3 if e["type"] == "token") == "Still preflight"
+        assert len(scheduled) == 3
+    finally:
+        client.close()
+        _run(engine.dispose())

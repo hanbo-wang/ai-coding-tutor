@@ -36,6 +36,13 @@ class ChatSession(Base):
     module_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True
     )
+    context_summary_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    context_summary_message_count: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    context_summary_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     __table_args__ = (

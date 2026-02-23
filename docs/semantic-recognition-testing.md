@@ -181,9 +181,9 @@ On this calibration run, that yields:
 - **Off-topic:** 10/10 rejected
 - **Borderline:** 8/8 pass
 
-## 5. Same-Problem Detection (Optional Embedding Mode)
+## 5. Same-Problem Detection (Embedding Fast Signals)
 
-The default same-problem decision in the application is made by the configured LLM using the previous Q+A text and the current message. This section calibrates the **optional embedding-based same-problem mode** (`CHAT_SAME_PROBLEM_DETECTION_MODE=embedding`), which compares the current user message against the previous Q+A context embedding.
+This section calibrates the embedding-based same-problem signal that compares the current user message against the previous Q+A context embedding. In the current chat flow, this signal is used as a fast pedagogy hint, a fallback input for hidden metadata, and hidden context for the single-pass / preflight metadata selection paths.
 
 ### 5.1 Same-problem pairs (Q+A context)
 
@@ -296,7 +296,7 @@ These values match the `vertex` threshold profile in `backend/app/ai/embedding_s
 
 1. This is a calibration snapshot, not a benchmark. Scores will vary slightly as providers evolve their models.
 2. The off-topic filter depends on both the topic-anchor set and the off-topic-anchor set. Re-calibrate when either set changes materially.
-3. Embedding same-problem detection is precision-biased for Vertex. Some valid follow-ups are handled through the elaboration detector or the default LLM same-problem classifier.
+3. Embedding same-problem detection is precision-biased for Vertex. Some valid follow-ups are handled through the elaboration detector or the merged metadata selection path (single-pass header or preflight JSON).
 4. Re-run calibration after major anchor changes or provider/model changes.
 
 ## Reproducing the Calibration

@@ -89,8 +89,15 @@ class Settings(BaseSettings):
     user_weekly_weighted_token_limit: int = 80000
     chat_enable_greeting_filter: bool = False
     chat_enable_off_topic_filter: bool = False
-    chat_same_problem_detection_mode: Literal["llm", "embedding"] = "llm"
-
+    # Pedagogy response mode for `/ws/chat`:
+    # - auto: prefer single-pass hidden-header streaming, degrade to merged preflight if needed
+    # - single_pass: always use hidden-header streaming
+    # - preflight: always use merged preflight JSON + streamed tutor reply
+    chat_pedagogy_response_mode: Literal["auto", "single_pass", "preflight"] = "auto"
+    # Consecutive hidden-header parse failures before `auto` mode degrades to preflight.
+    chat_single_pass_header_failures_before_preflight: int = 1
+    # Successful preflight turns before `auto` mode retries the faster single-pass path.
+    chat_preflight_turns_before_single_pass_retry: int = 2
     # Rate limiting
     rate_limit_user_per_minute: int = 5
     rate_limit_global_per_minute: int = 300
@@ -133,9 +140,9 @@ class Settings(BaseSettings):
     def _normalise_embedding_provider(cls, value: str) -> str:
         return normalise_embedding_provider(str(value))
 
-    @field_validator("chat_same_problem_detection_mode", mode="before")
+    @field_validator("chat_pedagogy_response_mode", mode="before")
     @classmethod
-    def _normalise_same_problem_mode(cls, value: str) -> str:
+    def _normalise_pedagogy_response_mode(cls, value: str) -> str:
         return str(value).strip().lower()
 
     @field_validator(

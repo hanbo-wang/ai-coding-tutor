@@ -125,12 +125,14 @@ Before LLM generation, the backend builds an enriched user message (typed text p
 
 ### 3.5 Context Budget and Summarisation
 
-Context compression is controlled by:
+Context budget control is still governed by:
 
 - `LLM_MAX_CONTEXT_TOKENS` (default: `10000`)
 - `CONTEXT_COMPRESSION_THRESHOLD` (default: `0.8`)
 
-When conversation history exceeds the threshold, older turns are summarised and recent turns are kept intact. If summarisation fails, the system falls back to recent-message truncation.
+The `/ws/chat` response path uses a hidden rolling summary cache stored on `chat_sessions`. The cache summary covers older turns, while recent turns remain raw. The cache is refreshed asynchronously after a completed assistant reply, so the request critical path does not wait for inline summarisation.
+
+If the cache is missing, stale, or unusable, the context builder falls back to recent-message truncation on the critical path.
 
 ### 3.6 Budget Enforcement in WebSocket Flow
 
@@ -140,9 +142,27 @@ For each `/ws/chat` message:
 2. Resolve notebook and attachment references, then validate attachment mix limits.
 3. Build enriched user text and apply the per-message input guard.
 4. Run `check_weekly_limit()` and reject if the weekly weighted budget is exhausted.
-5. Run pedagogy checks and stream the LLM response.
-6. Capture precise `input_tokens` and `output_tokens` from `llm.last_usage`.
-7. Persist usage through `record_token_usage()` with an atomic upsert into `daily_token_usage`.
+5. Run fast pedagogy checks (including optional greeting/off-topic filters and embedding-only signals).
+6. Build prompt + context using the hidden rolling summary cache where available.
+7. Use the response controller mode:
+   - single-pass path: stream one LLM response, parse the hidden metadata header, send a `meta` WebSocket event, then forward visible answer tokens;
+   - merged preflight backup path: run one compact JSON metadata preflight call, send `meta`, then stream one visible tutor reply.
+8. Capture precise `input_tokens` and `output_tokens` (including merged preflight usage when the backup path runs).
+9. Persist usage through `record_token_usage()` with an atomic upsert into `daily_token_usage`.
+10. Schedule an asynchronous hidden summary-cache refresh task for the session.
+
+### 3.6A Merged Preflight Backup Path (Auto Degradation)
+
+If metadata-header compliance degrades, the backup path uses one merged pedagogy preflight JSON call and one streamed tutor reply:
+
+1. Build hidden fast pedagogy signals from embeddings (same-problem and elaboration hints remain advisory only).
+2. Run `classify_preflight_meta(...)` once with `PEDAGOGY_PREFLIGHT_JSON_PROMPT` and a compact token-trimmed payload.
+3. Validate and clamp `hint_level`, `programming_difficulty`, and `maths_difficulty` server-side.
+4. Send the `meta` WebSocket event as soon as metadata is available.
+5. Build the tutor reply prompt with `build_system_prompt(...)` using the selected `hint_level`.
+6. Stream one visible tutor reply and persist the final metadata with the assistant message.
+7. Keep the single-pass path available: in `auto` mode, repeated header failures degrade to preflight, and stable preflight turns later retry the faster single-pass path.
+8. Do not reintroduce separate LLM calls for same-problem or difficulty classification.
 
 ### 3.7 Profile Display Behaviour
 
@@ -161,6 +181,12 @@ This keeps the display formal and clear. The backend still uses the weighted bud
 - `chat_messages.output_tokens`
 - `daily_token_usage`
 - unique index `ix_daily_token_usage_user_date`
+
+`backend/alembic/versions/008_add_chat_session_context_summary_cache.py` defines the hidden rolling summary cache fields on `chat_sessions`:
+
+- `context_summary_text`
+- `context_summary_message_count`
+- `context_summary_updated_at`
 
 ---
 
@@ -296,7 +322,7 @@ The suite mixes:
 
 `backend/pytest.ini` sets `asyncio_mode=auto` so async tests run consistently without command-line flags.
 
-Current automated total (default offline run, excluding `external_ai` smoke tests): **88 tests**.
+Current automated total (default offline run, excluding `external_ai` smoke tests): **112 tests**.
 
 ### 7.2 Test Files
 
@@ -304,10 +330,12 @@ Current automated total (default offline run, excluding `external_ai` smoke test
 |------|------:|-------|------------|
 | `test_auth.py` | 5 | Auth helpers and token lifecycle | Password hashing/verification, access/refresh token claims, invalid token rejection, refresh cookie flags. |
 | `test_chat.py` | 11 | Chat router helper logic | WebSocket token resolution, upload split and limit validation, enriched message generation, multimodal part generation, context truncation helpers. |
+| `test_chat_ws_single_pass.py` | 5 | WebSocket single-pass and preflight auto-mode flow | `meta` before first visible token, hidden-header stripping, fallback metadata path, auto degradation to merged preflight, guarded auto retry of single-pass, and clean assistant message persistence. |
 | `test_chat_usage_budget.py` | 2 | Weekly budget helper logic | Monday-Sunday week bounds and weighted usage formula (`input / 6 + output`). |
-| `test_pedagogy.py` | 8 | Pedagogy engine behaviour | Greeting/off-topic filtering, default filter disablement, LLM same-problem handling, hint escalation, new-problem reset, hint cap, effective-level EMA update. |
-| `test_same_problem_classifier.py` | 5 | LLM same-problem classifier parsing | Strict JSON parse, regex fallback, elaboration normalisation, fallback behaviour on invalid payload, missing-context fallback. |
-| `test_context_builder.py` | 3 | Token-aware context assembly | Empty history handling, truncation under small budgets, full-history inclusion when budget allows. |
+| `test_chat_summary_cache.py` | 3 | Hidden rolling summary cache service | Summary write/clear behaviour, prefix-count persistence, and per-session refresh coalescing while a task is already running. |
+| `test_pedagogy.py` | 12 | Pedagogy engine behaviour | Embedding fast-signal filtering and elaboration hints, stream-metadata coercion/fallback, merged preflight metadata parsing/fallback, compact preflight payload trimming, Q+A context embedding updates, and effective-level EMA update. |
+| `test_context_builder.py` | 5 | Token-aware context assembly | Empty history handling, truncation under small budgets, full-history inclusion, hidden summary-cache reuse, and no-inline-compression fallback behaviour. |
+| `test_stream_meta_parser.py` | 5 | Hidden metadata header parsing | Chunk-split markers, invalid header JSON fallback, short missing-header streaming fallback, missing-header passthrough fallback, and incomplete-header handling. |
 | `test_rate_limiter.py` | 4 | Sliding-window request limits | Per-user allowance, per-user rejection, global cap enforcement, 60-second expiry pruning. |
 | `test_connection_tracker.py` | 3 | Concurrent WebSocket caps | Add/remove accounting, max-connection rejection, per-user isolation. |
 | `test_admin_usage.py` | 3 | Admin usage and cost logic | Provider pricing calculation, zero-token behaviour, aggregate usage payload shape. |
@@ -385,6 +413,8 @@ Events logged:
 | Event | Fields |
 |-------|--------|
 | LLM call | provider, model, input_tokens, output_tokens, estimated_cost, latency_ms, success |
+| Metadata header parse | user_id, session_id, source (header or fallback), success, reason |
+| Summary cache refresh | session_id, summarised_prefix_messages, success, latency_ms |
 | WebSocket connect | user_id, session_id, timestamp |
 | WebSocket disconnect | user_id, session_id, duration_seconds |
 | Auth event | event_type (login, register, refresh, logout), user_id, success |

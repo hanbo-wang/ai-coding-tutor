@@ -1,15 +1,18 @@
 import { useEffect, useRef } from "react";
 import { ChatMessage } from "../api/types";
 import { ChatBubble } from "./ChatBubble";
+import type { StreamingMeta } from "./useChatSocket";
 
 interface ChatMessageListProps {
   messages: ChatMessage[];
   streamingContent: string;
+  streamingMeta?: StreamingMeta | null;
 }
 
 export function ChatMessageList({
   messages,
   streamingContent,
+  streamingMeta,
 }: ChatMessageListProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -26,9 +29,15 @@ export function ChatMessageList({
         <ChatBubble key={msg.id ?? index} message={msg} />
       ))}
 
-      {streamingContent && (
+      {(streamingContent || streamingMeta) && (
         <ChatBubble
-          message={{ role: "assistant", content: streamingContent }}
+          message={{
+            role: "assistant",
+            content: streamingContent,
+            hint_level_used: streamingMeta?.hintLevel,
+            problem_difficulty: streamingMeta?.programmingDifficulty,
+            maths_difficulty: streamingMeta?.mathsDifficulty,
+          }}
         />
       )}
     </div>

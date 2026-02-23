@@ -27,6 +27,8 @@ export function WorkspaceChatPanel({
     setMessages,
     streamingContent,
     setStreamingContent,
+    streamingMeta,
+    setStreamingMeta,
     isStreaming,
     setIsStreaming,
     sessionId,
@@ -52,6 +54,7 @@ export function WorkspaceChatPanel({
             setSessionId(null);
             setMessages([]);
             setStreamingContent("");
+            setStreamingMeta(null);
           }
           return;
         }
@@ -62,12 +65,14 @@ export function WorkspaceChatPanel({
           setSessionId(existing.id);
           setMessages(sessionMessages);
           setStreamingContent("");
+          setStreamingMeta(null);
         }
       } catch {
         if (!cancelled) {
           setSessionId(null);
           setMessages([]);
           setStreamingContent("");
+          setStreamingMeta(null);
         }
       }
     };
@@ -100,6 +105,7 @@ export function WorkspaceChatPanel({
       },
     ]);
     setStreamingContent("");
+    setStreamingMeta(null);
     setIsStreaming(true);
 
     const context = await getCellContext();
@@ -131,6 +137,7 @@ export function WorkspaceChatPanel({
       setSessionId(null);
       setMessages([]);
       setStreamingContent("");
+      setStreamingMeta(null);
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Failed to start a new chat.";
@@ -168,7 +175,11 @@ export function WorkspaceChatPanel({
             </div>
           </div>
         ) : (
-          <ChatMessageList messages={messages} streamingContent={streamingContent} />
+          <ChatMessageList
+            messages={messages}
+            streamingContent={streamingContent}
+            streamingMeta={streamingMeta}
+          />
         )}
       </div>
 

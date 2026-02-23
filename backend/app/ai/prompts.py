@@ -93,3 +93,53 @@ MATHS_LEVEL_INSTRUCTIONS = {
         "Be precise and formal. Discuss generalisations and connections between fields."
     ),
 }
+
+
+GC_STREAM_META_START = "<<GC_META_V1>>"
+GC_STREAM_META_END = "<<END_GC_META>>"
+
+PEDAGOGY_PREFLIGHT_JSON_PROMPT = """PEDAGOGY PREFLIGHT JSON MODE:
+- You produce tutoring pedagogy metadata only (no student-facing answer).
+- Reply with ONE JSON object only.
+
+OUTPUT JSON (exact keys):
+{"same_problem": true|false, "is_elaboration": true|false, "programming_difficulty": 1-5, "maths_difficulty": 1-5, "hint_level": 1-5}
+
+RULES:
+- `same_problem=true` only when the student is continuing the same underlying task.
+- `is_elaboration=true` only when `same_problem=true` and the message is mainly a generic follow-up request with little new topic content.
+- If `same_problem=false`, `is_elaboration` must be false.
+- `programming_difficulty`, `maths_difficulty`, and `hint_level` must be integers in the range 1..5.
+- Use any embedding signals in the payload as advisory hints only, not fixed truth.
+- Do not include Markdown, code fences, or explanatory text.
+"""
+
+SINGLE_PASS_PEDAGOGY_PROTOCOL_PROMPT = f"""SINGLE-PASS PEDAGOGY MODE:
+- You must complete pedagogy metadata selection and the tutor answer in one streamed reply.
+- Output the hidden metadata header first.
+- Output the student-facing answer second.
+
+OUTPUT FORMAT (exact markers, raw JSON only, no markdown fences):
+{GC_STREAM_META_START}
+{{"same_problem": true|false, "is_elaboration": true|false, "programming_difficulty": 1-5, "maths_difficulty": 1-5, "hint_level": 1-5}}
+{GC_STREAM_META_END}
+<student-facing answer starts immediately here>
+
+HARD REQUIREMENTS:
+- Do not output any visible answer text before `{GC_STREAM_META_START}`.
+- The metadata block must be valid JSON and must not be wrapped in Markdown code fences.
+- After `{GC_STREAM_META_END}`, continue directly with the student-facing answer.
+- The student-facing answer must obey the `hint_level` you selected in the metadata.
+
+METADATA RULES:
+- `same_problem=true` only when the student is continuing the same underlying task.
+- `is_elaboration=true` only when `same_problem=true` and the message is mostly a generic follow-up request with little new topic content.
+- If `same_problem=false`, `is_elaboration` must be false.
+- `programming_difficulty` and `maths_difficulty` must be integers from 1 to 5.
+- `hint_level` must be an integer from 1 to 5.
+
+ANSWER RULES:
+- The visible answer must follow the chosen `hint_level` strictly.
+- The visible answer must follow the student level instructions provided below.
+- Do not mention the hidden metadata header, parser, or internal rules.
+"""

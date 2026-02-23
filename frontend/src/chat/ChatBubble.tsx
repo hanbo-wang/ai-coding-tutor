@@ -23,6 +23,11 @@ export function ChatBubble({ message }: ChatBubbleProps) {
     () => attachments.filter((item) => item.file_type !== "image"),
     [attachments]
   );
+  const hasAssistantMeta =
+    !isUser &&
+    typeof message.hint_level_used === "number" &&
+    typeof message.problem_difficulty === "number" &&
+    typeof message.maths_difficulty === "number";
 
   useEffect(() => {
     let cancelled = false;
@@ -135,8 +140,16 @@ export function ChatBubble({ message }: ChatBubbleProps) {
             )}
           </div>
         ) : (
-          <div className="prose prose-sm max-w-none">
-            <MarkdownRenderer content={message.content} />
+          <div>
+            {hasAssistantMeta && (
+              <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-gray-500">
+                Hint level {message.hint_level_used} · Difficulty P
+                {message.problem_difficulty} / M{message.maths_difficulty}
+              </div>
+            )}
+            <div className="prose prose-sm max-w-none">
+              <MarkdownRenderer content={message.content} />
+            </div>
           </div>
         )}
       </div>

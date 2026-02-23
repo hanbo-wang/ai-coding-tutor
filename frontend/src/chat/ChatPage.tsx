@@ -26,6 +26,8 @@ export function ChatPage() {
     setMessages,
     streamingContent,
     setStreamingContent,
+    streamingMeta,
+    setStreamingMeta,
     isStreaming,
     setIsStreaming,
     sessionId,
@@ -63,6 +65,7 @@ export function ChatPage() {
       },
     ]);
     setStreamingContent("");
+    setStreamingMeta(null);
     setIsStreaming(true);
     socketRef.current.send(prepared.cleanedContent, {
       sessionId,
@@ -79,6 +82,7 @@ export function ChatPage() {
       setMessages(msgs);
       setSessionId(id);
       setStreamingContent("");
+      setStreamingMeta(null);
     } catch {
       // Session may have been deleted
     }
@@ -88,6 +92,7 @@ export function ChatPage() {
     setSessionId(null);
     setMessages([]);
     setStreamingContent("");
+    setStreamingMeta(null);
   };
 
   const handleDeleteSession = async (id: string) => {
@@ -98,6 +103,7 @@ export function ChatPage() {
         setSessionId(null);
         setMessages([]);
         setStreamingContent("");
+        setStreamingMeta(null);
       }
     } catch {
       // Ignore errors
@@ -138,6 +144,7 @@ export function ChatPage() {
             <ChatMessageList
               messages={messages}
               streamingContent={streamingContent}
+              streamingMeta={streamingMeta}
             />
           )}
         </div>
