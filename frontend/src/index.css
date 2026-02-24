@@ -123,6 +123,104 @@ html, body, #root {
   white-space: pre-wrap;
 }
 
+/* Keep spacing exact in code-like layouts (for example, label/annotation diagrams). */
+.markdown-body pre,
+.markdown-body pre code,
+.markdown-body .markdown-short-block-code {
+  letter-spacing: normal;
+  word-spacing: normal;
+  font-variant-ligatures: none;
+}
+
+/* Prefer monospaced CJK-capable fallbacks so Chinese text lines up more reliably. */
+.markdown-body pre code,
+.markdown-body .markdown-short-block-code {
+  font-family:
+    ui-monospace,
+    "SFMono-Regular",
+    Menlo,
+    Monaco,
+    Consolas,
+    "Cascadia Mono",
+    "Segoe UI Mono",
+    "Liberation Mono",
+    "Noto Sans Mono CJK SC",
+    "Microsoft YaHei Mono",
+    monospace;
+}
+
+/* Structured flow blocks replace fragile space-based alignment. */
+.markdown-body .markdown-flow-wrap {
+  margin: 0.9rem 0 1rem;
+  overflow-x: auto;
+  border: 1px solid var(--markdown-border);
+  border-radius: 0.85rem;
+  background: linear-gradient(180deg, var(--markdown-surface) 0%, var(--markdown-surface-soft) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
+}
+
+.markdown-body .markdown-flow-track {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: max-content;
+  align-items: center;
+  width: max-content;
+  min-width: 100%;
+  padding: 0.75rem 0.9rem;
+}
+
+.markdown-body .markdown-flow-node {
+  display: grid;
+  align-content: start;
+  justify-items: center;
+  min-width: 6.8rem;
+  padding: 0.45rem 0.55rem;
+  text-align: center;
+}
+
+.markdown-body .markdown-flow-title {
+  color: var(--markdown-text-strong);
+  font-weight: 600;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.markdown-body .markdown-flow-caption {
+  margin-top: 0.25rem;
+  color: var(--markdown-muted);
+  font-size: 0.95rem;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.markdown-body .markdown-flow-arrow {
+  display: grid;
+  place-items: center;
+  width: 2.1rem;
+  min-width: 2.1rem;
+  color: var(--markdown-muted);
+  font-size: 1.05rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+/* Keep a single horizontal flow on small screens; scrolling preserves order. */
+@media (max-width: 640px) {
+  .markdown-body .markdown-flow-track {
+    padding: 0.7rem 0.75rem;
+  }
+
+  .markdown-body .markdown-flow-node {
+    min-width: 6rem;
+    padding-inline: 0.45rem;
+  }
+
+  .markdown-body .markdown-flow-arrow {
+    width: 1.8rem;
+    min-width: 1.8rem;
+  }
+}
+
 .markdown-body table {
   background: #fff;
   color: var(--markdown-text);
@@ -209,14 +307,18 @@ html, body, #root {
 .markdown-body .katex-display > .katex {
   min-width: max-content;
   font-size: 1.18em;
-  letter-spacing: 0.045em;
-  word-spacing: 0.06em;
 }
 
 .markdown-body .katex {
   font-size: 1.12em;
-  letter-spacing: 0.035em;
   color: var(--markdown-text-strong);
+}
+
+/* Let KaTeX control spacing itself, otherwise aligned text can drift. */
+.markdown-body .katex,
+.markdown-body .katex * {
+  letter-spacing: normal;
+  word-spacing: normal;
 }
 
 .markdown-body p > .katex,

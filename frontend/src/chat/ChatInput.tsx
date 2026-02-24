@@ -479,7 +479,7 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
           onKeyDown={handleKeyDown}
           onInput={handleInput}
           onPaste={handlePaste}
-          placeholder="Ask a question... (Shift+Enter for new line)"
+          placeholder="Ask a question..."
           rows={1}
           disabled={effectiveDisabled}
           className="flex-1 resize-none border border-gray-300 rounded-lg px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
@@ -495,9 +495,6 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
       </div>
 
       {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
-      <p className="mt-1 text-xs text-gray-400">
-        {`Drag and drop files, or paste screenshots with Ctrl+V (up to ${uploadLimitLabel}).`}
-      </p>
     </form>
   );
 }

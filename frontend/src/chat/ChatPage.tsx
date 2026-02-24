@@ -8,12 +8,19 @@ import { ChatInput } from "./ChatInput";
 import { ChatSidebar } from "./ChatSidebar";
 import { useChatSocket } from "./useChatSocket";
 
+const NARROW_CHAT_LAYOUT_MEDIA_QUERY = "(max-width: 768px)";
+
 export function ChatPage() {
   const { user } = useAuth();
 
   // Sidebar state
   const [sessions, setSessions] = useState<ChatSession[]>([]);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    if (typeof window === "undefined") {
+      return false;
+    }
+    return window.matchMedia(NARROW_CHAT_LAYOUT_MEDIA_QUERY).matches;
+  });
 
   const handleSessionCreated = useCallback(() => {
     apiFetch<ChatSession[]>("/api/chat/sessions")
@@ -154,7 +161,7 @@ export function ChatPage() {
 
         {/* Disclaimer */}
         <div className="text-center text-xs text-gray-400 py-1.5 bg-white border-t border-gray-100">
-          AI responses may contain errors. Always verify important information independently.
+          AI can make mistakes. Please think critically and double-check responses.
         </div>
       </div>
     </div>

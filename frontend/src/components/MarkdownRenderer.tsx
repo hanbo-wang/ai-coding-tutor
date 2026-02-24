@@ -5,11 +5,21 @@ import rehypeKatex from "rehype-katex";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
 import "katex/dist/katex.min.css";
-import type { ComponentPropsWithoutRef } from "react";
+import {
+  Fragment,
+  isValidElement,
+  type ComponentPropsWithoutRef,
+  type ReactNode,
+} from "react";
 
 interface MarkdownRendererProps {
   content: string;
 }
+
+type FlowDiagramItem = {
+  title: string;
+  caption: string;
+};
 
 /**
  * Replace `|` with `\vert` inside inline math spans (`$...$`) that sit on
@@ -21,6 +31,157 @@ function escapePipesInTableMath(md: string): string {
     row.replace(/\$([^$]+)\$/g, (_match, expr: string) =>
       `$${expr.replace(/\|/g, "\\vert ")}$`,
     ),
+  );
+}
+
+/**
+ * Parse a strict two-line flow explanation:
+ * line 1: stages separated by `->` or `→`
+ * line 2: bracketed captions, one per stage (e.g. `(pixels)` or `（像素）`)
+ */
+function parseFlowExplanation(source: string): FlowDiagramItem[] | null {
+  if (source.includes("```")) {
+    return null;
+  }
+
+  const lines = source.replace(/\r\n?/g, "\n").split("\n");
+  while (lines.length > 0 && lines[0].trim().length === 0) {
+    lines.shift();
+  }
+  while (lines.length > 0 && lines[lines.length - 1].trim().length === 0) {
+    lines.pop();
+  }
+
+  if (lines.length !== 2) {
+    return null;
+  }
+
+  const [titlesLine, captionsLine] = lines.map((line) => line.trim());
+  if (!titlesLine || !captionsLine) {
+    return null;
+  }
+
+  if (!/(?:->|→)/.test(titlesLine)) {
+    return null;
+  }
+
+  const titles = titlesLine.split(/\s*(?:->|→)\s*/).map((part) => part.trim());
+  if (titles.length < 2 || titles.some((title) => title.length === 0)) {
+    return null;
+  }
+
+  const captions = parseBracketCaptionsLine(captionsLine);
+  if (!captions || captions.length !== titles.length) {
+    return null;
+  }
+
+  return titles.map((title, index) => ({
+    title,
+    caption: captions[index],
+  }));
+}
+
+function parseBracketCaptionsLine(line: string): string[] | null {
+  const text = line.trim();
+  if (!text) {
+    return null;
+  }
+
+  const captions: string[] = [];
+  let cursor = 0;
+
+  while (cursor < text.length) {
+    while (cursor < text.length && /\s/.test(text[cursor])) {
+      cursor += 1;
+    }
+    if (cursor >= text.length) {
+      break;
+    }
+
+    const open = text[cursor];
+    const close = open === "(" ? ")" : open === "（" ? "）" : "";
+    if (!close) {
+      return null;
+    }
+
+    const closeIndex = text.indexOf(close, cursor + 1);
+    if (closeIndex === -1) {
+      return null;
+    }
+
+    const inner = text.slice(cursor + 1, closeIndex);
+    if (!inner.trim() || /[()（）]/.test(inner)) {
+      return null;
+    }
+
+    captions.push(text.slice(cursor, closeIndex + 1));
+    cursor = closeIndex + 1;
+  }
+
+  return captions.length > 0 ? captions : null;
+}
+
+/**
+ * Only plain text and hard line breaks are eligible for smart flow parsing.
+ * Any richer inline markup falls back to normal paragraph rendering.
+ */
+function extractPlainTextWithBreaks(node: ReactNode): string | null {
+  if (node == null || typeof node === "boolean") {
+    return "";
+  }
+
+  if (typeof node === "string" || typeof node === "number") {
+    return String(node);
+  }
+
+  if (Array.isArray(node)) {
+    let result = "";
+    for (const child of node) {
+      const chunk = extractPlainTextWithBreaks(child);
+      if (chunk == null) {
+        return null;
+      }
+      result += chunk;
+    }
+    return result;
+  }
+
+  if (isValidElement<{ children?: ReactNode }>(node)) {
+    if (node.type === "br") {
+      return "\n";
+    }
+    if (node.type === Fragment) {
+      return extractPlainTextWithBreaks(node.props.children);
+    }
+    return null;
+  }
+
+  return null;
+}
+
+function FlowExplanationDiagram({ items }: { items: FlowDiagramItem[] }) {
+  return (
+    <div
+      className="markdown-flow-wrap"
+      role="group"
+      aria-label="Flow explanation diagram"
+    >
+      <div className="markdown-flow-track">
+        {items.map((item, index) => (
+          <Fragment key={`${item.title}-${item.caption}-${index}`}>
+            {index > 0 && (
+              <div className="markdown-flow-arrow" aria-hidden="true">
+                →
+              </div>
+            )}
+            <div className="markdown-flow-node">
+              <div className="markdown-flow-title">{item.title}</div>
+              <div className="markdown-flow-caption">{item.caption}</div>
+            </div>
+          </Fragment>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -47,8 +208,13 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
               !codeString.includes("\n") &&
               codeString.trim().length > 0 &&
               codeString.trim().length <= 48;
+            const flowItems = !language ? parseFlowExplanation(codeString) : null;
 
             if (!inline) {
+              if (flowItems) {
+                return <FlowExplanationDiagram items={flowItems} />;
+              }
+
               if (isSingleLinePlainSnippet) {
                 return (
                   <code className="markdown-short-block-code rounded-md border px-1.5 py-0.5 font-mono text-[0.88em]">
@@ -139,6 +305,13 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
             return <td className="px-4 py-3 align-top text-left">{children}</td>;
           },
           p({ children }) {
+            const paragraphText = extractPlainTextWithBreaks(children);
+            const flowItems = paragraphText ? parseFlowExplanation(paragraphText) : null;
+
+            if (flowItems) {
+              return <FlowExplanationDiagram items={flowItems} />;
+            }
+
             return <p className="mb-3 leading-relaxed last:mb-0">{children}</p>;
           },
           ul({ children }) {
