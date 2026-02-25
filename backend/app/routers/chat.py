@@ -58,8 +58,8 @@ class _SessionRuntimeState:
 
     student_state: "StudentState"
     single_pass_header_failure_streak: int = 0
-    auto_degraded_to_preflight: bool = False
-    preflight_turns_since_degrade: int = 0
+    auto_degraded_to_two_step_recovery: bool = False
+    two_step_recovery_turns_since_degrade: int = 0
 
 
 # ── REST endpoints ──────────────────────────────────────────────────
@@ -305,24 +305,6 @@ def _build_notebook_context_block(
     return "\n".join(parts)
 
 
-async def _build_combined_embedding(embedding_service, enriched_message, image_uploads):
-    """Generate a combined text and image embedding vector."""
-    vectors: list[list[float]] = []
-    text_embedding = await embedding_service.embed_text(enriched_message)
-    if text_embedding:
-        vectors.append(text_embedding)
-    for image in image_uploads:
-        image_path = Path(image.storage_path)
-        if not image_path.exists():
-            continue
-        image_embedding = await embedding_service.embed_image(
-            image_path.read_bytes(), image.content_type
-        )
-        if image_embedding:
-            vectors.append(image_embedding)
-    return embedding_service.combine_embeddings(vectors)
-
-
 def _build_single_pass_pedagogy_context(
     llm,
     student_state,
@@ -345,12 +327,6 @@ def _build_single_pass_pedagogy_context(
         f"Current maths difficulty before this turn: {student_state.current_maths_difficulty}",
         f"Effective programming level (EMA): {student_state.effective_programming_level:.2f}",
         f"Effective maths level (EMA): {student_state.effective_maths_level:.2f}",
-        f"Embedding same-problem signal: {str(bool(fast_signals.embedding_same_problem)).lower()}",
-        f"Embedding elaboration signal: {str(bool(fast_signals.embedding_is_elaboration)).lower()}",
-        (
-            "Embedding signals are advisory hints only. Use them as context, not as fixed truth, "
-            "and still apply the protocol definitions for same_problem and is_elaboration."
-        ),
         (
             "Hint policy: if this is a new problem, set a fresh hint level based on the "
             "difficulty gap. If it is the same problem, usually raise hint level by one "
@@ -439,15 +415,17 @@ async def websocket_chat(
                     else float(db_user.maths_level)
                 ),
             ),
-            auto_degraded_to_preflight=(settings.chat_pedagogy_response_mode == "preflight"),
+            auto_degraded_to_two_step_recovery=(
+                settings.chat_metadata_route_mode == "two_step_recovery_route"
+            ),
         )
 
-    pedagogy_response_mode = settings.chat_pedagogy_response_mode
-    single_pass_failures_before_preflight = max(
-        1, int(settings.chat_single_pass_header_failures_before_preflight or 1)
+    metadata_route_mode = settings.chat_metadata_route_mode
+    single_pass_failures_before_two_step_recovery = max(
+        1, int(settings.chat_single_pass_header_failures_before_two_step_recovery or 1)
     )
-    preflight_turns_before_single_pass_retry = max(
-        1, int(settings.chat_preflight_turns_before_single_pass_retry or 1)
+    two_step_recovery_turns_before_single_pass_retry = max(
+        1, int(settings.chat_two_step_recovery_turns_before_single_pass_retry or 1)
     )
     session_runtime_states: dict[str, _SessionRuntimeState] = {}
 
@@ -579,10 +557,6 @@ async def websocket_chat(
                     })
                     continue
 
-                combined_embedding = await _build_combined_embedding(
-                    embedding_service, enriched_user_message, image_uploads
-                )
-
                 session = await chat_service.get_or_create_session(
                     db, user.id,
                     session_id=payload.session_id,
@@ -622,7 +596,6 @@ async def websocket_chat(
                     enriched_user_message,
                     student_state,
                     username=db_user.username,
-                    embedding_override=combined_embedding,
                     enable_greeting_filter=(
                         topic_filters_allowed and settings.chat_enable_greeting_filter
                     ),
@@ -652,44 +625,20 @@ async def websocket_chat(
                     chat_history = chat_history[:-1]
 
                 summary_cache = chat_service.get_summary_cache_snapshot(session)
-                use_preflight_reply = bool(
-                    pedagogy_response_mode == "preflight"
+                use_two_step_recovery_route = bool(
+                    metadata_route_mode == "two_step_recovery_route"
                     or (
-                        pedagogy_response_mode == "auto"
-                        and runtime_state.auto_degraded_to_preflight
+                        metadata_route_mode == "auto"
+                        and runtime_state.auto_degraded_to_two_step_recovery
                     )
                 )
 
-                preflight_usage_input_tokens = 0
-                preflight_usage_output_tokens = 0
-                preflight_usage_details: dict | None = None
-
-                if use_preflight_reply:
-                    stream_meta = await pedagogy_engine.classify_preflight_meta(
-                        enriched_user_message,
-                        student_state=student_state,
-                        fast_signals=fast_signals,
-                    )
-                    preflight_usage_input_tokens = llm.last_usage.input_tokens
-                    preflight_usage_output_tokens = llm.last_usage.output_tokens
-                    preflight_usage_details = dict(llm.last_usage.usage_details or {})
-                    await websocket.send_json(_meta_event_payload(stream_meta))
-                    system_prompt = build_system_prompt(
-                        hint_level=stream_meta.hint_level,
-                        programming_level=round(student_state.effective_programming_level),
-                        maths_level=round(student_state.effective_maths_level),
-                        notebook_context=notebook_context,
-                    )
-                else:
-                    pedagogy_context = _build_single_pass_pedagogy_context(
-                        llm, student_state, fast_signals
-                    )
-                    system_prompt = build_single_pass_system_prompt(
-                        programming_level=round(student_state.effective_programming_level),
-                        maths_level=round(student_state.effective_maths_level),
-                        pedagogy_context=pedagogy_context,
-                        notebook_context=notebook_context,
-                    )
+                two_step_recovery_usage_input_tokens = 0
+                two_step_recovery_usage_output_tokens = 0
+                two_step_recovery_usage_details: dict | None = None
+                discarded_single_pass_usage_input_tokens = 0
+                discarded_single_pass_usage_output_tokens = 0
+                discarded_single_pass_usage_details: dict | None = None
 
                 messages = await build_context_messages(
                     chat_history=chat_history,
@@ -707,142 +656,283 @@ async def websocket_chat(
                         "content": _build_multimodal_user_parts(enriched_user_message, image_uploads),
                     }
 
-                # Stream LLM response.
                 full_response: list[str] = []
-                if not use_preflight_reply:
-                    stream_meta = None
-                meta_sent = bool(use_preflight_reply)
-                parser = StreamMetaParser() if not use_preflight_reply else None
-                single_pass_meta_source = "preflight" if use_preflight_reply else None
+                stream_meta = None
+                single_pass_meta_source: str | None = None
                 single_pass_parse_failed = False
+                single_pass_parse_failure_reason: str | None = None
 
-                async def _ensure_meta(reason: str | None = None) -> None:
-                    nonlocal stream_meta, meta_sent
-                    if stream_meta is None:
-                        if reason:
-                            logger.warning("Stream metadata header fallback: %s", reason)
-                        stream_meta = pedagogy_engine.build_fallback_stream_meta(
-                            student_state,
-                            fast_signals,
-                        )
-                    if not meta_sent:
-                        await websocket.send_json(_meta_event_payload(stream_meta))
-                        meta_sent = True
+                def _capture_usage() -> tuple[int, int, dict]:
+                    return (
+                        int(llm.last_usage.input_tokens),
+                        int(llm.last_usage.output_tokens),
+                        dict(llm.last_usage.usage_details or {}),
+                    )
 
-                async def _handle_parser_output(parsed) -> None:
-                    nonlocal stream_meta, meta_sent, single_pass_meta_source, single_pass_parse_failed
-                    if parsed.meta_parsed and parsed.meta is not None and stream_meta is None:
-                        try:
-                            stream_meta = pedagogy_engine.coerce_stream_meta(
-                                parsed.meta,
-                                student_state=student_state,
-                                fast_signals=fast_signals,
-                                source="header",
-                            )
-                            single_pass_meta_source = "header"
-                        except Exception as exc:
-                            logger.warning("Invalid stream metadata header, using fallback: %s", exc)
-                            stream_meta = pedagogy_engine.build_fallback_stream_meta(
-                                student_state,
-                                fast_signals,
-                            )
-                            single_pass_meta_source = stream_meta.source
-                            single_pass_parse_failed = True
-                        if not meta_sent:
-                            await websocket.send_json(_meta_event_payload(stream_meta))
-                            meta_sent = True
-                    if parsed.parse_error_reason:
-                        single_pass_parse_failed = True
-                        await _ensure_meta(parsed.parse_error_reason)
-                    for body_chunk in parsed.body_chunks:
-                        if not body_chunk:
+                def _usage_snapshot() -> tuple[int, int, str]:
+                    details = dict(llm.last_usage.usage_details or {})
+                    return (
+                        int(llm.last_usage.input_tokens),
+                        int(llm.last_usage.output_tokens),
+                        json.dumps(details, sort_keys=True, ensure_ascii=True),
+                    )
+
+                def _capture_usage_if_changed(
+                    before: tuple[int, int, str],
+                ) -> tuple[int, int, dict]:
+                    if _usage_snapshot() == before:
+                        return (0, 0, {})
+                    return _capture_usage()
+
+                async def _stream_visible_reply(*, system_prompt: str) -> list[str]:
+                    parts: list[str] = []
+                    async for chunk in llm.generate_stream(system_prompt=system_prompt, messages=messages):
+                        if not chunk:
                             continue
-                        if not meta_sent:
-                            await _ensure_meta()
-                        full_response.append(body_chunk)
-                        await websocket.send_json({"type": "token", "content": body_chunk})
+                        parts.append(chunk)
+                        await websocket.send_json({"type": "token", "content": chunk})
+                    return parts
 
-                try:
-                    if use_preflight_reply:
+                if use_two_step_recovery_route:
+                    try:
+                        before_two_step_snapshot = _usage_snapshot()
+                        stream_meta = await pedagogy_engine.classify_two_step_recovery_meta(
+                            enriched_user_message,
+                            student_state=student_state,
+                            fast_signals=fast_signals,
+                        )
+                        (
+                            two_step_recovery_usage_input_tokens,
+                            two_step_recovery_usage_output_tokens,
+                            two_step_recovery_usage_details,
+                        ) = _capture_usage_if_changed(before_two_step_snapshot)
+                        await websocket.send_json(_meta_event_payload(stream_meta))
+                        single_pass_meta_source = stream_meta.source
+                        system_prompt = build_system_prompt(
+                            hint_level=stream_meta.hint_level,
+                            programming_level=round(student_state.effective_programming_level),
+                            maths_level=round(student_state.effective_maths_level),
+                            notebook_context=notebook_context,
+                        )
+                        full_response = await _stream_visible_reply(system_prompt=system_prompt)
+                    except LLMError as exc:
+                        logger.error("LLM error: %s", exc)
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "AI service temporarily unavailable. Please try again.",
+                        })
+                        await db.commit()
+                        continue
+                else:
+                    pedagogy_context = _build_single_pass_pedagogy_context(
+                        llm, student_state, fast_signals
+                    )
+                    system_prompt = build_single_pass_system_prompt(
+                        programming_level=round(student_state.effective_programming_level),
+                        maths_level=round(student_state.effective_maths_level),
+                        pedagogy_context=pedagogy_context,
+                        notebook_context=notebook_context,
+                    )
+                    parser = StreamMetaParser()
+                    single_pass_visible_chunks: list[str] = []
+                    meta_sent = False
+
+                    async def _handle_parser_output(parsed) -> None:
+                        nonlocal stream_meta, meta_sent, single_pass_meta_source
+                        nonlocal single_pass_parse_failed, single_pass_parse_failure_reason
+
+                        if parsed.meta_parsed and parsed.meta is not None and stream_meta is None:
+                            try:
+                                stream_meta = pedagogy_engine.coerce_stream_meta(
+                                    parsed.meta,
+                                    student_state=student_state,
+                                    fast_signals=fast_signals,
+                                    source="single_pass_header_route",
+                                )
+                                single_pass_meta_source = stream_meta.source
+                                if not meta_sent:
+                                    await websocket.send_json(_meta_event_payload(stream_meta))
+                                    meta_sent = True
+                            except Exception as exc:
+                                single_pass_parse_failed = True
+                                single_pass_parse_failure_reason = "invalid_header_json"
+                                logger.warning(
+                                    "Invalid Single-Pass Header Route metadata; discarding output and recovering: %s",
+                                    exc,
+                                )
+                                stream_meta = None
+                                meta_sent = False
+
+                        if parsed.parse_error_reason:
+                            single_pass_parse_failed = True
+                            if single_pass_parse_failure_reason is None:
+                                single_pass_parse_failure_reason = parsed.parse_error_reason
+                            logger.warning(
+                                "Single-Pass Header Route parse failure (%s); discarding output and recovering",
+                                parsed.parse_error_reason,
+                            )
+
+                        for body_chunk in parsed.body_chunks:
+                            if not body_chunk:
+                                continue
+                            if single_pass_parse_failed:
+                                continue
+                            if stream_meta is None:
+                                single_pass_parse_failed = True
+                                single_pass_parse_failure_reason = (
+                                    single_pass_parse_failure_reason or "missing_or_unparsed_header"
+                                )
+                                logger.warning(
+                                    "Single-Pass Header Route body arrived before valid metadata; discarding output and recovering"
+                                )
+                                continue
+                            if not meta_sent:
+                                await websocket.send_json(_meta_event_payload(stream_meta))
+                                meta_sent = True
+                            single_pass_visible_chunks.append(body_chunk)
+                            await websocket.send_json({"type": "token", "content": body_chunk})
+
+                    try:
                         async for chunk in llm.generate_stream(
                             system_prompt=system_prompt,
                             messages=messages,
                         ):
-                            if not chunk:
-                                continue
-                            full_response.append(chunk)
-                            await websocket.send_json({"type": "token", "content": chunk})
-                    else:
-                        async for chunk in llm.generate_stream(
-                            system_prompt=system_prompt, messages=messages,
-                        ):
                             await _handle_parser_output(parser.feed(chunk))
                         await _handle_parser_output(parser.finalize())
-                except LLMError as exc:
-                    logger.error("LLM error: %s", exc)
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": "AI service temporarily unavailable. Please try again.",
-                    })
-                    await db.commit()
-                    continue
+                    except LLMError as exc:
+                        logger.error("LLM error: %s", exc)
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "AI service temporarily unavailable. Please try again.",
+                        })
+                        await db.commit()
+                        continue
 
-                if stream_meta is None:
-                    await _ensure_meta("missing_or_unparsed_header")
-                if stream_meta is not None and single_pass_meta_source is None:
-                    single_pass_meta_source = getattr(stream_meta, "source", None)
+                    (
+                        discarded_single_pass_usage_input_tokens,
+                        discarded_single_pass_usage_output_tokens,
+                        discarded_single_pass_usage_details,
+                    ) = _capture_usage()
+
+                    if (
+                        not single_pass_parse_failed
+                        and stream_meta is not None
+                        and single_pass_meta_source == "single_pass_header_route"
+                    ):
+                        full_response = single_pass_visible_chunks
+                    else:
+                        try:
+                            before_two_step_snapshot = _usage_snapshot()
+                            stream_meta = await pedagogy_engine.classify_two_step_recovery_meta(
+                                enriched_user_message,
+                                student_state=student_state,
+                                fast_signals=fast_signals,
+                            )
+                            (
+                                two_step_recovery_usage_input_tokens,
+                                two_step_recovery_usage_output_tokens,
+                                two_step_recovery_usage_details,
+                            ) = _capture_usage_if_changed(before_two_step_snapshot)
+                            await websocket.send_json(_meta_event_payload(stream_meta))
+                            single_pass_meta_source = stream_meta.source
+                            recovery_system_prompt = build_system_prompt(
+                                hint_level=stream_meta.hint_level,
+                                programming_level=round(student_state.effective_programming_level),
+                                maths_level=round(student_state.effective_maths_level),
+                                notebook_context=notebook_context,
+                            )
+                            full_response = await _stream_visible_reply(
+                                system_prompt=recovery_system_prompt
+                            )
+                        except LLMError as exc:
+                            logger.error("LLM error: %s", exc)
+                            await websocket.send_json({
+                                "type": "error",
+                                "message": "AI service temporarily unavailable. Please try again.",
+                            })
+                            await db.commit()
+                            continue
 
                 assistant_text = "".join(full_response)
                 result = pedagogy_engine.apply_stream_meta(student_state, stream_meta)
 
-                if not use_preflight_reply and pedagogy_response_mode == "auto":
-                    if single_pass_meta_source == "header" and not single_pass_parse_failed:
+                if not use_two_step_recovery_route and metadata_route_mode == "auto":
+                    if (
+                        single_pass_meta_source == "single_pass_header_route"
+                        and not single_pass_parse_failed
+                    ):
                         runtime_state.single_pass_header_failure_streak = 0
                     else:
                         runtime_state.single_pass_header_failure_streak += 1
                         if (
-                            not runtime_state.auto_degraded_to_preflight
+                            not runtime_state.auto_degraded_to_two_step_recovery
                             and runtime_state.single_pass_header_failure_streak
-                            >= single_pass_failures_before_preflight
+                            >= single_pass_failures_before_two_step_recovery
                         ):
-                            runtime_state.auto_degraded_to_preflight = True
-                            runtime_state.preflight_turns_since_degrade = 0
+                            runtime_state.auto_degraded_to_two_step_recovery = True
+                            runtime_state.two_step_recovery_turns_since_degrade = 0
                             logger.warning(
-                                "Auto-degrading chat pedagogy response path to merged preflight "
+                                "Auto-degrading chat metadata route to the Two-Step Recovery Route "
                                 "after %d consecutive header parse failures",
                                 runtime_state.single_pass_header_failure_streak,
                             )
                 elif (
-                    use_preflight_reply
-                    and pedagogy_response_mode == "auto"
-                    and runtime_state.auto_degraded_to_preflight
+                    use_two_step_recovery_route
+                    and metadata_route_mode == "auto"
+                    and runtime_state.auto_degraded_to_two_step_recovery
                 ):
-                    if getattr(stream_meta, "source", None) == "preflight":
-                        runtime_state.preflight_turns_since_degrade += 1
+                    if getattr(stream_meta, "source", None) == "two_step_recovery_route":
+                        runtime_state.two_step_recovery_turns_since_degrade += 1
                     else:
-                        runtime_state.preflight_turns_since_degrade = 0
+                        runtime_state.two_step_recovery_turns_since_degrade = 0
                     if (
-                        runtime_state.preflight_turns_since_degrade
-                        >= preflight_turns_before_single_pass_retry
+                        runtime_state.two_step_recovery_turns_since_degrade
+                        >= two_step_recovery_turns_before_single_pass_retry
                     ):
-                        runtime_state.auto_degraded_to_preflight = False
-                        runtime_state.preflight_turns_since_degrade = 0
+                        runtime_state.auto_degraded_to_two_step_recovery = False
+                        runtime_state.two_step_recovery_turns_since_degrade = 0
                         runtime_state.single_pass_header_failure_streak = 0
                         logger.info(
-                            "Auto mode retrying single-pass chat pedagogy response path "
-                            "after %d successful preflight turns",
-                            preflight_turns_before_single_pass_retry,
+                            "Auto mode retrying the Single-Pass Header Route "
+                            "after %d successful Two-Step Recovery Route turns",
+                            two_step_recovery_turns_before_single_pass_retry,
                         )
 
-                # Use precise token counts from the API response.
-                input_tokens = llm.last_usage.input_tokens + preflight_usage_input_tokens
-                output_tokens = llm.last_usage.output_tokens + preflight_usage_output_tokens
+                # Use precise token counts from all route segments in this turn.
+                final_reply_input_tokens = int(llm.last_usage.input_tokens)
+                final_reply_output_tokens = int(llm.last_usage.output_tokens)
+                input_tokens = (
+                    final_reply_input_tokens
+                    + int(two_step_recovery_usage_input_tokens or 0)
+                )
+                output_tokens = (
+                    final_reply_output_tokens
+                    + int(two_step_recovery_usage_output_tokens or 0)
+                )
+                recovered_after_single_pass = bool(
+                    discarded_single_pass_usage_input_tokens
+                    or discarded_single_pass_usage_output_tokens
+                ) and bool(
+                    single_pass_parse_failed
+                    or single_pass_meta_source != "single_pass_header_route"
+                )
+                if recovered_after_single_pass:
+                    input_tokens += int(discarded_single_pass_usage_input_tokens or 0)
+                    output_tokens += int(discarded_single_pass_usage_output_tokens or 0)
+
                 usage_details = dict(llm.last_usage.usage_details or {})
-                if preflight_usage_input_tokens or preflight_usage_output_tokens:
-                    usage_details["pedagogy_preflight"] = {
-                        "input_tokens": preflight_usage_input_tokens,
-                        "output_tokens": preflight_usage_output_tokens,
-                        "usage_details": preflight_usage_details or {},
+                if two_step_recovery_usage_input_tokens or two_step_recovery_usage_output_tokens:
+                    usage_details["pedagogy_two_step_recovery_route"] = {
+                        "input_tokens": two_step_recovery_usage_input_tokens,
+                        "output_tokens": two_step_recovery_usage_output_tokens,
+                        "usage_details": two_step_recovery_usage_details or {},
+                    }
+                if recovered_after_single_pass:
+                    usage_details["discarded_single_pass_header_route_attempt"] = {
+                        "input_tokens": discarded_single_pass_usage_input_tokens,
+                        "output_tokens": discarded_single_pass_usage_output_tokens,
+                        "usage_details": discarded_single_pass_usage_details or {},
+                        "reason": single_pass_parse_failure_reason or "header_parse_failure",
                     }
                 estimated_cost_usd = estimate_llm_cost_usd(
                     llm.provider_id,
@@ -852,9 +942,8 @@ async def websocket_chat(
                     usage_details=usage_details,
                 )
 
-                await pedagogy_engine.update_context_embedding(
-                    student_state, enriched_user_message, assistant_text,
-                    question_embedding=combined_embedding,
+                pedagogy_engine.update_previous_exchange_text(
+                    student_state, enriched_user_message, assistant_text
                 )
 
                 # Update the user message with precise input tokens.

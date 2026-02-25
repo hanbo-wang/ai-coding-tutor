@@ -163,7 +163,7 @@ Both responses are at hint level 3 (structural outline, no code), but the langua
 
 ## 2. Intelligent Pre-Filter Pipeline
 
-User messages are processed through a lightweight pre-processing pipeline before the main tutoring response is generated. Embeddings support multimodal semantics and optional greeting/off-topic filtering, while the configured LLM handles same-problem detection and difficulty estimation by default.
+User messages are processed through a lightweight pre-processing pipeline before the main tutoring response is generated. Embeddings support optional greeting/off-topic filtering, while the configured LLM handles same-problem detection, elaboration detection, difficulty estimation, and hint selection.
 
 ### 2.1 Embedding Service
 
@@ -171,21 +171,21 @@ User messages are processed through a lightweight pre-processing pipeline before
 
 | Provider  | Model                     | Notes                                                                                                |
 | --------- | ------------------------- | ---------------------------------------------------------------------------------------------------- |
-| Vertex AI | `multimodalembedding@001` | Text and images. Default provider. Uses Google Cloud service account auth (Bearer token in code). |
-| Cohere    | `embed-v4.0`              | Text and images. Supported fallback provider. |
-| Voyage AI | `voyage-multimodal-3.5`   | Text, images, and video. Supported fallback provider. |
+| Cohere    | `embed-v4.0`              | Text embeddings. Default provider. |
+| Vertex AI | `multimodalembedding@001` | Text embeddings. Supported provider. Uses Google Cloud service account auth (Bearer token in code). |
+| Voyage AI | `voyage-multimodal-3.5`   | Text embeddings. Supported provider. |
 
-The embedding provider is configured via the `EMBEDDING_PROVIDER` environment variable (`vertex`, `cohere`, or `voyage`, default `vertex`). Vertex AI uses `GOOGLE_APPLICATION_CREDENTIALS` (service account JSON path) and automatic Bearer token refresh. If the primary provider fails, the service tries the remaining configured providers in order.
+The embedding provider is configured via the `EMBEDDING_PROVIDER` environment variable (`cohere`, `vertex`, or `voyage`, default `cohere`). Model IDs are configured via `EMBEDDING_MODEL_COHERE`, `EMBEDDING_MODEL_VERTEX`, and `EMBEDDING_MODEL_VOYAGE`. Vertex AI uses `GOOGLE_APPLICATION_CREDENTIALS` (service account JSON path), `GOOGLE_VERTEX_EMBEDDING_LOCATION`, and automatic Bearer token refresh. The repository env files use London (`europe-west2`) as the default Vertex location. If the primary provider fails, the service tries the remaining configured providers in order.
 
 **Why these models:**
 
-- **Low-cost default path.** Vertex AI `multimodalembedding@001` is inexpensive and keeps Google auth consistent with the default Gemini LLM setup.
-- **Multimodal support.** Vertex, Cohere, and Voyage support text and image embedding, which is critical for code screenshots and error images.
+- **Clear default path.** Cohere `embed-v4.0` is the default embedding provider, with Vertex AI and Voyage AI available when selected.
+- **Simple optional filters.** Embeddings are used for greeting/off-topic filtering only, so the service stays lightweight and easy to reason about.
 - **Fast similarity checks.** The service uses 256-dimensional vectors for efficient NumPy cosine similarity in the pre-filter pipeline.
 
 **Implementation:** `backend/app/ai/embedding_service.py`
 
-The service uses a primary/fallback architecture. The `EMBEDDING_PROVIDER` setting determines which provider is primary. If that provider's API call fails, the other provider is tried automatically.
+The service uses a primary/fallback architecture. The `EMBEDDING_PROVIDER` setting determines which provider is primary. If that provider's API call fails, the remaining configured providers are tried automatically.
 
 ```python
 class EmbeddingService:
@@ -201,19 +201,14 @@ class EmbeddingService:
     def check_off_topic(self, embedding: list[float]) -> bool:
         """Optional synchronous check using pre-embedded topic and off-topic anchors."""
 
-    def check_same_problem(self, current: list[float], previous: list[float]) -> bool:
-        """Optional embedding fallback similarity check between two embeddings."""
-
-    def check_elaboration_request(self, embedding: list[float]) -> bool:
-        """Synchronous check against pre-embedded elaboration anchors."""
 ```
 
 **Performance optimisations:**
 
-- **Single embed per message.** The user message is embedded exactly once. Optional semantic checks (greeting/off-topic, and embedding same-problem mode) operate on the pre-computed vector using synchronous methods with no additional API calls.
+- **Single embed per message (when filters are enabled).** The user message is embedded exactly once, and only when greeting/off-topic filtering is enabled.
 - **Persistent HTTP client.** A shared `httpx.AsyncClient` reuses TCP connections across requests, reducing connection overhead.
 - **In-memory LRU cache.** Up to 512 recent embeddings are cached by normalised text key, avoiding redundant API calls for repeated or similar inputs.
-- **Batched anchor initialisation.** Greeting, topic, off-topic, and elaboration anchors are embedded in provider-agnostic batches when the embedding service is first initialised, avoiding provider-specific batch-size limits.
+- **Batched anchor initialisation.** Greeting, topic, and off-topic anchors are embedded in provider-agnostic batches when the embedding service is first initialised, avoiding provider-specific batch-size limits.
 - **NumPy vectorised similarity.** Anchor embeddings are stored as NumPy `ndarray` matrices. Cosine similarity against all anchors is computed via a single matrix-vector multiply (`matrix @ vec / (norms * vec_norm)`) instead of N individual dot products.
 
 ### 2.2 Greeting Detection (Optional, Disabled by Default)
@@ -234,9 +229,9 @@ The off-topic gate compares both scores:
 - `topic_max`: best similarity to the topic anchors
 - `off_topic_max`: best similarity to the off-topic anchors
 
-When `CHAT_ENABLE_OFF_TOPIC_FILTER=true`, the Vertex profile treats a message as off-topic when the off-topic signal is both strong and clearly stronger than the topic signal (plus a low-topic fallback for very weak domain matches).
+When `CHAT_ENABLE_OFF_TOPIC_FILTER=true`, the provider-specific profile treats a message as off-topic when the off-topic signal is both strong and clearly stronger than the topic signal (plus a low-topic fallback for very weak domain matches).
 
-This relative comparison is more reliable than a topic-only threshold with Vertex `multimodalembedding@001`, especially for short conversational prompts.
+The relative comparison is the primary rule in all three provider profiles (Cohere, Vertex AI, and Voyage AI) and is more reliable than a topic-only threshold on short conversational prompts.
 
 If the message is classified as off-topic, it is rejected:
 
@@ -244,7 +239,7 @@ If the message is classified as off-topic, it is rejected:
 
 No LLM call is made for this branch.
 
-### 2.4 Same-Problem and Elaboration Metadata (Single-Pass with Preflight Backup)
+### 2.4 Same-Problem, Elaboration, Difficulty, and Hint Metadata
 
 The chat path uses a hidden metadata schema with five fields:
 - `same_problem`
@@ -253,44 +248,66 @@ The chat path uses a hidden metadata schema with five fields:
 - `maths_difficulty`
 - `hint_level`
 
-In the primary response path, one streamed LLM call emits a hidden metadata header before the visible tutor answer. The backend provides hidden pedagogy context to the model:
-- previous Q+A text (when available),
-- current effective levels,
-- current hint and difficulty state, and
-- embedding-based same-problem / elaboration signals.
-
-The embedding signals are advisory only. The model still applies the protocol definitions for `same_problem` and `is_elaboration`, and the backend continues to validate and clamp the final metadata.
-
-This allows the model to decide whether the message continues the same underlying task and whether it is a generic elaboration request, whilst also selecting the next difficulty and hint level in the same streamed response.
-
 The response controller supports three modes for `/ws/chat`:
-- `auto` (default): prefer the single-pass hidden-header stream, automatically switch to merged preflight JSON after repeated header parse failures, and retry the faster single-pass path after stable preflight turns.
-- `single_pass`: always use the hidden-header stream.
-- `preflight`: always use one merged preflight JSON call followed by one streamed tutor reply.
+- `auto` (default): prefer the `Single-Pass Header Route`, automatically switch to the `Two-Step Recovery Route` after repeated header parse failures, and retry the faster route after stable recovery turns.
+- `single_pass_header_route`: always use the `Single-Pass Header Route`.
+- `two_step_recovery_route`: always use the `Two-Step Recovery Route`.
 
-**Elaboration anchors (25 phrases, 8 categories):** not understanding, request more detail, step-by-step, examples, hints/answers, clarification, continuation, and simple interrogatives. These are embedded in the same initialisation batches as the greeting, topic, and off-topic anchors and feed the hidden pedagogy context.
+For the first message in a session, there is no previous Q+A context, so the metadata is expected to mark a new problem.
 
-For the first message in a session, there is no previous Q+A context, so the hidden metadata is expected to mark a new problem.
-
-**Implementation detail:** The student state caches the previous Q+A text and the Q+A context embedding. After each LLM response, the concatenated question and answer are embedded and stored as the next context reference. Canned responses do not update the context state. The WebSocket handler keeps this hidden pedagogy runtime state per chat session (not shared across different session IDs on the same socket), and the `auto` response-controller degradation counters follow the same session boundary.
+**Implementation detail:** The student state caches the previous Q+A text (not an embedding). After each LLM response, the previous question and answer text are stored for the next turn. Canned responses do not update the context state. The WebSocket handler keeps this hidden pedagogy runtime state per chat session (not shared across different session IDs on the same socket), and the `auto` response-controller degradation counters follow the same session boundary.
 
 **Implementation:** `backend/app/ai/pedagogy_engine.py`, `backend/app/ai/prompts.py`, and `backend/app/services/stream_meta_parser.py`
 
-See `docs/semantic-recognition-testing.md` for Vertex semantic threshold values and calibration data used by the optional embedding filters and embedding same-problem mode.
+See `docs/semantic-recognition-testing.md` for provider-specific semantic threshold values and calibration data (Cohere, Vertex AI, Voyage AI) used by the optional greeting/off-topic filters.
 
-**Why keep embedding semantics available:** SHA-256 hashing breaks on minor edits (a single whitespace change produces a completely different hash). Embedding similarity is more robust in the optional semantic paths: it captures meaning rather than exact text, works across different phrasings, and naturally extends to multimodal inputs (text and images) in Part B.
+### 2.5 `Single-Pass Header Route` (Default Path)
 
-### 2.5 Problem Difficulty and Hint Selection
+In the primary response path, one streamed LLM call emits a hidden metadata header before the visible tutor answer.
 
-Problem difficulty is tracked separately for programming and mathematics on a 1-to-5 scale, and the next hint level is selected using the same metadata schema in both response paths:
-- the hidden header in single-pass mode; or
-- one merged preflight JSON call in preflight mode.
+The backend provides hidden pedagogy context to the model:
+- previous Q+A text (when available),
+- current effective levels,
+- current hint and difficulty state.
 
-The backend validates and clamps metadata fields to `[1, 5]`, applies them to the student state, and then persists the final values with the assistant message. If single-pass header parsing fails, the current turn falls back to conservative metadata derived from the embedding signals and the current student state. In `auto` mode, repeated header failures switch subsequent turns to the merged preflight path for stability, and successful preflight turns later trigger a retry of the faster single-pass path.
+The LLM decides `same_problem`, `is_elaboration`, `programming_difficulty`, `maths_difficulty`, and `hint_level` in the same streamed response. The backend validates and clamps all metadata fields to `[1, 5]`.
+
+### 2.6 `Two-Step Recovery Route` (Metadata + Reply)
+
+The recovery route uses two LLM calls:
+1. one compact metadata-only JSON call (token-trimmed payload), then
+2. one streamed tutor reply call.
+
+This route is used when:
+- the controller mode is `two_step_recovery_route`, or
+- `auto` mode degrades after repeated `Single-Pass Header Route` header parse failures.
+
+The backend sends the `meta` WebSocket event before the first visible `token` in this route as well.
+
+### 2.7 `Emergency Full-Hint Fallback` (Local Last Resort)
+
+If the `Single-Pass Header Route` header parsing fails for the current turn, the backend discards the failed visible output and runs the `Two-Step Recovery Route`.
+
+If the metadata step also fails, the backend builds local emergency metadata:
+- `same_problem = false`
+- `is_elaboration = false`
+- `hint_level = 5`
+- `programming_difficulty = round(current effective programming level)` (clamped to `1..5`)
+- `maths_difficulty = round(current effective maths level)` (clamped to `1..5`)
+
+The current turn still generates a visible tutor reply after this local metadata fallback, and the `meta` event is still sent before visible tokens.
+
+### 2.8 Problem Difficulty and Hint Selection
+
+Problem difficulty is tracked separately for programming and mathematics on a 1-to-5 scale, and the next hint level is selected through the hidden metadata schema in both LLM routes.
+
+The backend validates and clamps metadata fields to `[1, 5]`, applies them to the student state, and then persists the final values with the assistant message. In `auto` mode, repeated `Single-Pass Header Route` header failures switch subsequent turns to the `Two-Step Recovery Route` for stability, and successful recovery turns later trigger a retry of the faster route.
 
 **Elaboration requests:** Generic same-problem follow-ups typically keep the current difficulty and move the hint level forward.
 
-**New problems:** The metadata selects fresh difficulty values and a new hint level. The backend then updates effective levels using the previous completed interaction before applying the new values.
+**New problems:** The metadata selects fresh difficulty values and a new hint level. The backend updates effective levels using the previous completed interaction before applying the new values.
+
+**Emergency metadata turns:** When `Emergency Full-Hint Fallback` is used, that turn's fallback difficulty values do not contribute to the next EMA update.
 
 **Starting hint level behaviour** remains tied to the gap between estimated difficulty and effective level:
 
@@ -305,20 +322,21 @@ starting_hint_level = max(1, min(4, 1 + gap))
 
 **Implementation:** `backend/app/ai/pedagogy_engine.py`
 
-### 2.6 Pre-Filter Pipeline Summary
+### 2.9 Pre-Filter and Metadata Pipeline Summary
 
 The complete pipeline for each user message:
 
 ```
-1. Embed the user's input once (single API call; cached if seen before).
+1. If optional semantic filters are enabled, embed the user's input once (single API call; cached if seen before).
 2. Optional greeting filter (disabled by default): high similarity to greeting anchors → canned response. Stop.
 3. Optional off-topic filter (disabled by default): off-topic rule triggers → reject. Stop.
-4. Build embedding-only fast pedagogy signals (same-problem / elaboration hints) from the current message and previous Q+A context.
+4. Build fast pedagogy signals from the previous Q+A text (for hidden metadata context) and optional filter result.
 5. Build prompt + context using either full history or the hidden rolling summary cache plus recent raw turns (no inline summarisation on the `/ws/chat` critical path).
-6. In the primary path, make one streamed LLM call that emits a hidden metadata header first, then the visible tutor answer.
-7. In the backup path, make one merged preflight JSON LLM call for metadata (with a compact token-trimmed payload), then one streamed LLM call for the visible tutor answer.
-8. Send a `meta` WebSocket event as soon as metadata is available, stream visible tokens, apply pedagogy metadata to state, and persist the assistant turn.
-9. Refresh the hidden rolling summary cache asynchronously after the turn completes.
+6. In the `Single-Pass Header Route`, make one streamed LLM call that emits a hidden metadata header first, then the visible tutor answer.
+7. If the header route fails, discard the failed visible output and run the `Two-Step Recovery Route` (metadata JSON call + streamed reply call).
+8. If the recovery metadata step fails, use `Emergency Full-Hint Fallback`, then stream a visible reply.
+9. Send a `meta` WebSocket event as soon as metadata is available, stream visible tokens, apply pedagogy metadata to state, and persist the assistant turn.
+10. Refresh the hidden rolling summary cache asynchronously after the turn completes.
 ```
 
 ---
@@ -329,7 +347,7 @@ The complete pipeline for each user message:
 
 - `chat_sessions` and `chat_messages` database tables.
 - Updated `users` table with hidden effective level fields.
-- An embedding service (Vertex AI `multimodalembedding@001` by default, with Cohere and Voyage as supported fallbacks) for multimodal semantics, optional greeting/off-topic filtering, and optional embedding same-problem fallback.
+- An embedding service (Cohere `embed-v4.0` by default, with Vertex AI and Voyage AI as supported providers) for optional greeting/off-topic filtering.
 - An LLM abstraction layer supporting three providers with automatic failover.
 - A pedagogy engine that manages hint levels, student adaptation, and dynamic levelling.
 - A WebSocket endpoint (`/ws/chat`) that streams AI responses.
@@ -436,12 +454,12 @@ class LLMProvider(ABC):
 
 #### Provider implementations
 
-The LLM provider is configured via the `LLM_PROVIDER` environment variable (`anthropic`, `openai`, or `google`, default `google`). In this codebase, `google` means **Vertex AI Gemini** using a Google Cloud service account JSON path (`GOOGLE_APPLICATION_CREDENTIALS`) and automatic Bearer token refresh. If the configured provider is unavailable, the factory falls back to any other configured provider.
+The LLM provider is configured via the `LLM_PROVIDER` environment variable (`anthropic`, `openai`, or `google`, default `google`). In this codebase, `google` supports **Gemini via Google AI Studio** (`GOOGLE_API_KEY`) and **Gemini via Vertex AI** (Google Cloud service account JSON path via `GOOGLE_APPLICATION_CREDENTIALS`, plus `GOOGLE_VERTEX_GEMINI_LOCATION`, with automatic Bearer token refresh). The Google transport is selected explicitly with `GOOGLE_GEMINI_TRANSPORT` (`aistudio` or `vertex`). The repository env files use `aistudio` as the default Google transport and London (`europe-west2`) as the default Vertex location. If the configured provider is unavailable, the factory falls back to any other configured provider.
 
 | Provider  | Model                | Implementation File  |
 | --------- | -------------------- | -------------------- |
 | Anthropic | Claude Sonnet 4.6 / Claude Haiku 4.5 | `llm_anthropic.py` |
-| Google (Vertex AI) | Gemini 3 Flash Preview / Gemini 3.1 Pro Preview | `llm_google.py` |
+| Google (AI Studio / Vertex AI) | Gemini 3 Flash Preview / Gemini 3.1 Pro Preview | `llm_google.py` |
 | OpenAI    | GPT-5.2 / GPT-5 mini | `llm_openai.py`    |
 
 Each provider implementation:
@@ -478,7 +496,7 @@ class StudentState:
     current_maths_difficulty: int            # 1 to 5
     last_question_text: str | None           # previous user question text (for hidden pedagogy metadata context)
     last_answer_text: str | None             # previous assistant answer text (for hidden pedagogy metadata context)
-    last_context_embedding: list[float]      # embedding of the previous Q+A context
+    skip_next_ema_update_once: bool          # set when emergency metadata fallback is used
 ```
 
 #### Processing flow
@@ -490,13 +508,12 @@ async def prepare_fast_signals(
     student_state: StudentState,
 ) -> PedagogyFastSignals:
     """
-    Returns optional canned-filter output plus embedding-only pedagogy signals.
+    Returns optional canned-filter output plus fast metadata context signals.
 
-    1. Embed the user message (single API call).
+    1. Optionally embed the user message (only when greeting/off-topic filters are enabled).
     2. Optionally check greeting detection (disabled by default). If greeting, return canned response.
     3. Optionally check topic relevance (disabled by default). If off-topic, return rejection.
-    4. Derive embedding same-problem / elaboration signals from the current message and cached Q+A context.
-    5. Return hidden pedagogy signals for the single-pass metadata prompt.
+    4. Return previous Q+A text (when available) for the LLM metadata routes.
     """
 
 def apply_stream_meta(
@@ -520,7 +537,7 @@ All system prompts stored as string templates:
 - `HINT_LEVEL_INSTRUCTIONS[1..5]`: Instructions for each hint level defining what the AI may and may not reveal.
 - `PROGRAMMING_LEVEL_INSTRUCTIONS[1..5]`: Language adaptation rules for each programming skill tier.
 - `MATHS_LEVEL_INSTRUCTIONS[1..5]`: Language adaptation rules for each maths skill tier.
-- `PEDAGOGY_PREFLIGHT_JSON_PROMPT`: Strict merged preflight JSON metadata prompt for the backup path.
+- `PEDAGOGY_TWO_STEP_RECOVERY_JSON_PROMPT`: Strict metadata JSON prompt for the `Two-Step Recovery Route`.
 - `SINGLE_PASS_PEDAGOGY_PROTOCOL_PROMPT`: Hidden metadata-header protocol for the single streamed reply path.
   - Requires the `<<GC_META_V1>> ... <<END_GC_META>>` header before any visible answer text.
   - Requires raw JSON (no Markdown code fences) in the metadata block.
@@ -528,7 +545,7 @@ All system prompts stored as string templates:
 
 The context builder assembles the final system prompt for the standard hint-specific path and the single-pass hidden-metadata path.
 
-For the `/ws/chat` response path, the implementation uses `build_single_pass_system_prompt(...)` in single-pass mode and `build_system_prompt(...)` in preflight mode after merged metadata selection. Embedding fast signals remain available as hidden context, and the path does not reintroduce separate LLM calls for same-problem and difficulty classification.
+For the `/ws/chat` response path, the implementation uses `build_single_pass_system_prompt(...)` in the `Single-Pass Header Route` and `build_system_prompt(...)` in the `Two-Step Recovery Route` after metadata selection. Same-problem and difficulty classification remain part of the LLM metadata routes and are not split into separate classifier calls.
 
 ### 4.7 Context Builder
 
@@ -587,17 +604,19 @@ The chat response path uses the hidden rolling summary cache (stored on `chat_se
    3. Resolve uploads for the current user only, and ignore expired or inaccessible files.
    4. Split uploads into images/documents and enforce per-message mix limits.
    5. Build enriched user text (plain message + extracted document text).
-   6. Build combined embeddings (text + images) for semantics.
-   7. Persist the user turn with optional attachment IDs.
-   8. Run fast pedagogy checks:
+   6. Persist the user turn with optional attachment IDs.
+   7. Run fast pedagogy checks:
       - no attachments: optional greeting/off-topic filters may run;
-      - all paths compute embedding-based pedagogy signals for the hidden metadata prompt context.
-   9. If filtered, send a canned response and store it.
-   10. Otherwise, build prompt + context (using the hidden summary cache where available).
-   11. Use the current chat session's hidden pedagogy runtime state (previous Q+A context, hint/difficulty state, and auto-mode degradation counters): in single-pass mode, stream one LLM response with a hidden metadata header; in preflight mode, run one merged metadata JSON preflight call and then stream one tutor reply.
-   12. Send a `meta` event as soon as metadata is available, then stream visible `token` events.
-   13. Persist the assistant turn, apply pedagogy metadata, write effective levels back to `users`, and send the final `done` event.
-   14. Schedule an asynchronous hidden summary-cache refresh for the session.
+      - all paths prepare previous Q+A text context for the metadata routes.
+   8. If filtered, send a canned response and store it.
+   9. Otherwise, build prompt + context (using the hidden summary cache where available).
+   10. Use the current chat session's hidden pedagogy runtime state (previous Q+A text, hint/difficulty state, and auto-mode degradation counters):
+      - `Single-Pass Header Route`: stream one LLM response with a hidden metadata header;
+      - on header failure, discard failed visible output and run the `Two-Step Recovery Route`;
+      - if recovery metadata fails, use `Emergency Full-Hint Fallback`.
+   11. Send a `meta` event as soon as metadata is available, then stream visible `token` events.
+   12. Persist the assistant turn, apply pedagogy metadata, write effective levels back to `users`, and send the final `done` event.
+   13. Schedule an asynchronous hidden summary-cache refresh for the session.
 5. On disconnect, clean up.
 
 ### 4.9 Frontend: WebSocket Helper
@@ -726,7 +745,7 @@ When a chat message includes uploaded files:
    - PDF via `pypdf`,
    - plain/code files via text decoding,
    - `.ipynb` by reading notebook JSON and concatenating cell sources.
-3. **Multimodal semantics:** Text and image embeddings are merged into one combined vector for optional semantic filters, optional embedding same-problem mode, and context tracking.
+3. **Metadata routing:** Same-problem, elaboration, difficulty, and hint metadata are produced by the LLM metadata routes using previous Q+A text plus the current turn context.
 4. **Filter behaviour with attachments:** greeting/off-topic filters are skipped for attachment messages so uploaded learning material is always treated as tutoring context.
 
 ### 5.4 Updated Chat Interface

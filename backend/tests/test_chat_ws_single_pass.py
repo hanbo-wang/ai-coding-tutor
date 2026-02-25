@@ -55,12 +55,19 @@ class _FakePedagogyEngine:
     """Small pedagogy stub for router integration tests."""
 
     def __init__(self) -> None:
-        self.preflight_calls = 0
+        self.two_step_recovery_calls = 0
 
     async def prepare_fast_signals(self, *args, **kwargs) -> PedagogyFastSignals:
         return PedagogyFastSignals()
 
-    def coerce_stream_meta(self, raw_meta, *, student_state, fast_signals, source="header"):
+    def coerce_stream_meta(
+        self,
+        raw_meta,
+        *,
+        student_state,
+        fast_signals,
+        source="single_pass_header_route",
+    ):
         return StreamPedagogyMeta(
             same_problem=bool(raw_meta.get("same_problem")),
             is_elaboration=bool(raw_meta.get("is_elaboration")),
@@ -70,25 +77,17 @@ class _FakePedagogyEngine:
             source=source,
         )
 
-    def build_fallback_stream_meta(self, student_state, fast_signals):
-        return StreamPedagogyMeta(
-            same_problem=False,
-            is_elaboration=False,
-            programming_difficulty=3,
-            maths_difficulty=3,
-            hint_level=2,
-            source="fallback",
-        )
-
-    async def classify_preflight_meta(self, user_message, *, student_state, fast_signals):
-        self.preflight_calls += 1
+    async def classify_two_step_recovery_meta(
+        self, user_message, *, student_state, fast_signals
+    ):
+        self.two_step_recovery_calls += 1
         return StreamPedagogyMeta(
             same_problem=False,
             is_elaboration=False,
             programming_difficulty=3,
             maths_difficulty=2,
             hint_level=2,
-            source="preflight",
+            source="two_step_recovery_route",
         )
 
     def apply_stream_meta(self, student_state, meta):
@@ -102,14 +101,17 @@ class _FakePedagogyEngine:
             is_same_problem=meta.same_problem,
         )
 
-    async def update_context_embedding(self, *args, **kwargs) -> None:
+    def update_previous_exchange_text(self, *args, **kwargs) -> None:
         return None
 
 
 class _SessionAwareFallbackPedagogyEngine(_FakePedagogyEngine):
     """Pedagogy stub that exposes previous-Q+A carry-over via fallback metadata."""
 
-    def build_fallback_stream_meta(self, student_state, fast_signals):
+    async def classify_two_step_recovery_meta(
+        self, user_message, *, student_state, fast_signals
+    ):
+        self.two_step_recovery_calls += 1
         has_previous_exchange = bool(
             (getattr(student_state, "last_question_text", "") or "").strip()
             and (getattr(student_state, "last_answer_text", "") or "").strip()
@@ -120,10 +122,10 @@ class _SessionAwareFallbackPedagogyEngine(_FakePedagogyEngine):
             programming_difficulty=3,
             maths_difficulty=3,
             hint_level=2,
-            source="fallback",
+            source="two_step_recovery_route",
         )
 
-    async def update_context_embedding(self, student_state, question, answer, **kwargs) -> None:
+    def update_previous_exchange_text(self, student_state, question, answer, **kwargs) -> None:
         student_state.last_question_text = question
         student_state.last_answer_text = answer
 
@@ -189,19 +191,15 @@ def _setup_ws_test_env(
         )
 
     async def _fake_get_ai_services(incoming_llm):
-        return object(), pedagogy
+        return None, pedagogy
 
     async def _fake_check_weekly_limit(*args, **kwargs):
         return True
-
-    async def _fake_combined_embedding(*args, **kwargs):
-        return None
 
     monkeypatch.setattr("app.routers.chat.AsyncSessionLocal", session_factory)
     monkeypatch.setattr("app.routers.chat._authenticate_ws", _fake_authenticate_ws)
     monkeypatch.setattr("app.routers.chat.get_llm_provider", lambda _settings: llm)
     monkeypatch.setattr("app.routers.chat.get_ai_services", _fake_get_ai_services)
-    monkeypatch.setattr("app.routers.chat._build_combined_embedding", _fake_combined_embedding)
     monkeypatch.setattr("app.routers.chat.estimate_llm_cost_usd", lambda *a, **k: 0.0)
     monkeypatch.setattr("app.routers.chat.chat_service.check_weekly_limit", _fake_check_weekly_limit)
     monkeypatch.setattr(
@@ -265,7 +263,7 @@ def test_ws_single_pass_emits_meta_before_token_and_strips_header(tmp_path, monk
 
         meta_event = next(e for e in events if e["type"] == "meta")
         done_event = next(e for e in events if e["type"] == "done")
-        assert meta_event["source"] == "header"
+        assert meta_event["source"] == "single_pass_header_route"
         assert done_event["hint_level"] == meta_event["hint_level"]
         assert done_event["programming_difficulty"] == meta_event["programming_difficulty"]
         assert done_event["maths_difficulty"] == meta_event["maths_difficulty"]
@@ -281,10 +279,10 @@ def test_ws_single_pass_emits_meta_before_token_and_strips_header(tmp_path, monk
         _run(engine.dispose())
 
 
-def test_ws_single_pass_missing_header_uses_fallback_meta_and_streams_tokens(tmp_path, monkeypatch) -> None:
-    """Missing headers should still produce a `meta` event and visible streamed tokens."""
+def test_ws_single_pass_missing_header_discards_output_and_regenerates(tmp_path, monkeypatch) -> None:
+    """Missing headers should discard the failed body and regenerate via recovery route."""
 
-    chunks = ["Hello", " ", "world"]
+    chunks = [["Hello", " ", "world"], ["Recovered", " ", "reply"]]
     client, session_factory, engine, scheduled, _llm, _pedagogy = _setup_ws_test_env(
         tmp_path, monkeypatch, chunks
     )
@@ -299,30 +297,34 @@ def test_ws_single_pass_missing_header_uses_fallback_meta_and_streams_tokens(tmp
         assert event_types.index("meta") < event_types.index("token")
 
         meta_event = next(e for e in events if e["type"] == "meta")
-        assert meta_event["source"] == "fallback"
+        assert meta_event["source"] == "two_step_recovery_route"
 
         token_events = [e for e in events if e["type"] == "token"]
-        assert [e["content"] for e in token_events] == ["Hello", " ", "world"]
+        assert [e["content"] for e in token_events] == ["Recovered", " ", "reply"]
 
         session_event = next(e for e in events if e["type"] == "session")
         stored_messages = _run(_list_messages(session_factory, session_event["session_id"]))
-        assert stored_messages[1].content == "Hello world"
+        assert stored_messages[1].content == "Recovered reply"
+        assert _llm.call_count == 2
         assert len(scheduled) == 1
     finally:
         client.close()
         _run(engine.dispose())
 
 
-def test_ws_auto_mode_degrades_to_preflight_after_header_failures(tmp_path, monkeypatch) -> None:
-    """Auto mode should switch to merged preflight after repeated header parse failures."""
+def test_ws_auto_mode_degrades_to_two_step_recovery_after_header_failures(
+    tmp_path, monkeypatch
+) -> None:
+    """Auto mode should switch to the recovery route after repeated header parse failures."""
 
-    monkeypatch.setattr("app.routers.chat.settings.chat_pedagogy_response_mode", "auto")
+    monkeypatch.setattr("app.routers.chat.settings.chat_metadata_route_mode", "auto")
     monkeypatch.setattr(
-        "app.routers.chat.settings.chat_single_pass_header_failures_before_preflight", 1
+        "app.routers.chat.settings.chat_single_pass_header_failures_before_two_step_recovery", 1
     )
     llm_calls = [
-        ["No", " header"],  # First turn: single-pass parser fallback
-        ["Recovered", " reply"],  # Second turn: preflight mode main reply
+        ["No", " header"],  # First turn: failed single-pass attempt (discarded)
+        ["Recovered", " reply"],  # First turn: regenerated reply
+        ["Second", " turn"],  # Second turn: recovery-route visible reply
     ]
     client, session_factory, engine, scheduled, llm, pedagogy = _setup_ws_test_env(
         tmp_path, monkeypatch, llm_calls
@@ -337,32 +339,34 @@ def test_ws_auto_mode_degrades_to_preflight_after_header_failures(tmp_path, monk
 
         meta1 = next(e for e in events1 if e["type"] == "meta")
         meta2 = next(e for e in events2 if e["type"] == "meta")
-        assert meta1["source"] == "fallback"
-        assert meta2["source"] == "preflight"
-        assert "".join(e["content"] for e in events2 if e["type"] == "token") == "Recovered reply"
-        assert pedagogy.preflight_calls == 1
-        assert llm.call_count == 2
+        assert meta1["source"] == "two_step_recovery_route"
+        assert meta2["source"] == "two_step_recovery_route"
+        assert "".join(e["content"] for e in events1 if e["type"] == "token") == "Recovered reply"
+        assert "".join(e["content"] for e in events2 if e["type"] == "token") == "Second turn"
+        assert pedagogy.two_step_recovery_calls == 2
+        assert llm.call_count == 3
         assert len(scheduled) == 2
     finally:
         client.close()
         _run(engine.dispose())
 
 
-def test_ws_auto_mode_retries_single_pass_after_stable_preflight_turns(
+def test_ws_auto_mode_retries_single_pass_after_stable_two_step_recovery_turns(
     tmp_path, monkeypatch
 ) -> None:
-    """Auto mode should retry the faster single-pass path after stable preflight turns."""
+    """Auto mode should retry the faster single-pass path after stable recovery turns."""
 
-    monkeypatch.setattr("app.routers.chat.settings.chat_pedagogy_response_mode", "auto")
+    monkeypatch.setattr("app.routers.chat.settings.chat_metadata_route_mode", "auto")
     monkeypatch.setattr(
-        "app.routers.chat.settings.chat_single_pass_header_failures_before_preflight", 1
+        "app.routers.chat.settings.chat_single_pass_header_failures_before_two_step_recovery", 1
     )
     monkeypatch.setattr(
-        "app.routers.chat.settings.chat_preflight_turns_before_single_pass_retry", 1
+        "app.routers.chat.settings.chat_two_step_recovery_turns_before_single_pass_retry", 1
     )
     llm_calls = [
-        ["No", " header"],  # First turn: single-pass parser fallback, triggers degradation
-        ["Preflight", " ok"],  # Second turn: preflight main reply
+        ["No", " header"],  # First turn: failed single-pass attempt (discarded)
+        ["Recovered", " first"],  # First turn: regenerated reply, triggers degradation
+        ["Two-step", " ok"],  # Second turn: recovery-route visible reply
         [  # Third turn: auto retries single-pass and receives a valid hidden header
             "<<GC_META_V1>>",
             '{"same_problem":false,"is_elaboration":false,'
@@ -388,51 +392,52 @@ def test_ws_auto_mode_retries_single_pass_after_stable_preflight_turns(
         meta1 = next(e for e in events1 if e["type"] == "meta")
         meta2 = next(e for e in events2 if e["type"] == "meta")
         meta3 = next(e for e in events3 if e["type"] == "meta")
-        assert meta1["source"] == "fallback"
-        assert meta2["source"] == "preflight"
-        assert meta3["source"] == "header"
+        assert meta1["source"] == "two_step_recovery_route"
+        assert meta2["source"] == "two_step_recovery_route"
+        assert meta3["source"] == "single_pass_header_route"
         assert "".join(e["content"] for e in events3 if e["type"] == "token") == "Back again"
-        assert pedagogy.preflight_calls == 1
-        assert llm.call_count == 3
+        assert pedagogy.two_step_recovery_calls == 2
+        assert llm.call_count == 4
         assert len(scheduled) == 3
     finally:
         client.close()
         _run(engine.dispose())
 
 
-def test_ws_auto_mode_does_not_retry_single_pass_after_preflight_fallback_meta(
+def test_ws_auto_mode_does_not_retry_single_pass_after_emergency_recovery_meta(
     tmp_path, monkeypatch
 ) -> None:
-    """Auto mode should only retry single-pass after successful preflight metadata turns."""
+    """Auto mode should only retry single-pass after successful recovery metadata turns."""
 
-    monkeypatch.setattr("app.routers.chat.settings.chat_pedagogy_response_mode", "auto")
+    monkeypatch.setattr("app.routers.chat.settings.chat_metadata_route_mode", "auto")
     monkeypatch.setattr(
-        "app.routers.chat.settings.chat_single_pass_header_failures_before_preflight", 1
+        "app.routers.chat.settings.chat_single_pass_header_failures_before_two_step_recovery", 1
     )
     monkeypatch.setattr(
-        "app.routers.chat.settings.chat_preflight_turns_before_single_pass_retry", 1
+        "app.routers.chat.settings.chat_two_step_recovery_turns_before_single_pass_retry", 1
     )
     llm_calls = [
-        ["No", " header"],  # First turn: single-pass fallback, triggers degradation
-        ["Preflight", " fallback"],  # Second turn: preflight main reply
-        ["Still", " preflight"],  # Third turn should remain preflight
+        ["No", " header"],  # First turn: failed single-pass attempt (discarded)
+        ["Recovered", " first"],  # First turn: regenerated reply, triggers degradation
+        ["Emergency", " second"],  # Second turn: recovery-route visible reply
+        ["Still", " recovery"],  # Third turn should remain recovery route
     ]
     client, session_factory, engine, scheduled, llm, pedagogy = _setup_ws_test_env(
         tmp_path, monkeypatch, llm_calls
     )
 
-    async def _preflight_fallback_meta(user_message, *, student_state, fast_signals):
-        pedagogy.preflight_calls += 1
+    async def _two_step_emergency_meta(user_message, *, student_state, fast_signals):
+        pedagogy.two_step_recovery_calls += 1
         return StreamPedagogyMeta(
             same_problem=False,
             is_elaboration=False,
             programming_difficulty=3,
             maths_difficulty=3,
             hint_level=2,
-            source="fallback",
+            source="emergency_full_hint_fallback",
         )
 
-    pedagogy.classify_preflight_meta = _preflight_fallback_meta  # type: ignore[method-assign]
+    pedagogy.classify_two_step_recovery_meta = _two_step_emergency_meta  # type: ignore[method-assign]
 
     try:
         with client.websocket_connect("/ws/chat?token=test") as ws:
@@ -447,12 +452,12 @@ def test_ws_auto_mode_does_not_retry_single_pass_after_preflight_fallback_meta(
         meta1 = next(e for e in events1 if e["type"] == "meta")
         meta2 = next(e for e in events2 if e["type"] == "meta")
         meta3 = next(e for e in events3 if e["type"] == "meta")
-        assert meta1["source"] == "fallback"
-        assert meta2["source"] == "fallback"
-        assert meta3["source"] == "fallback"
-        assert pedagogy.preflight_calls == 2
-        assert llm.call_count == 3
-        assert "".join(e["content"] for e in events3 if e["type"] == "token") == "Still preflight"
+        assert meta1["source"] == "emergency_full_hint_fallback"
+        assert meta2["source"] == "emergency_full_hint_fallback"
+        assert meta3["source"] == "emergency_full_hint_fallback"
+        assert pedagogy.two_step_recovery_calls == 3
+        assert llm.call_count == 4
+        assert "".join(e["content"] for e in events3 if e["type"] == "token") == "Still recovery"
         assert len(scheduled) == 3
     finally:
         client.close()
@@ -485,8 +490,8 @@ def test_ws_hidden_pedagogy_state_is_isolated_between_new_sessions(
         meta2 = next(e for e in events2 if e["type"] == "meta")
 
         assert session1 != session2
-        assert meta1["source"] == "fallback"
-        assert meta2["source"] == "fallback"
+        assert meta1["source"] == "two_step_recovery_route"
+        assert meta2["source"] == "two_step_recovery_route"
         assert meta1["same_problem"] is False
         assert meta2["same_problem"] is False
         assert len(scheduled) == 2
@@ -500,9 +505,9 @@ def test_ws_auto_mode_header_failure_degrade_is_isolated_per_session(
 ) -> None:
     """Auto-mode degradation state should not leak from one session to another."""
 
-    monkeypatch.setattr("app.routers.chat.settings.chat_pedagogy_response_mode", "auto")
+    monkeypatch.setattr("app.routers.chat.settings.chat_metadata_route_mode", "auto")
     monkeypatch.setattr(
-        "app.routers.chat.settings.chat_single_pass_header_failures_before_preflight", 1
+        "app.routers.chat.settings.chat_single_pass_header_failures_before_two_step_recovery", 1
     )
     llm_calls = [
         ["No", " header"],
@@ -533,11 +538,11 @@ def test_ws_auto_mode_header_failure_degrade_is_isolated_per_session(
         session2 = next(e for e in events2 if e["type"] == "session")["session_id"]
 
         assert session1 != session2
-        assert meta1["source"] == "fallback"
-        assert meta2["source"] == "header"
+        assert meta1["source"] == "two_step_recovery_route"
+        assert meta2["source"] == "single_pass_header_route"
         assert "".join(e["content"] for e in events2 if e["type"] == "token") == "Fresh session"
-        assert pedagogy.preflight_calls == 0
-        assert llm.call_count == 2
+        assert pedagogy.two_step_recovery_calls == 1
+        assert llm.call_count == 3
         assert len(scheduled) == 2
     finally:
         client.close()

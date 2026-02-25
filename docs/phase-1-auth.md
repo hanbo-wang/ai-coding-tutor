@@ -139,7 +139,7 @@ The refresh token cookie is never exposed to JavaScript. The session survives pa
 - Creates the FastAPI app with a `lifespan` async context manager. On startup it calls `init_db()` to apply migrations. On shutdown it calls `engine.dispose()` to close the database connection pool.
 - Configures CORS middleware with origins from settings and `allow_credentials=True`.
 - Includes routers required by the current implementation.
-- Provides a `GET /health` endpoint that returns `{"status": "healthy"}` for readiness checks.
+- Provides a `GET /health` endpoint for readiness checks. Browser requests receive a human-readable health page; non-HTML probes receive `{"status": "healthy"}`.
 
 ### 10. Alembic migration
 
@@ -260,7 +260,7 @@ Validates that the two passwords match and that the password is at least 8 chara
 ## Verification Checklist
 
 - [ ] `docker compose up db backend` starts the backend and database without errors.
-- [ ] `GET /health` returns `{"status": "healthy"}`.
+- [ ] `GET /health` returns 200 (browser requests show the health page; non-HTML probes return `{"status": "healthy"}`).
 - [ ] `POST /api/auth/register` creates a user with email and username, returns an access token, and sets a refresh cookie.
 - [ ] Registering with a duplicate email returns 400 with "Email already registered".
 - [ ] `POST /api/auth/login` accepts email and password, returns an access token and sets a refresh cookie.

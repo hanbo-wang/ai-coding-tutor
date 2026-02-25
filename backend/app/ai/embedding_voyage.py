@@ -1,4 +1,4 @@
-"""Voyage AI multimodal embedding provider.
+"""Voyage AI text embedding provider.
 
 Endpoint:
   POST https://api.voyageai.com/v1/multimodalembeddings
@@ -24,7 +24,6 @@ Authentication:
 """
 
 import logging
-import base64
 from typing import Optional
 
 import httpx
@@ -32,14 +31,14 @@ import httpx
 logger = logging.getLogger(__name__)
 
 VOYAGE_API_URL = "https://api.voyageai.com/v1/multimodalembeddings"
-VOYAGE_MODEL = "voyage-multimodal-3.5"
 
 
 class VoyageEmbeddingService:
     """Embed text via the Voyage AI multimodal embeddings API."""
 
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, model_id: str):
         self.api_key = api_key
+        self.model_id = model_id
         self._client = httpx.AsyncClient(
             timeout=30.0,
             headers={
@@ -59,7 +58,7 @@ class VoyageEmbeddingService:
             for t in texts
         ]
         payload = {
-            "model": VOYAGE_MODEL,
+            "model": self.model_id,
             "inputs": inputs,
         }
         response = await self._client.post(VOYAGE_API_URL, json=payload)
@@ -79,64 +78,3 @@ class VoyageEmbeddingService:
             logger.error("Voyage AI embedding failed: %s", e)
             return None
 
-    async def embed_image(
-        self, image_bytes: bytes, content_type: str
-    ) -> Optional[list[float]]:
-        """Embed an image via Voyage multimodal embeddings."""
-        image_b64 = base64.b64encode(image_bytes).decode("ascii")
-        data_url = f"data:{content_type};base64,{image_b64}"
-        payload_candidates = [
-            {
-                "model": VOYAGE_MODEL,
-                "input_type": "query",
-                "inputs": [
-                    {
-                        "content": [
-                            {
-                                "type": "image_base64",
-                                # Voyage expects a data URL string in image_base64.
-                                "image_base64": data_url,
-                            }
-                        ]
-                    }
-                ],
-            },
-            {
-                "model": VOYAGE_MODEL,
-                "input_type": "query",
-                "inputs": [
-                    {
-                        "content": [
-                            {
-                                "type": "image_url",
-                                "image_url": data_url,
-                            }
-                        ]
-                    }
-                ],
-            },
-            {
-                "model": VOYAGE_MODEL,
-                "inputs": [
-                    {
-                        "content": [
-                            {
-                                "type": "image_base64",
-                                "image_base64": data_url,
-                            }
-                        ]
-                    }
-                ],
-            },
-        ]
-
-        for payload in payload_candidates:
-            response = await self._client.post(VOYAGE_API_URL, json=payload)
-            if response.status_code == 200:
-                data = response.json()
-                vectors = [item["embedding"] for item in data.get("data", [])]
-                if vectors:
-                    return vectors[0]
-
-        logger.error("Voyage image embedding failed for content type %s", content_type)
-        return None

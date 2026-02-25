@@ -22,10 +22,6 @@ class _DummyProvider:
             raise RuntimeError(f"{self.name} failed")
         return [[1.0, 0.0] for _ in texts]
 
-    async def embed_image(self, image_bytes: bytes, content_type: str):
-        return [1.0, 0.0]
-
-
 class _DummyTokenProvider:
     def __init__(self, credentials_path: str) -> None:
         self.credentials_path = credentials_path
@@ -59,6 +55,10 @@ async def test_embedding_service_prefers_vertex_then_fallbacks(monkeypatch) -> N
     service = EmbeddingService(
         provider="vertex",
         google_application_credentials="/tmp/service.json",
+        vertex_location="europe-west2",
+        cohere_model_id="embed-v4.0",
+        vertex_model_id="multimodalembedding@001",
+        voyage_model_id="voyage-multimodal-3.5",
         cohere_api_key="coh",
         voyage_api_key="voy",
     )

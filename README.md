@@ -9,6 +9,8 @@
   A web app that teaches students to code through guided problem-solving. The AI tutor never gives answers straight away. It uses graduated hints, starting with Socratic questions and escalating to full solutions only when needed. Communication adapts to the student's programming and maths ability.
 </p>
 
+<p align="center"><strong>Website:</strong> <a href="https://ai-coding-tutor.duckdns.org">https://ai-coding-tutor.duckdns.org</a></p>
+
 ---
 
 ## How It Works
@@ -17,21 +19,21 @@ The **pedagogy engine** controls every AI response:
 
 1. **Graduated hints**: five levels from Socratic questions, through conceptual nudges, structural outlines, and concrete examples, to full solutions. New problems always start at a lower hint level; follow-ups escalate one level at a time.
 2. **Adaptive student levels**: effective programming and maths levels (1.0–5.0) update automatically via exponential moving average, shaping how the tutor explains concepts. When a student updates their self-assessed level in Profile, the corresponding effective level is rebased to that value.
-3. **Same-problem detection**: the LLM (or optionally embeddings) determines whether the student is continuing the same problem or asking something new, and adjusts the hint level accordingly.
-4. **Difficulty classification**: each message is rated for programming and maths difficulty so the tutor can calibrate the gap between the problem and the student's level.
+3. **Same-problem and elaboration detection**: the LLM determines whether the student is continuing the same problem and whether the message is a follow-up elaboration request, then adjusts the hint level accordingly.
+4. **Difficulty classification**: the LLM rates each message for programming and maths difficulty so the tutor can calibrate the gap between the problem and the student's level.
 
 ## Features
 
 - **Streaming AI chat** over WebSocket with session management, chat history, and session-isolated hidden pedagogy state.
-- **Three LLM providers with failover**: Vertex AI Gemini (default), Anthropic Claude, OpenAI GPT.
+- **Three LLM providers with failover**: Google Gemini (Google AI Studio or Vertex AI via explicit transport selection, default provider), Anthropic Claude, OpenAI GPT.
 - **File and image uploads**: drag-and-drop, file picker, or paste. Up to 3 images and 2 documents per message. PDFs, code files, and notebooks are parsed for context.
 - **Notebook workspace**: open `.ipynb` files in a split-pane layout with JupyterLite (browser-side Python via Pyodide) on the left and AI tutor chat on the right. Pre-loaded with NumPy, SciPy, Pandas, Matplotlib, and SymPy.
 - **Notebook-aware tutoring**: the tutor sees notebook content, the current cell code, and the latest error output.
 - **Learning Hub**: admin-managed learning zones with curated notebooks and shared dependency files. Each student gets an independent working copy with reset-to-original support.
-- **Admin dashboard**: zone management, bulk asset import, token usage and cost tracking (today / this week / this month), and a full audit log.
+- **Admin dashboard**: zone management, bulk asset import, token usage and cost tracking (today / this week / this month), a full audit log, and a direct link to the `/health` diagnostics page.
 - **Rate limiting and cost control**: per-user and global request limits, weekly token budgets, concurrent connection caps. All configurable via `.env`.
 - **Precise token and cost tracking**: counts come from each provider's API response and are stored per message.
-- **Optional semantic filters**: embedding-based greeting and off-topic detection to handle non-tutoring messages without calling the LLM.
+- **Optional semantic filters (disabled by default)**: embedding-based greeting and off-topic detection to handle non-tutoring messages without calling the LLM.
 
 ## Tech Stack
 
@@ -39,8 +41,8 @@ The **pedagogy engine** controls every AI response:
 | ---------- | ------------------------------------------------------------------------- |
 | Frontend   | React 18, TypeScript (strict), Vite, Tailwind CSS v4                      |
 | Backend    | FastAPI, SQLAlchemy 2.0 (async), Alembic, Pydantic v2                     |
-| AI         | Vertex AI Gemini, Anthropic Claude, OpenAI GPT (configurable with failover) |
-| Embeddings | Vertex AI (default), Cohere, Voyage AI                                    |
+| AI         | Google Gemini (AI Studio or Vertex AI), Anthropic Claude, OpenAI GPT (configurable with failover) |
+| Embeddings | Cohere (default), Vertex AI, Voyage AI                                    |
 | Database   | PostgreSQL 15, asyncpg                                                    |
 | DevOps     | Docker Compose, Nginx, GitHub Actions CI/CD                               |
 
@@ -84,8 +86,8 @@ PostgreSQL (users, sessions, messages, usage, notebooks, zones, progress)
 1. **Clone and configure:**
 
 ```bash
-git clone https://github.com/your-username/AI-Coding-Tutor.git
-cd AI-Coding-Tutor
+git clone https://github.com/hanbo-wang/ai-coding-tutor.git
+cd ai-coding-tutor
 cp .github/workflows/templates/env.dev.example .env
 ```
 
@@ -127,7 +129,7 @@ Production runs on Docker Compose + Nginx reverse proxy + HTTPS, deployed via Gi
 - **Deploy**: run the manual `Deploy Production` workflow in GitHub Actions with an image tag.
 - **Rollback**: re-run the deploy workflow with an earlier image tag.
 - **Config**: create `.env` from `.github/workflows/templates/env.prod.example`. Pre-place the Google service account JSON on the server.
-- **Health**: `/health` for availability, `/api/health/ai` for AI provider verification.
+- **Health**: `/health` (browser page for configured models and smoke-tested availability; non-HTML probes still get liveness JSON), `/api/health/ai` for provider verification, `/api/health/ai/models` for model-level smoke checks.
 
 ## Documentation
 

@@ -445,20 +445,30 @@ export function AdminDashboardPage() {
   return (
     <div className="h-full overflow-y-auto bg-gray-100">
       <div className="mx-auto max-w-6xl px-6 py-8">
-        <div className="mb-6 flex items-center justify-between">
+        <div className="mb-6 flex items-center justify-between gap-3">
           <div>
             <h1 className="text-2xl font-bold text-brand">Admin Dashboard</h1>
             <p className="mt-1 text-sm text-gray-600">
               Manage learning zones, notebooks, shared dependencies, usage, and audit history.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => setShowCreateForm((value) => !value)}
-            className={btnPrimary}
-          >
-            Create Zone
-          </button>
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <a
+              href="/health"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={btnSecondary}
+            >
+              Open Health Page
+            </a>
+            <button
+              type="button"
+              onClick={() => setShowCreateForm((value) => !value)}
+              className={btnPrimary}
+            >
+              Create Zone
+            </button>
+          </div>
         </div>
 
         {error && (

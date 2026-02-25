@@ -21,8 +21,8 @@ SUPPORTED_LLM_MODELS: dict[str, set[str]] = {
 }
 
 SUPPORTED_EMBEDDING_MODELS: dict[str, set[str]] = {
-    "vertex": {"multimodalembedding@001"},
     "cohere": {"embed-v4.0"},
+    "vertex": {"multimodalembedding@001"},
     "voyage": {"voyage-multimodal-3.5"},
 }
 
@@ -49,8 +49,12 @@ _MODEL_ALIASES = {
     "gemini-3-pro-preview": "gemini-3.1-pro-preview",
     "gemini 3 pro preview": "gemini-3.1-pro-preview",
     # Embeddings
+    "embed-v4.0": "embed-v4.0",
+    "cohere embed-v4.0": "embed-v4.0",
     "multimodalembedding@001": "multimodalembedding@001",
     "vertex multimodalembedding@001": "multimodalembedding@001",
+    "voyage-multimodal-3.5": "voyage-multimodal-3.5",
+    "voyage multimodal 3.5": "voyage-multimodal-3.5",
 }
 
 

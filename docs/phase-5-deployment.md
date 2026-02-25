@@ -78,7 +78,7 @@ Key points:
 
 - Multi-stage build keeps the final image small.
 - Nginx loads a template config and substitutes environment variables at container start.
-- The same container serves the frontend and proxies `/api`, `/ws`, and `/health`.
+- The same container serves the frontend and proxies `/api`, `/ws`, and `/health` (browser health page and probe-safe liveness endpoint on the same path).
 
 ---
 
@@ -162,7 +162,7 @@ server {
 Notes:
 
 - `/.well-known/acme-challenge/` is served for certificate issuance and renewal.
-- `/health` is exposed on the same origin for low-cost liveness checks.
+- `/health` is exposed on the same origin for browser health diagnostics and low-cost liveness checks (non-HTML probes still receive JSON).
 - `/api/` and `/ws/` are proxied to the backend service.
 - `client_max_body_size` is configurable from the server `.env` file.
 - JupyterLite requires `Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy` for Pyodide features.
@@ -236,7 +236,7 @@ Named volumes used by the production stack:
 
 Operational notes:
 
-- The backend health check uses `/health`, not `/api/health/ai`, so routine probes do not trigger external API checks.
+- The backend liveness check still uses `/health` (non-HTML probe requests receive JSON), not `/api/health/ai`, so routine probes do not trigger external API checks.
 - Upload and notebook storage paths are forced to persistent container paths (`/data/uploads`, `/data/notebooks`).
 - The frontend service depends on valid TLS certificate files at the configured paths (`TLS_CERT_PATH`, `TLS_KEY_PATH`).
 - The server-side `.env` file is expected in the same directory as `docker-compose.prod.yml`.
@@ -249,8 +249,9 @@ If you want stricter production checks, add start-up validation in `backend/app/
 
 - If `JWT_SECRET_KEY` is a placeholder or shorter than 32 characters, raise an error immediately.
 - If `DATABASE_URL` is not set, raise an error.
-- If `LLM_PROVIDER` is set but the corresponding API key is empty, log a warning (or fail fast if you prefer).
-- If no embedding provider key is set, log a warning so deployments do not silently miss embedding features.
+- If `LLM_PROVIDER=google`, ensure `GOOGLE_GEMINI_TRANSPORT` is set to `aistudio` or `vertex`, and ensure the matching credentials are present (`GOOGLE_API_KEY` for AI Studio, or a Vertex service-account path).
+- If using Vertex AI, ensure `GOOGLE_VERTEX_GEMINI_LOCATION` and `GOOGLE_VERTEX_EMBEDDING_LOCATION` are set explicitly (the repository env examples use London, `europe-west2`).
+- If no embedding provider key is set, log a warning so deployments do not silently miss the optional greeting/off-topic filters (the default chat path still works).
 
 This is an optional hardening step. It is useful when multiple people deploy the stack.
 
@@ -442,7 +443,8 @@ find /backups -name "ai_coding_tutor_*.sql.gz" -mtime +30 -delete
 - [ ] The CI image build workflow passes on push to `main`.
 - [ ] The manual deploy workflow completes successfully.
 - [ ] `Deploy Production (Manual)` with `reset_mode=none` completes without removing volumes.
-- [ ] The basic health endpoint `/health` returns 200.
-- [ ] The deploy workflow post-check prints `/api/health/ai` and confirms `google` and `vertex_embedding` are available.
+- [ ] The `/health` page returns 200 in a browser, and non-HTML probes still receive liveness JSON.
+- [ ] The deploy workflow post-check prints `/api/health/ai` and confirms the configured LLM provider is available. If embedding credentials are not configured, only the optional greeting/off-topic filters are unavailable.
+- [ ] `GET /api/health/ai/models` returns the current configured models and model-level smoke-test results.
 - [ ] `reset_mode=all_volumes` requires `reset_confirm=RESET_ALL_VOLUMES` and fails safely without it.
 - [ ] The backup job runs and produces valid `.sql.gz` files.

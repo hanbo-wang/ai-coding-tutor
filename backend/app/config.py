@@ -47,61 +47,70 @@ def _parse_admin_email_set(raw: str) -> set[str]:
 class Settings(BaseSettings):
     # Database
     database_url: str
-    sqlalchemy_echo: bool = False
+    sqlalchemy_echo: bool
 
     # JWT
     jwt_secret_key: str
     jwt_access_token_expire_minutes: int
     jwt_refresh_token_expire_days: int
-    auth_cookie_secure: bool = False
-    auth_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
+    auth_cookie_secure: bool
+    auth_cookie_samesite: Literal["lax", "strict", "none"]
 
     # CORS
     cors_origins: list[str]
 
     # Backend
-    backend_reload: bool = False
+    backend_reload: bool
 
     # LLM providers
-    llm_provider: str = "google"
-    llm_model_google: str = "gemini-3-flash-preview"
-    llm_model_anthropic: str = "claude-sonnet-4-6"
-    llm_model_openai: str = "gpt-5.2"
-    anthropic_api_key: str = ""
-    openai_api_key: str = ""
-    google_api_key: str = ""  # optional legacy path; Vertex provider uses service account
-    google_application_credentials: str = ""
-    google_application_credentials_host_path: str = ""
-    google_cloud_project_id: str = ""
-    google_vertex_gemini_location: str = "global"
+    # Provider/model choices are supplied via environment variables (.env / deploy env).
+    llm_provider: str
+    llm_model_google: str
+    # Explicit Google Gemini transport selection for the `google` LLM provider:
+    # - aistudio: Google AI Studio / Gemini API via `GOOGLE_API_KEY`
+    # - vertex: Vertex AI via Google service-account credentials
+    google_gemini_transport: Literal["aistudio", "vertex"]
+    llm_model_anthropic: str
+    llm_model_openai: str
+    anthropic_api_key: str
+    openai_api_key: str
+    google_api_key: str  # Google AI Studio / Gemini API key (used when GOOGLE_GEMINI_TRANSPORT=aistudio)
+    google_application_credentials: str
+    google_application_credentials_host_path: str
+    google_cloud_project_id: str
+    google_vertex_gemini_location: str
 
     # Embedding providers
-    embedding_provider: str = "vertex"
-    embedding_model_vertex: str = "multimodalembedding@001"
-    google_vertex_embedding_location: str = "us-central1"
-    cohere_api_key: str = ""
-    voyageai_api_key: str = ""
+    embedding_provider: str
+    embedding_model_cohere: str
+    embedding_model_vertex: str
+    embedding_model_voyage: str
+    google_vertex_embedding_location: str
+    cohere_api_key: str
+    voyageai_api_key: str
 
     # Chat and token limits
     llm_max_context_tokens: int
     llm_max_user_input_tokens: int
     context_compression_threshold: float
-    user_weekly_weighted_token_limit: int = 80000
-    chat_enable_greeting_filter: bool = False
-    chat_enable_off_topic_filter: bool = False
-    # Pedagogy response mode for `/ws/chat`:
-    # - auto: prefer single-pass hidden-header streaming, degrade to merged preflight if needed
-    # - single_pass: always use hidden-header streaming
-    # - preflight: always use merged preflight JSON + streamed tutor reply
-    chat_pedagogy_response_mode: Literal["auto", "single_pass", "preflight"] = "auto"
-    # Consecutive hidden-header parse failures before `auto` mode degrades to preflight.
-    chat_single_pass_header_failures_before_preflight: int = 1
-    # Successful preflight turns before `auto` mode retries the faster single-pass path.
-    chat_preflight_turns_before_single_pass_retry: int = 2
+    user_weekly_weighted_token_limit: int
+    chat_enable_greeting_filter: bool
+    chat_enable_off_topic_filter: bool
+    # Metadata route mode for `/ws/chat`:
+    # - auto: prefer the Single-Pass Header Route, degrade to the Two-Step Recovery Route if needed
+    # - single_pass_header_route: always use hidden-header streaming
+    # - two_step_recovery_route: always use metadata-only JSON + streamed tutor reply
+    chat_metadata_route_mode: Literal[
+        "auto", "single_pass_header_route", "two_step_recovery_route"
+    ]
+    # Consecutive header parse failures before `auto` mode degrades to the recovery route.
+    chat_single_pass_header_failures_before_two_step_recovery: int
+    # Successful recovery-route turns before `auto` mode retries the faster header route.
+    chat_two_step_recovery_turns_before_single_pass_retry: int
     # Rate limiting
-    rate_limit_user_per_minute: int = 5
-    rate_limit_global_per_minute: int = 300
-    max_ws_connections_per_user: int = 3
+    rate_limit_user_per_minute: int
+    rate_limit_global_per_minute: int
+    max_ws_connections_per_user: int
 
     # Uploads
     upload_storage_dir: str
@@ -119,12 +128,12 @@ class Settings(BaseSettings):
     notebook_max_context_tokens: int
 
     # Misc (previously hardcoded values, now configurable)
-    image_token_estimate: int = 512
-    notebook_max_title_length: int = 120
-    session_preview_max_chars: int = 80
+    image_token_estimate: int
+    notebook_max_title_length: int
+    session_preview_max_chars: int
 
     # Admin
-    admin_email: str = ""
+    admin_email: str
 
     @property
     def admin_email_set(self) -> set[str]:
@@ -135,21 +144,36 @@ class Settings(BaseSettings):
     def _normalise_llm_provider(cls, value: str) -> str:
         return normalise_llm_provider(str(value))
 
+    @field_validator("google_gemini_transport", mode="before")
+    @classmethod
+    def _normalise_google_gemini_transport(cls, value: str) -> str:
+        transport = str(value).strip().lower().replace("-", "_")
+        aliases = {
+            "aistudio": "aistudio",
+            "ai_studio": "aistudio",
+            "studio": "aistudio",
+            "vertex": "vertex",
+            "vertex_ai": "vertex",
+        }
+        return aliases.get(transport, transport)
+
     @field_validator("embedding_provider", mode="before")
     @classmethod
     def _normalise_embedding_provider(cls, value: str) -> str:
         return normalise_embedding_provider(str(value))
 
-    @field_validator("chat_pedagogy_response_mode", mode="before")
+    @field_validator("chat_metadata_route_mode", mode="before")
     @classmethod
-    def _normalise_pedagogy_response_mode(cls, value: str) -> str:
+    def _normalise_metadata_route_mode(cls, value: str) -> str:
         return str(value).strip().lower()
 
     @field_validator(
         "llm_model_google",
         "llm_model_anthropic",
         "llm_model_openai",
+        "embedding_model_cohere",
         "embedding_model_vertex",
+        "embedding_model_voyage",
         mode="before",
     )
     @classmethod

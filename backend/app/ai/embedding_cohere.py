@@ -1,4 +1,4 @@
-"""Cohere Embed v4 embedding provider.
+"""Cohere Embed v4 text embedding provider.
 
 Endpoint:
   POST https://api.cohere.com/v2/embed
@@ -26,7 +26,6 @@ Authentication:
 """
 
 import logging
-import base64
 from typing import Optional
 
 import httpx
@@ -34,14 +33,14 @@ import httpx
 logger = logging.getLogger(__name__)
 
 COHERE_API_URL = "https://api.cohere.com/v2/embed"
-COHERE_MODEL = "embed-v4.0"
 
 
 class CohereEmbeddingService:
     """Embed text via the Cohere Embed v4 API."""
 
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, model_id: str):
         self.api_key = api_key
+        self.model_id = model_id
         self._client = httpx.AsyncClient(
             timeout=30.0,
             headers={
@@ -57,7 +56,7 @@ class CohereEmbeddingService:
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch of texts in a single API call (max 96 per call)."""
         payload = {
-            "model": COHERE_MODEL,
+            "model": self.model_id,
             "input_type": "search_query",
             "texts": texts,
             "embedding_types": ["float"],
@@ -80,43 +79,3 @@ class CohereEmbeddingService:
             logger.error("Cohere embedding failed: %s", e)
             return None
 
-    async def embed_image(
-        self, image_bytes: bytes, content_type: str
-    ) -> Optional[list[float]]:
-        """Embed an image using Cohere's multimodal embed model."""
-        image_b64 = base64.b64encode(image_bytes).decode("ascii")
-        data_url = f"data:{content_type};base64,{image_b64}"
-
-        payload_candidates = [
-            {
-                "model": COHERE_MODEL,
-                "input_type": "search_query",
-                "images": [data_url],
-                "embedding_types": ["float"],
-                "output_dimension": 256,
-            },
-            {
-                "model": COHERE_MODEL,
-                "input_type": "search_query",
-                "inputs": [
-                    {
-                        "content": [
-                            {"type": "image", "image": data_url},
-                        ]
-                    }
-                ],
-                "embedding_types": ["float"],
-                "output_dimension": 256,
-            },
-        ]
-
-        for payload in payload_candidates:
-            response = await self._client.post(COHERE_API_URL, json=payload)
-            if response.status_code == 200:
-                data = response.json()
-                vectors = data.get("embeddings", {}).get("float", [])
-                if vectors:
-                    return vectors[0]
-
-        logger.error("Cohere image embedding failed for content type %s", content_type)
-        return None

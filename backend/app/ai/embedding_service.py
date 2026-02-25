@@ -114,73 +114,31 @@ OFF_TOPIC_ANCHORS = [
     "general chit chat small talk conversation",
 ]
 
-ELABORATION_ANCHORS = [
-    # Not understanding
-    "I don't understand",
-    "I'm confused",
-    "that doesn't make sense",
-    "I still don't get it",
-    # Request more detail
-    "explain more",
-    "can you elaborate",
-    "give me more details",
-    "tell me more",
-    # Step-by-step
-    "show me step by step",
-    "break it down for me",
-    "walk me through it",
-    # Examples
-    "show me an example",
-    "give me an example",
-    # Hints/answers
-    "give me a hint",
-    "show me the answer",
-    "just tell me",
-    # Clarification
-    "what do you mean",
-    "can you explain that again",
-    "could you clarify",
-    # Continuation
-    "go on",
-    "continue",
-    "what's next",
-    "and then what",
-    # Simple interrogatives
-    "why",
-    "how",
-]
-
 EMBEDDING_THRESHOLDS = {
     # Provider-specific semantic thresholds calibrated with
-    # backend/tests/test_semantic_thresholds.py.
-    "vertex": {
-        "greeting_min_similarity": 0.915,
-        # Fallback rule if off-topic anchors are unavailable.
-        "off_topic_max_similarity": 0.68,
-        # Primary Vertex off-topic rule: strong off-topic anchor match with
-        # clear margin over the best topic anchor.
-        "off_topic_negative_min_similarity": 0.80,
-        "off_topic_margin_min_similarity": 0.07,
-        "same_problem_min_similarity": 0.73,
-        "elaboration_min_similarity": 0.88,
+    # backend/tests/test_semantic_thresholds.py (text-only calibration corpus).
+    "cohere": {
+        "greeting_min_similarity": 0.99,
+        "off_topic_max_similarity": 0.361,
+        "off_topic_negative_min_similarity": 0.65,
+        "off_topic_margin_min_similarity": 0.386,
     },
-    # Shared fallback profile for optional non-Vertex embedding semantics.
-    "fallback": {
-        "greeting_min_similarity": 0.75,
-        "off_topic_max_similarity": 0.30,
-        "same_problem_min_similarity": 0.35,
-        "elaboration_min_similarity": 0.50,
+    "vertex": {
+        "greeting_min_similarity": 0.935,
+        # Backup rule if the relative rule cannot run (for example, anchor matrix unavailable).
+        "off_topic_max_similarity": 0.751,
+        # Primary relative rule: strong off-topic anchor match with
+        # clear margin over the best topic anchor.
+        "off_topic_negative_min_similarity": 0.808,
+        "off_topic_margin_min_similarity": 0.07,
+    },
+    "voyage": {
+        "greeting_min_similarity": 0.97,
+        "off_topic_max_similarity": 0.294,
+        "off_topic_negative_min_similarity": 0.57,
+        "off_topic_margin_min_similarity": 0.442,
     },
 }
-
-
-def _cosine_similarity(vec_a: np.ndarray, vec_b: np.ndarray) -> float:
-    """Cosine similarity between two vectors using NumPy."""
-    norm_a = np.linalg.norm(vec_a)
-    norm_b = np.linalg.norm(vec_b)
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return float(np.dot(vec_a, vec_b) / (norm_a * norm_b))
 
 
 def _max_similarity(matrix: np.ndarray, vec: np.ndarray) -> float:
@@ -200,14 +158,20 @@ class EmbeddingService:
     def __init__(
         self,
         provider: str,
+        vertex_location: str,
         google_application_credentials: str = "",
         google_application_credentials_host_path: str = "",
         google_cloud_project_id: str = "",
-        vertex_location: str = "us-central1",
-        vertex_model_id: str = "multimodalembedding@001",
+        cohere_model_id: str = "",
+        vertex_model_id: str = "",
+        voyage_model_id: str = "",
         cohere_api_key: str = "",
         voyage_api_key: str = "",
     ):
+        cohere = None
+        if cohere_api_key:
+            cohere_model = validate_supported_embedding_model("cohere", cohere_model_id)
+            cohere = CohereEmbeddingService(cohere_api_key, model_id=cohere_model)
         vertex = None
         if google_application_credentials or google_application_credentials_host_path:
             try:
@@ -232,20 +196,22 @@ class EmbeddingService:
                     "continuing with configured fallbacks: %s",
                     exc,
                 )
-        cohere = CohereEmbeddingService(cohere_api_key) if cohere_api_key else None
-        voyage = VoyageEmbeddingService(voyage_api_key) if voyage_api_key else None
+        voyage = None
+        if voyage_api_key:
+            voyage_model = validate_supported_embedding_model("voyage", voyage_model_id)
+            voyage = VoyageEmbeddingService(voyage_api_key, model_id=voyage_model)
 
         provider = provider.lower()
         available = {
-            "vertex": vertex,
             "cohere": cohere,
+            "vertex": vertex,
             "voyage": voyage,
         }
         preferred_order = {
+            "cohere": ["cohere", "vertex", "voyage"],
             "vertex": ["vertex", "cohere", "voyage"],
-            "cohere": ["cohere", "voyage", "vertex"],
             "voyage": ["voyage", "cohere", "vertex"],
-        }.get(provider, ["vertex", "cohere", "voyage"])
+        }.get(provider, ["cohere", "vertex", "voyage"])
         ordered = [available[name] for name in preferred_order if available.get(name)]
         if not ordered:
             raise RuntimeError("No embedding API key configured")
@@ -253,14 +219,15 @@ class EmbeddingService:
         self._fallbacks = ordered[1:]
         selected_provider_name = next(
             (name for name in preferred_order if available.get(name) is self._provider),
-            "vertex",
+            "cohere",
         )
-        threshold_profile_key = "vertex" if selected_provider_name == "vertex" else "fallback"
+        threshold_profile_key = (
+            selected_provider_name if selected_provider_name in EMBEDDING_THRESHOLDS else "cohere"
+        )
         self._threshold_profile = EMBEDDING_THRESHOLDS[threshold_profile_key]
         self._greeting_embeddings: Optional[np.ndarray] = None  # (N, D)
         self._topic_embeddings: Optional[np.ndarray] = None  # (M, D)
         self._off_topic_embeddings: Optional[np.ndarray] = None  # (O, D)
-        self._elaboration_embeddings: Optional[np.ndarray] = None  # (E, D)
         self._initialized = False
         # In-memory cache: text -> embedding (bounded to 512 entries)
         self._cache: dict[str, list[float]] = {}
@@ -280,9 +247,7 @@ class EmbeddingService:
         greeting_texts = GREETING_ANCHORS
         topic_texts = TOPIC_ANCHORS
         off_topic_texts = OFF_TOPIC_ANCHORS
-        elaboration_texts = ELABORATION_ANCHORS
-
-        all_texts = greeting_texts + topic_texts + off_topic_texts + elaboration_texts
+        all_texts = greeting_texts + topic_texts + off_topic_texts
         all_embeddings = await self._embed_texts_batched(all_texts)
         if not all_embeddings:
             logger.error("Failed to initialise embedding service: no provider available")
@@ -295,14 +260,12 @@ class EmbeddingService:
         self._topic_embeddings = np.array(all_embeddings[n_greetings:n_greetings + n_topics])
         off_start = n_greetings + n_topics
         self._off_topic_embeddings = np.array(all_embeddings[off_start:off_start + n_off_topics])
-        self._elaboration_embeddings = np.array(all_embeddings[off_start + n_off_topics:])
         self._initialized = True
         logger.info(
-            "Embedding service initialised: %d greetings, %d topics, %d off-topic, %d elaboration, dim=%d",
+            "Embedding service initialised: %d greetings, %d topics, %d off-topic, dim=%d",
             self._greeting_embeddings.shape[0],
             self._topic_embeddings.shape[0],
             self._off_topic_embeddings.shape[0],
-            self._elaboration_embeddings.shape[0],
             self._greeting_embeddings.shape[1],
         )
 
@@ -354,28 +317,6 @@ class EmbeddingService:
             return result[0]
         return None
 
-    async def embed_image(
-        self, image_bytes: bytes, content_type: str
-    ) -> Optional[list[float]]:
-        """Return an embedding vector for an image attachment."""
-        try:
-            if hasattr(self._provider, "embed_image"):
-                result = await self._provider.embed_image(image_bytes, content_type)
-                if result:
-                    return result
-        except Exception as e:
-            logger.warning("Primary image embedding provider failed: %s", e)
-
-        for fallback in self._fallbacks:
-            if not hasattr(fallback, "embed_image"):
-                continue
-            try:
-                return await fallback.embed_image(image_bytes, content_type)
-            except Exception as e:
-                logger.error("Fallback image embedding provider failed: %s", e)
-
-        return None
-
     def _put_cache(self, key: str, embedding: list[float]) -> None:
         """Insert into cache, evicting oldest entry if full."""
         if len(self._cache) >= self._cache_max:
@@ -401,8 +342,9 @@ class EmbeddingService:
     def check_off_topic(self, embedding: list[float]) -> bool:
         """Check if the embedding is off-topic.
 
-        Vertex uses topic vs off-topic anchor comparison with a margin. Other
-        providers use the legacy low-topic-threshold rule.
+        Uses a provider-specific relative rule (off-topic anchor strength plus
+        margin over topic anchors) when configured, with a topic-only fallback
+        threshold kept in each profile as a backup.
         """
         if self._topic_embeddings is None:
             return False
@@ -429,58 +371,3 @@ class EmbeddingService:
         threshold = self._threshold_profile["off_topic_max_similarity"]
         return topic_max < threshold
 
-    def check_same_problem(
-        self, current_embedding: list[float], previous_embedding: list[float]
-    ) -> bool:
-        """Check if the current message is a follow-up on the same problem.
-
-        Compares current message embedding against previous Q+A context embedding.
-        Uses provider-specific thresholds for 256d vectors.
-        """
-        current = np.array(current_embedding)
-        previous = np.array(previous_embedding)
-        if current.shape != previous.shape:
-            return False
-        threshold = self._threshold_profile["same_problem_min_similarity"]
-        return _cosine_similarity(current, previous) > threshold
-
-    def check_elaboration_request(self, embedding: list[float]) -> bool:
-        """Check if the message is a generic elaboration request.
-
-        Matches against 25 elaboration anchors covering: confusion, requests
-        for detail, step-by-step, examples, hints, clarification, continuation.
-        Uses provider-specific thresholds for 256d vectors.
-        """
-        if self._elaboration_embeddings is None:
-            return False
-        vector = np.array(embedding)
-        if self._elaboration_embeddings.shape[1] != vector.shape[0]:
-            return False
-        threshold = self._threshold_profile["elaboration_min_similarity"]
-        return _max_similarity(self._elaboration_embeddings, vector) > threshold
-
-    @staticmethod
-    def cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
-        array_a = np.array(vec_a)
-        array_b = np.array(vec_b)
-        if array_a.shape != array_b.shape:
-            return 0.0
-        return _cosine_similarity(array_a, array_b)
-
-    @staticmethod
-    def combine_embeddings(vectors: list[list[float]]) -> list[float] | None:
-        """Average vectors into one embedding for multimodal comparisons."""
-        if not vectors:
-            return None
-
-        arrays = [np.array(vec) for vec in vectors if vec]
-        if not arrays:
-            return None
-
-        dimension = arrays[0].shape[0]
-        compatible = [arr for arr in arrays if arr.shape[0] == dimension]
-        if not compatible:
-            return None
-
-        merged = np.mean(np.vstack(compatible), axis=0)
-        return merged.tolist()

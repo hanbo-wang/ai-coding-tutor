@@ -1,8 +1,7 @@
-"""Vertex AI multimodal embedding provider (`multimodalembedding@001`)."""
+"""Vertex AI embedding provider for text embeddings."""
 
 from __future__ import annotations
 
-import base64
 import logging
 from typing import Optional
 
@@ -14,14 +13,14 @@ logger = logging.getLogger(__name__)
 
 
 class VertexEmbeddingService:
-    """Embed text and images via Vertex AI multimodal embeddings."""
+    """Embed text via Vertex AI embeddings."""
 
     def __init__(
         self,
         token_provider: GoogleServiceAccountTokenProvider,
         project_id: str,
         location: str,
-        model_id: str = "multimodalembedding@001",
+        model_id: str,
         dimension: int = 256,
     ) -> None:
         self._token_provider = token_provider
@@ -112,19 +111,4 @@ class VertexEmbeddingService:
             return result[0] if result else None
         except Exception as exc:
             logger.error("Vertex embedding failed: %s", exc)
-            return None
-
-    async def embed_image(
-        self,
-        image_bytes: bytes,
-        content_type: str,
-    ) -> Optional[list[float]]:
-        try:
-            image_b64 = base64.b64encode(image_bytes).decode("ascii")
-            result = await self._predict(
-                [{"image": {"bytesBase64Encoded": image_b64}}]
-            )
-            return result[0] if result else None
-        except Exception as exc:
-            logger.error("Vertex image embedding failed: %s", exc)
             return None

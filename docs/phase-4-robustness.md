@@ -17,7 +17,7 @@
 - Structured JSON logging for significant events.
 - Improved error handling on both frontend and backend.
 
-The application exposes two health-related endpoints: `GET /health` for basic liveness and `GET /api/health/ai` for AI provider verification.
+The application exposes three health-related endpoints: `GET /health` for browser-facing health diagnostics (and basic liveness for non-HTML probes), `GET /api/health/ai` for AI provider verification, and `GET /api/health/ai/models` for model-level smoke checks.
 This phase defines token-governance and audit schema details used by runtime monitoring and controls.
 
 ---
@@ -143,27 +143,30 @@ For each `/ws/chat` message:
 3. Build enriched user text and apply the per-message input guard.
 4. Run `check_weekly_limit()` and reject if the weekly weighted budget is exhausted.
 5. Load the latest profile values for the user and sync the session-scoped hidden pedagogy runtime state with the current hidden effective levels.
-6. Run fast pedagogy checks (including optional greeting/off-topic filters and embedding-only signals).
+6. Run fast pedagogy checks (optional greeting/off-topic filters plus previous Q+A text context for metadata routing).
 7. Build prompt + context using the hidden rolling summary cache where available.
 8. Use the response controller mode (tracked per chat session on the socket):
-   - single-pass path: stream one LLM response, parse the hidden metadata header, send a `meta` WebSocket event, then forward visible answer tokens;
-   - merged preflight backup path: run one compact JSON metadata preflight call, send `meta`, then stream one visible tutor reply.
-9. Capture precise `input_tokens` and `output_tokens` (including merged preflight usage when the backup path runs).
+   - `Single-Pass Header Route`: stream one LLM response, parse the hidden metadata header, send a `meta` WebSocket event, then forward visible answer tokens;
+   - `Two-Step Recovery Route`: run one compact JSON metadata call, send `meta`, then stream one visible tutor reply;
+   - on single-pass header failure, discard the failed visible output and regenerate the reply through the recovery route.
+9. Capture precise `input_tokens` and `output_tokens` (including discarded single-pass attempts and recovery-route metadata usage when they occur).
 10. Persist usage through `record_token_usage()` with an atomic upsert into `daily_token_usage`.
 11. Schedule an asynchronous hidden summary-cache refresh task for the session.
 
-### 3.6A Merged Preflight Backup Path (Auto Degradation)
+### 3.6A `Two-Step Recovery Route` (Auto Degradation)
 
-If metadata-header compliance degrades, the backup path uses one merged pedagogy preflight JSON call and one streamed tutor reply:
+If metadata-header compliance degrades, the recovery route uses one metadata JSON call and one streamed tutor reply:
 
-1. Build hidden fast pedagogy signals from embeddings (same-problem and elaboration hints remain advisory only).
-2. Run `classify_preflight_meta(...)` once with `PEDAGOGY_PREFLIGHT_JSON_PROMPT` and a compact token-trimmed payload.
+1. Build hidden metadata context from the current message, previous Q+A text, and the current student state.
+2. Run `classify_two_step_recovery_meta(...)` once with `PEDAGOGY_TWO_STEP_RECOVERY_JSON_PROMPT` and a compact token-trimmed payload.
 3. Validate and clamp `hint_level`, `programming_difficulty`, and `maths_difficulty` server-side.
 4. Send the `meta` WebSocket event as soon as metadata is available.
 5. Build the tutor reply prompt with `build_system_prompt(...)` using the selected `hint_level`.
 6. Stream one visible tutor reply and persist the final metadata with the assistant message.
-7. Keep the single-pass path available: in `auto` mode, repeated header failures degrade to preflight, and stable preflight turns later retry the faster single-pass path.
-8. Do not reintroduce separate LLM calls for same-problem or difficulty classification.
+7. If the metadata JSON call fails, use `Emergency Full-Hint Fallback` metadata (full hint, rounded current effective levels, no same-problem carry-over) and still stream one visible tutor reply.
+8. Emergency fallback turns do not contribute fallback difficulty values to the next EMA update.
+9. Keep the single-pass path available: in `auto` mode, repeated header failures degrade to the recovery route, and stable recovery turns later retry the faster single-pass path.
+10. Do not reintroduce separate LLM calls for same-problem or difficulty classification.
 
 ### 3.7 Profile Display Behaviour
 
@@ -333,10 +336,10 @@ Current automated total (default offline run, excluding `external_ai` smoke test
 | `test_auth_profile_update_levels.py` | 3 | Profile update effective-level baseline resets | Per-dimension hidden effective-level rebasing when self-assessed skill levels change, and no reset on username-only updates. |
 | `test_chat.py` | 11 | Chat router helper logic | WebSocket token resolution, upload split and limit validation, enriched message generation, multimodal part generation, context truncation helpers. |
 | `test_chat_service_scoping.py` | 4 | Chat session scope-matching and session reuse | Scope-safe session reuse, mismatched `session_id` fallback to current scope, and general/scoped separation. |
-| `test_chat_ws_single_pass.py` | 7 | WebSocket single-pass and preflight auto-mode flow | `meta` before first visible token, hidden-header stripping, fallback metadata path, auto degradation to merged preflight, guarded auto retry of single-pass, session-scoped hidden pedagogy isolation, and session-scoped auto-mode degradation isolation. |
+| `test_chat_ws_single_pass.py` | 7 | WebSocket single-pass and recovery-route auto-mode flow | `meta` before first visible token, hidden-header stripping, discard-and-regenerate recovery on header failure, auto degradation to the `Two-Step Recovery Route`, guarded auto retry of single-pass, session-scoped hidden pedagogy isolation, and session-scoped auto-mode degradation isolation. |
 | `test_chat_usage_budget.py` | 2 | Weekly budget helper logic | Monday-Sunday week bounds and weighted usage formula (`input / 6 + output`). |
 | `test_chat_summary_cache.py` | 3 | Hidden rolling summary cache service | Summary write/clear behaviour, prefix-count persistence, and per-session refresh coalescing while a task is already running. |
-| `test_pedagogy.py` | 12 | Pedagogy engine behaviour | Embedding fast-signal filtering and elaboration hints, stream-metadata coercion/fallback, merged preflight metadata parsing/fallback, compact preflight payload trimming, Q+A context embedding updates, and effective-level EMA update. |
+| `test_pedagogy.py` | 12 | Pedagogy engine behaviour | Optional embedding filter checks, stream-metadata coercion, two-step recovery metadata parsing/emergency fallback, compact metadata payload trimming, previous Q+A text state updates, emergency-fallback EMA skip-once behaviour, and effective-level EMA update. |
 | `test_context_builder.py` | 5 | Token-aware context assembly | Empty history handling, truncation under small budgets, full-history inclusion, hidden summary-cache reuse, and no-inline-compression fallback behaviour. |
 | `test_stream_meta_parser.py` | 5 | Hidden metadata header parsing | Chunk-split markers, invalid header JSON fallback, short missing-header streaming fallback, missing-header passthrough fallback, and incomplete-header handling. |
 | `test_rate_limiter.py` | 4 | Sliding-window request limits | Per-user allowance, per-user rejection, global cap enforcement, 60-second expiry pruning. |
@@ -356,7 +359,7 @@ cd backend
 PYTHONPATH=. pytest tests/ -q -s
 ```
 
-`test_semantic_thresholds.py` is a manual calibration script, not an automated `pytest` test. It runs against Vertex AI `multimodalembedding@001`:
+`test_semantic_thresholds.py` is a manual calibration script, not an automated `pytest` test. It runs against any configured embedding providers (in documentation order: Cohere, Vertex AI, Voyage AI) to calibrate the optional greeting/off-topic filters with provider-specific thresholds:
 
 ```bash
 python -m tests.test_semantic_thresholds
@@ -434,8 +437,9 @@ In development, log to stdout in human readable format. In production (detected 
 - [ ] Opening a 4th browser tab with the chat page rejects the WebSocket connection with code 4002.
 - [ ] All tests pass: `cd backend && PYTHONPATH=. pytest tests/ -q -s`.
 - [ ] Pedagogy tests confirm hint escalation 1, 2, 3, 4, 5 and reset on new problem.
-- [ ] The basic health endpoint at `/health` returns 200.
+- [ ] The browser health page at `/health` returns 200 (and non-HTML probes still receive liveness JSON).
 - [ ] The AI provider verification endpoint at `/api/health/ai` returns 200.
+- [ ] The model smoke-check endpoint at `/api/health/ai/models` returns 200.
 - [ ] Backend logs show structured entries for LLM calls with cost estimates.
 - [ ] When the LLM API key is deliberately invalidated, the user sees a clear error message.
 - [ ] `GET /api/chat/usage` returns weekly usage fields and a capped `usage_percentage`.

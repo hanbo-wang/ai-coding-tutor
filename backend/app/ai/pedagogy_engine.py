@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 from app.ai.embedding_service import EmbeddingService
 from app.ai.llm_base import LLMProvider
-from app.ai.prompts import PEDAGOGY_PREFLIGHT_JSON_PROMPT
+from app.ai.prompts import PEDAGOGY_TWO_STEP_RECOVERY_JSON_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ class StudentState:
     current_maths_difficulty: int = 3
     last_question_text: Optional[str] = field(default=None, repr=False)
     last_answer_text: Optional[str] = field(default=None, repr=False)
-    last_context_embedding: Optional[list[float]] = field(default=None, repr=False)
+    skip_next_ema_update_once: bool = False
 
 
 @dataclass
@@ -39,8 +39,6 @@ class ProcessResult:
 class PedagogyFastSignals:
     filter_result: Optional[str] = None
     canned_response: Optional[str] = None
-    embedding_same_problem: bool = False
-    embedding_is_elaboration: bool = False
     has_previous_exchange: bool = False
     previous_question_text: Optional[str] = None
     previous_answer_text: Optional[str] = None
@@ -53,13 +51,13 @@ class StreamPedagogyMeta:
     programming_difficulty: int
     maths_difficulty: int
     hint_level: int
-    source: str = "header"
+    source: str = "single_pass_header_route"
 
 
 class PedagogyEngine:
     def __init__(
         self,
-        embedding_service: EmbeddingService,
+        embedding_service: EmbeddingService | None,
         llm: LLMProvider,
     ):
         self.embedding_service = embedding_service
@@ -70,14 +68,16 @@ class PedagogyEngine:
         user_message: str,
         student_state: StudentState,
         username: str = "there",
-        embedding_override: list[float] | None = None,
         enable_greeting_filter: bool = False,
         enable_off_topic_filter: bool = False,
     ) -> PedagogyFastSignals:
         """Run embedding-only checks and return fast pedagogy signals."""
 
-        embedding = embedding_override or await self.embedding_service.embed_text(user_message)
-        if embedding:
+        embedding: list[float] | None = None
+        if (enable_greeting_filter or enable_off_topic_filter) and self.embedding_service is not None:
+            embedding = await self.embedding_service.embed_text(user_message)
+
+        if embedding and self.embedding_service is not None:
             if enable_greeting_filter and self.embedding_service.check_greeting(embedding):
                 return PedagogyFastSignals(
                     filter_result="greeting",
@@ -96,25 +96,12 @@ class PedagogyEngine:
                     ),
                 )
 
-        embedding_same_problem = False
-        embedding_is_elaboration = False
-        if student_state.last_context_embedding is not None and embedding:
-            if self.embedding_service.check_same_problem(
-                embedding, student_state.last_context_embedding
-            ):
-                embedding_same_problem = True
-            elif self.embedding_service.check_elaboration_request(embedding):
-                embedding_same_problem = True
-                embedding_is_elaboration = True
-
         previous_question = student_state.last_question_text or None
         previous_answer = student_state.last_answer_text or None
         has_previous_exchange = bool(
             (previous_question or "").strip() and (previous_answer or "").strip()
         )
         return PedagogyFastSignals(
-            embedding_same_problem=embedding_same_problem,
-            embedding_is_elaboration=embedding_is_elaboration,
             has_previous_exchange=has_previous_exchange,
             previous_question_text=previous_question,
             previous_answer_text=previous_answer,
@@ -126,7 +113,7 @@ class PedagogyEngine:
         *,
         student_state: StudentState,
         fast_signals: PedagogyFastSignals,
-        source: str = "header",
+        source: str = "single_pass_header_route",
     ) -> StreamPedagogyMeta:
         """Normalise a raw metadata dict into a validated pedagogy metadata object."""
 
@@ -140,9 +127,7 @@ class PedagogyEngine:
         if prog is None or maths is None or hint is None:
             raise ValueError("Missing integer metadata fields")
 
-        has_any_previous = bool(
-            fast_signals.has_previous_exchange or student_state.last_context_embedding is not None
-        )
+        has_any_previous = bool(fast_signals.has_previous_exchange)
         if not has_any_previous:
             same_problem = False
             is_elaboration = False
@@ -158,69 +143,58 @@ class PedagogyEngine:
             source=source,
         )
 
-    def build_fallback_stream_meta(
+    def build_emergency_full_hint_fallback_meta(
         self,
         student_state: StudentState,
         fast_signals: PedagogyFastSignals,
     ) -> StreamPedagogyMeta:
-        """Build a conservative fallback metadata object when header parsing fails."""
-
-        has_any_previous = bool(
-            fast_signals.has_previous_exchange or student_state.last_context_embedding is not None
-        )
-        same_problem = bool(has_any_previous and fast_signals.embedding_same_problem)
-        is_elaboration = bool(same_problem and fast_signals.embedding_is_elaboration)
-
-        if same_problem:
-            hint_level = min(5, student_state.current_hint_level + 1)
-            programming_difficulty = max(1, student_state.current_programming_difficulty)
-            maths_difficulty = max(1, student_state.current_maths_difficulty)
-        else:
-            programming_difficulty = round(student_state.effective_programming_level)
-            maths_difficulty = round(student_state.effective_maths_level)
-            hint_level = 1
+        """Build a last-resort emergency metadata object when LLM metadata fails."""
+        _ = fast_signals  # kept for call-site symmetry
+        student_state.skip_next_ema_update_once = True
+        programming_difficulty = round(student_state.effective_programming_level)
+        maths_difficulty = round(student_state.effective_maths_level)
+        hint_level = 5
 
         return StreamPedagogyMeta(
-            same_problem=same_problem,
-            is_elaboration=is_elaboration,
+            same_problem=False,
+            is_elaboration=False,
             programming_difficulty=self._clamp_int(programming_difficulty),
             maths_difficulty=self._clamp_int(maths_difficulty),
             hint_level=self._clamp_int(hint_level),
-            source="fallback",
+            source="emergency_full_hint_fallback",
         )
 
-    async def classify_preflight_meta(
+    async def classify_two_step_recovery_meta(
         self,
         user_message: str,
         *,
         student_state: StudentState,
         fast_signals: PedagogyFastSignals,
     ) -> StreamPedagogyMeta:
-        """Classify merged pedagogy metadata in one lightweight JSON LLM call."""
+        """Classify merged pedagogy metadata in one metadata-only LLM JSON call."""
 
-        payload = self._build_preflight_payload(
+        payload = self._build_two_step_recovery_payload(
             user_message=user_message,
             student_state=student_state,
             fast_signals=fast_signals,
         )
-        fallback = self.build_fallback_stream_meta(student_state, fast_signals)
         try:
             response = await self.llm.generate(
-                system_prompt=PEDAGOGY_PREFLIGHT_JSON_PROMPT,
+                system_prompt=PEDAGOGY_TWO_STEP_RECOVERY_JSON_PROMPT,
                 messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=True)}],
                 max_tokens=100,
             )
-            raw_meta = self._parse_preflight_meta_response(response)
+            raw_meta = self._parse_two_step_recovery_meta_response(response)
             if raw_meta is None:
-                raise ValueError(f"Could not parse preflight metadata JSON: {response!r}")
+                raise ValueError(f"Could not parse recovery-route metadata JSON: {response!r}")
             meta = self.coerce_stream_meta(
                 raw_meta,
                 student_state=student_state,
                 fast_signals=fast_signals,
-                source="preflight",
+                source="two_step_recovery_route",
             )
             logger.info(
-                "Pedagogy preflight metadata: same_problem=%s elaboration=%s prog=%d maths=%d hint=%d",
+                "Pedagogy two-step-recovery metadata: same_problem=%s elaboration=%s prog=%d maths=%d hint=%d",
                 meta.same_problem,
                 meta.is_elaboration,
                 meta.programming_difficulty,
@@ -229,8 +203,11 @@ class PedagogyEngine:
             )
             return meta
         except Exception as exc:
-            logger.warning("Pedagogy preflight classification failed, using fallback metadata: %s", exc)
-            return fallback
+            logger.warning(
+                "Pedagogy two-step-recovery classification failed, using emergency fallback metadata: %s",
+                exc,
+            )
+            return self.build_emergency_full_hint_fallback_meta(student_state, fast_signals)
 
     def apply_stream_meta(
         self,
@@ -243,11 +220,11 @@ class PedagogyEngine:
             (student_state.last_question_text or "").strip()
             and (student_state.last_answer_text or "").strip()
         )
-        if (
-            not meta.same_problem
-            and (student_state.last_context_embedding is not None or has_previous_exchange)
-        ):
-            self._update_effective_levels(student_state)
+        if not meta.same_problem and has_previous_exchange:
+            if student_state.skip_next_ema_update_once:
+                student_state.skip_next_ema_update_once = False
+            else:
+                self._update_effective_levels(student_state)
             student_state.starting_hint_level = meta.hint_level
         elif not meta.same_problem:
             student_state.starting_hint_level = meta.hint_level
@@ -286,18 +263,18 @@ class PedagogyEngine:
                 return False
         return None
 
-    def _build_preflight_payload(
+    def _build_two_step_recovery_payload(
         self,
         *,
         user_message: str,
         student_state: StudentState,
         fast_signals: PedagogyFastSignals,
     ) -> dict[str, Any]:
-        """Build a compact payload for the merged preflight JSON classifier."""
+        """Build a compact payload for the two-step-recovery metadata classifier."""
 
         payload: dict[str, Any] = {
-            # Keep the preflight request compact. The full reply call still sees the
-            # complete prompt context, so the metadata preflight only needs a trimmed
+            # Keep the recovery-route metadata request compact. The full reply call still
+            # sees the complete prompt context, so this metadata call only needs a trimmed
             # view of the current message.
             "current_message": self._truncate_text_tokens(user_message, max_tokens=320),
             "student_state": {
@@ -306,11 +283,6 @@ class PedagogyEngine:
                 "current_hint_level": int(student_state.current_hint_level),
                 "current_programming_difficulty": int(student_state.current_programming_difficulty),
                 "current_maths_difficulty": int(student_state.current_maths_difficulty),
-            },
-            "embedding_signals": {
-                "same_problem": bool(fast_signals.embedding_same_problem),
-                "is_elaboration": bool(fast_signals.embedding_is_elaboration),
-                "advisory_only": True,
             },
             "has_previous_exchange": bool(fast_signals.has_previous_exchange),
         }
@@ -326,7 +298,7 @@ class PedagogyEngine:
         return payload
 
     def _truncate_text_tokens(self, text: str, *, max_tokens: int) -> str:
-        """Truncate a text block by approximate token count for preflight payloads."""
+        """Truncate a text block by approximate token count for metadata payloads."""
         clean = (text or "").strip()
         if not clean or max_tokens <= 0:
             return ""
@@ -341,8 +313,8 @@ class PedagogyEngine:
             kept.append(word)
         return " ".join(kept)
 
-    def _parse_preflight_meta_response(self, text: str) -> dict[str, Any] | None:
-        """Parse a merged preflight metadata JSON response with a regex fallback."""
+    def _parse_two_step_recovery_meta_response(self, text: str) -> dict[str, Any] | None:
+        """Parse a two-step-recovery metadata JSON response with a regex fallback."""
 
         try:
             data = json.loads((text or "").strip())
@@ -414,29 +386,12 @@ class PedagogyEngine:
             student_state.effective_maths_level,
         )
 
-    async def update_context_embedding(
+    def update_previous_exchange_text(
         self,
         student_state: StudentState,
         question: str,
         answer: str,
-        question_embedding: list[float] | None = None,
     ) -> None:
-        """Embed the concatenated Q+A and store as context for same-problem detection.
-
-        Called after each LLM-generated response (not after canned responses).
-        The combined text gives richer topic context than the question alone.
-        """
-        answer_embedding = await self.embedding_service.embed_text(answer)
-        if question_embedding and answer_embedding:
-            embedding = self.embedding_service.combine_embeddings(
-                [question_embedding, answer_embedding]
-            )
-        elif question_embedding:
-            embedding = question_embedding
-        else:
-            combined = question + "\n" + answer
-            embedding = await self.embedding_service.embed_text(combined)
-        if embedding:
-            student_state.last_context_embedding = embedding
+        """Store the previous Q+A text for LLM-only metadata routes."""
         student_state.last_question_text = question
         student_state.last_answer_text = answer

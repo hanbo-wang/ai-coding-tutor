@@ -2,25 +2,25 @@
 
 This project uses a multi-provider AI layer with a low-cost default path:
 
-- **LLM default:** Vertex AI Gemini `gemini-3-flash-preview`
-- **Embedding default:** Vertex AI `multimodalembedding@001`
-- **Google auth:** one Google Cloud service account JSON file (path in `.env`), with code-managed Bearer token refresh
+- **LLM default:** Google Gemini `gemini-3-flash-preview`
+- **Embedding default:** Cohere `embed-v4.0`
+- **Google transport and auth:** `GOOGLE_GEMINI_TRANSPORT` selects `aistudio` (`GOOGLE_API_KEY`) or `vertex` (Google Cloud service account JSON file, with code-managed Bearer token refresh)
 
-The backend also supports Anthropic and OpenAI LLMs, plus Cohere and Voyage embeddings, as fallbacks or operator-selected providers.
+The backend also supports Anthropic and OpenAI LLMs, plus Cohere, Vertex AI, and Voyage AI embeddings, as fallbacks or operator-selected providers.
 
-## Why Vertex AI + Gemini 3 Flash (Default)
+## Why Gemini 3 Flash (Default)
 
 - **Low cost:** Gemini 3 Flash preview pricing is materially lower than the higher-capability models for routine tutoring turns.
 - **Good latency/performance balance:** it is fast enough for streaming chat and strong enough for tutoring workflows when paired with the pedagogy engine and context controls.
-- **Simple operations:** the same Google Cloud service account is used for both Gemini and Vertex multimodal embeddings, so there is one auth path to manage.
+- **Flexible operations:** Gemini can run through Google AI Studio or Vertex AI, selected explicitly with `GOOGLE_GEMINI_TRANSPORT`, while embeddings can run on Cohere by default or on Vertex AI / Voyage AI when selected.
 - **Clean failover story:** Anthropic and OpenAI remain available without changing the app architecture.
 
 ## Supported LLM Models
 
 | Provider | Model (API ID) | Authentication | Notes |
 | --- | --- | --- | --- |
-| Google Vertex AI | `gemini-3-flash-preview` | Google service account -> Bearer token | Default LLM |
-| Google Vertex AI | `gemini-3.1-pro-preview` | Google service account -> Bearer token | Higher-cost, higher-capability option |
+| Google Gemini (AI Studio / Vertex AI) | `gemini-3-flash-preview` | `GOOGLE_GEMINI_TRANSPORT=aistudio` + `GOOGLE_API_KEY`, or `GOOGLE_GEMINI_TRANSPORT=vertex` + Google service account -> Bearer token | Default LLM provider path; both Google transports support text and image chat turns |
+| Google Gemini (AI Studio / Vertex AI) | `gemini-3.1-pro-preview` | `GOOGLE_GEMINI_TRANSPORT=aistudio` + `GOOGLE_API_KEY`, or `GOOGLE_GEMINI_TRANSPORT=vertex` + Google service account -> Bearer token | Higher-cost, higher-capability option with the same transport support |
 | Anthropic | `claude-sonnet-4-6` | `ANTHROPIC_API_KEY` | Strong general reasoning |
 | Anthropic | `claude-haiku-4-5` | `ANTHROPIC_API_KEY` | Lower-cost Anthropic option |
 | OpenAI | `gpt-5.2` | `OPENAI_API_KEY` | Higher-capability OpenAI option |
@@ -30,9 +30,9 @@ The backend also supports Anthropic and OpenAI LLMs, plus Cohere and Voyage embe
 
 | Provider | Model (API ID) | Authentication | Notes |
 | --- | --- | --- | --- |
-| Google Vertex AI | `multimodalembedding@001` | Google service account -> Bearer token | Default embedding provider; text + image |
-| Cohere | `embed-v4.0` | `COHERE_API_KEY` | Supported fallback |
-| Voyage AI | `voyage-multimodal-3.5` | `VOYAGEAI_API_KEY` | Supported fallback |
+| Cohere | `embed-v4.0` | `COHERE_API_KEY` | Default embedding provider; model ID selected via `EMBEDDING_MODEL_COHERE` |
+| Google Vertex AI | `multimodalembedding@001` | Google service account -> Bearer token | Supported provider; model ID selected via `EMBEDDING_MODEL_VERTEX` |
+| Voyage AI | `voyage-multimodal-3.5` | `VOYAGEAI_API_KEY` | Supported provider; model ID selected via `EMBEDDING_MODEL_VOYAGE` |
 
 ## Pricing Summary (Estimated Cost Metadata)
 
@@ -53,15 +53,11 @@ The application stores per-message provider/model metadata and estimated LLM cos
 
 | Provider | Model | Unit | Price |
 | --- | --- | --- | ---: |
-| Google Vertex AI | `multimodalembedding@001` | Text input (per 1,000 chars) | \$0.0002 |
-| Google Vertex AI | `multimodalembedding@001` | Image input (per image) | \$0.0001 |
 | Cohere | `embed-v4.0` (Embed 4) | Text / document tokens (per 1M tokens) | \$0.12 |
-| Cohere | `embed-v4.0` (Embed 4) | Image tokens (per 1M tokens) | \$0.47 |
+| Google Vertex AI | `multimodalembedding@001` | Text input (per 1,000 chars) | \$0.0002 |
 | Voyage AI | `voyage-multimodal-3.5` | Text tokens (per 1M tokens) | \$0.02 |
-| Voyage AI | `voyage-multimodal-3.5` | Image input (per image) | \$0.04 |
 
 ## Notes
 
 - Pricing can change, especially for preview models. Check the official provider pricing pages before relying on these figures for budgeting.
 - Admin cost totals in the dashboard use stored per-message `estimated_cost_usd`. Older messages created before model-cost tracking may not have a stored cost value, and coverage is reported separately.
-

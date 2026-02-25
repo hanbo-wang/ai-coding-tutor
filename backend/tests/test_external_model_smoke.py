@@ -87,25 +87,38 @@ def _resolve_local_google_credentials_path(settings) -> str | None:
 async def test_llm_stream_smoke(provider_name: str, model_id: str) -> None:
     from app.ai.google_auth import GoogleServiceAccountTokenProvider, resolve_google_project_id
     from app.ai.llm_anthropic import AnthropicProvider
-    from app.ai.llm_google import GoogleGeminiProvider
+    from app.ai.llm_google import GoogleGeminiAIStudioProvider, GoogleGeminiProvider
     from app.ai.llm_openai import OpenAIProvider
     from app.config import settings
 
     if provider_name == "google":
-        credentials_path = _resolve_local_google_credentials_path(settings)
-        if not credentials_path:
-            pytest.skip("Google service-account path not configured")
-        token_provider = GoogleServiceAccountTokenProvider(credentials_path)
-        project_id = resolve_google_project_id(
-            credentials_path,
-            settings.google_cloud_project_id,
-        )
-        provider = GoogleGeminiProvider(
-            token_provider=token_provider,
-            project_id=project_id,
-            location=settings.google_vertex_gemini_location,
-            model_id=model_id,
-        )
+        transport = str(getattr(settings, "google_gemini_transport", "")).strip().lower()
+        if transport in {"aistudio", "ai_studio", "ai-studio", "studio"}:
+            if not settings.google_api_key:
+                pytest.skip("GOOGLE_GEMINI_TRANSPORT=aistudio but GOOGLE_API_KEY is not configured")
+            provider = GoogleGeminiAIStudioProvider(
+                api_key=settings.google_api_key,
+                model_id=model_id,
+            )
+        elif transport in {"vertex", "vertex_ai", "vertex-ai"}:
+            credentials_path = _resolve_local_google_credentials_path(settings)
+            if not credentials_path:
+                pytest.skip(
+                    "GOOGLE_GEMINI_TRANSPORT=vertex but no Google service-account path is configured"
+                )
+            token_provider = GoogleServiceAccountTokenProvider(credentials_path)
+            project_id = resolve_google_project_id(
+                credentials_path,
+                settings.google_cloud_project_id,
+            )
+            provider = GoogleGeminiProvider(
+                token_provider=token_provider,
+                project_id=project_id,
+                location=settings.google_vertex_gemini_location,
+                model_id=model_id,
+            )
+        else:
+            pytest.skip("Set GOOGLE_GEMINI_TRANSPORT to 'aistudio' or 'vertex' for Google LLM smoke tests")
     elif provider_name == "anthropic":
         if not settings.anthropic_api_key:
             pytest.skip("ANTHROPIC_API_KEY not configured")
@@ -131,8 +144,8 @@ async def test_llm_stream_smoke(provider_name: str, model_id: str) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("provider_name", ["vertex", "cohere", "voyage"])
-async def test_embedding_text_and_image_smoke(provider_name: str) -> None:
+@pytest.mark.parametrize("provider_name", ["cohere", "vertex", "voyage"])
+async def test_embedding_text_smoke(provider_name: str) -> None:
     from app.ai.embedding_cohere import CohereEmbeddingService
     from app.ai.embedding_vertex import VertexEmbeddingService
     from app.ai.embedding_voyage import VoyageEmbeddingService
@@ -158,19 +171,20 @@ async def test_embedding_text_and_image_smoke(provider_name: str) -> None:
     elif provider_name == "cohere":
         if not settings.cohere_api_key:
             pytest.skip("COHERE_API_KEY not configured")
-        service = CohereEmbeddingService(settings.cohere_api_key)
+        service = CohereEmbeddingService(
+            settings.cohere_api_key,
+            model_id=settings.embedding_model_cohere,
+        )
     else:
         if not settings.voyageai_api_key:
             pytest.skip("VOYAGEAI_API_KEY not configured")
-        service = VoyageEmbeddingService(settings.voyageai_api_key)
+        service = VoyageEmbeddingService(
+            settings.voyageai_api_key,
+            model_id=settings.embedding_model_voyage,
+        )
 
     text_vec = await service.embed_text("ping")
-    image_vec = await service.embed_image(_TEST_PNG, "image/png")
     assert text_vec is not None and len(text_vec) > 0
-    if provider_name in {"cohere", "voyage"} and image_vec is None:
-        pytest.skip("Provider rejected the 64x64 PNG fixture; text embedding smoke passed")
-    assert image_vec is not None and len(image_vec) > 0
     if provider_name == "vertex":
         assert len(text_vec) == 256
-        assert len(image_vec) == 256
     await service.close()

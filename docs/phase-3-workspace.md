@@ -299,6 +299,7 @@ Examples:
 - `/zones/:zoneId`
 - `/zone-notebook/:zoneId/:notebookId`
 - `/admin`
+- `/health`
 
 **Navbar:** `frontend/src/components/Navbar.tsx`
 
@@ -374,6 +375,8 @@ Key behaviours:
 - Edits notebook metadata (title and optional description).
 - Supports notebook replace, delete, and reorder actions.
 - Shows usage and audit panels for admins.
+- Provides a direct link to the frontend `/health` page for current model diagnostics and smoke-tested model availability.
+- The `/health` page fetches model status data from `/api/health/ai/models`.
 
 ### 5.7 Split Layout Dependency
 

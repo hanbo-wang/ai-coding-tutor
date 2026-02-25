@@ -9,7 +9,11 @@ export type WsEvent =
       maths_difficulty: number;
       same_problem: boolean;
       is_elaboration: boolean;
-      source: "header" | "fallback" | string;
+      source:
+        | "single_pass_header_route"
+        | "two_step_recovery_route"
+        | "emergency_full_hint_fallback"
+        | string;
     }
   | { type: "token"; content: string }
   | {

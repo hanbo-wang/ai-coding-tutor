@@ -4,15 +4,20 @@ import logging
 import sys
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 
 from app.config import settings
 from app.db.session import engine
 from app.db.init_db import init_db
 from app.routers.auth import router as auth_router
 from app.routers.chat import router as chat_router
-from app.routers.health import router as health_router
+from app.routers.health import (
+    ai_model_catalog_health_check,
+    render_health_page_html,
+    router as health_router,
+)
 from app.routers.upload import router as upload_router
 from app.routers.notebooks import router as notebooks_router
 from app.routers.zones import router as zones_router
@@ -69,6 +74,10 @@ app.include_router(admin_router)
 
 
 @app.get("/health")
-async def health_check():
-    """Health check endpoint."""
+async def health_check(request: Request, force: bool = False):
+    """Health check endpoint (JSON for probes, HTML page for browsers)."""
+    accept = request.headers.get("accept", "")
+    if "text/html" in accept:
+        model_health = await ai_model_catalog_health_check(force=force)
+        return HTMLResponse(render_health_page_html(model_health))
     return {"status": "healthy"}

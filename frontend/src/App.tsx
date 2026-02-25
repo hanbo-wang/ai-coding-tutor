@@ -12,6 +12,7 @@ import { LearningHubPage } from "./zones/LearningHubPage";
 import { ZoneDetailPage } from "./zones/ZoneDetailPage";
 import { ZoneNotebookWorkspacePage } from "./workspace/ZoneNotebookWorkspacePage";
 import { AdminDashboardPage } from "./admin/AdminDashboardPage";
+import { HealthPage } from "./health/HealthPage";
 
 export default function App() {
   return (
@@ -90,6 +91,14 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <AdminDashboardPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/health"
+            element={
+              <ProtectedRoute>
+                <HealthPage />
               </ProtectedRoute>
             }
           />

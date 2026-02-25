@@ -98,7 +98,7 @@ MATHS_LEVEL_INSTRUCTIONS = {
 GC_STREAM_META_START = "<<GC_META_V1>>"
 GC_STREAM_META_END = "<<END_GC_META>>"
 
-PEDAGOGY_PREFLIGHT_JSON_PROMPT = """PEDAGOGY PREFLIGHT JSON MODE:
+PEDAGOGY_TWO_STEP_RECOVERY_JSON_PROMPT = """PEDAGOGY TWO-STEP RECOVERY JSON MODE:
 - You produce tutoring pedagogy metadata only (no student-facing answer).
 - Reply with ONE JSON object only.
 
@@ -110,7 +110,6 @@ RULES:
 - `is_elaboration=true` only when `same_problem=true` and the message is mainly a generic follow-up request with little new topic content.
 - If `same_problem=false`, `is_elaboration` must be false.
 - `programming_difficulty`, `maths_difficulty`, and `hint_level` must be integers in the range 1..5.
-- Use any embedding signals in the payload as advisory hints only, not fixed truth.
 - Do not include Markdown, code fences, or explanatory text.
 """
 

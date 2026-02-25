@@ -4,7 +4,7 @@ from datetime import date
 
 import pytest
 
-from app.config import LLM_PRICING
+from app.ai.pricing import estimate_llm_cost_usd
 from app.routers.admin import _aggregate_usage, _estimate_cost
 
 
@@ -28,16 +28,21 @@ class _FakeAsyncSession:
 
 
 def test_cost_calculation(monkeypatch) -> None:
-    """Token counts should produce correct estimated cost based on provider pricing."""
+    """Token counts should use the configured provider/model pricing estimate."""
     monkeypatch.setattr("app.routers.admin.settings.llm_provider", "anthropic")
-    pricing = LLM_PRICING["anthropic"]
+    monkeypatch.setattr("app.routers.admin.settings.llm_model_anthropic", "claude-sonnet-4-6")
 
     input_tokens = 1_000_000
     output_tokens = 1_000_000
-    expected = pricing["input_per_mtok"] + pricing["output_per_mtok"]
+    expected = estimate_llm_cost_usd(
+        "anthropic",
+        "claude-sonnet-4-6",
+        input_tokens,
+        output_tokens,
+    )
 
     cost = _estimate_cost(input_tokens, output_tokens)
-    assert abs(cost - expected) < 0.01
+    assert cost == expected
 
 
 def test_cost_zero_tokens(monkeypatch) -> None:

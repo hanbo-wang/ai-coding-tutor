@@ -20,11 +20,14 @@ def _settings(**overrides):
     base = dict(
         llm_provider="google",
         llm_model_google="gemini-3-flash-preview",
+        google_gemini_transport="vertex",
         llm_model_anthropic="claude-sonnet-4-6",
         llm_model_openai="gpt-5.2",
         anthropic_api_key="",
         openai_api_key="",
+        google_api_key="",
         google_application_credentials="",
+        google_application_credentials_host_path="",
         google_cloud_project_id="",
         google_vertex_gemini_location="global",
     )
@@ -39,6 +42,8 @@ def test_factory_builds_vertex_google_provider(monkeypatch) -> None:
 
     provider = get_llm_provider(
         _settings(
+            google_gemini_transport="vertex",
+            google_api_key="AIza-present-but-not-selected",
             google_application_credentials="/tmp/sa.json",
             google_cloud_project_id="demo",
         )
@@ -46,6 +51,26 @@ def test_factory_builds_vertex_google_provider(monkeypatch) -> None:
 
     assert isinstance(provider, _FakeProvider)
     assert provider.kwargs["project_id"] == "demo"
+    assert provider.kwargs["model_id"] == "gemini-3-flash-preview"
+
+
+def test_factory_uses_google_ai_studio_when_transport_selected(monkeypatch) -> None:
+    monkeypatch.setattr("app.ai.llm_factory.GoogleGeminiAIStudioProvider", _FakeProvider)
+    monkeypatch.setattr(
+        "app.ai.llm_factory.GoogleServiceAccountTokenProvider",
+        lambda path: (_ for _ in ()).throw(AssertionError("Vertex path should not be used")),
+    )
+
+    provider = get_llm_provider(
+        _settings(
+            google_gemini_transport="aistudio",
+            google_api_key="AIza-test",
+            google_application_credentials="/tmp/sa.json",
+        )
+    )
+
+    assert isinstance(provider, _FakeProvider)
+    assert provider.args[0] == "AIza-test"
     assert provider.kwargs["model_id"] == "gemini-3-flash-preview"
 
 

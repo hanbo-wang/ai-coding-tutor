@@ -188,3 +188,39 @@ export interface AuditLogResponse {
   per_page: number;
   total_pages: number;
 }
+
+export interface HealthModelProviderStatus {
+  configured: boolean;
+  reason?: string;
+  transport?: string;
+  checked_models: Record<string, boolean>;
+  available_models: string[];
+}
+
+export interface HealthModelSnapshot {
+  provider: string;
+  model: string;
+  google_gemini_transport?: string;
+}
+
+export interface HealthCurrentModels {
+  llm_provider: string;
+  google_gemini_transport: string;
+  llm_models: Record<string, string>;
+  active_llm: HealthModelSnapshot;
+  embedding_provider: string;
+  embedding_models: Record<string, string>;
+  active_embedding: HealthModelSnapshot;
+}
+
+export interface HealthModelSmokeResults {
+  llm: Record<string, HealthModelProviderStatus>;
+  embeddings: Record<string, HealthModelProviderStatus>;
+}
+
+export interface HealthModelsResponse {
+  current: HealthCurrentModels;
+  smoke_tested_models: HealthModelSmokeResults;
+  cached: boolean;
+  checked_at: string;
+}
