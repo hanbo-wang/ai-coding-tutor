@@ -98,7 +98,7 @@ Each dimension is updated independently: programming EMA uses `programming_diffi
 - An LLM abstraction layer supporting three providers with automatic failover.
 - A pedagogy engine that manages hint levels, student adaptation, and dynamic levelling.
 - A WebSocket endpoint (`/ws/chat`) that streams AI responses.
-- A frontend chat page with message history, streaming display, GFM markdown rendering (including tables), syntax-highlighted code blocks, and LaTeX formula rendering.
+- A frontend chat page with message history, streaming display, GFM markdown rendering (including tables), syntax-highlighted and copyable block code with in-panel text markers and text copy controls, structured teaching panels for space-sensitive diagrams, and KaTeX formula rendering with copy-tex enabled so formula selections copy as LaTeX, plus defensive sanitisation for malformed OCR/AI math delimiters.
 
 **Part B (File and Image Uploads):**
 
@@ -176,11 +176,13 @@ WebSocket `/ws/chat`: authenticates via JWT query parameter, initialises pedagog
 - **`ChatSidebar.tsx`**: Session list (newest first), new chat button, delete with confirmation.
 - **`ChatMessageList.tsx`**: Auto-scrolling container rendering both persisted and streaming messages.
 - **`ChatInput.tsx`**: Text input, Shift+Enter for newlines, disabled during streaming.
-- **`ChatBubble.tsx`**: User messages as brand-coloured bubbles with image/file attachments. Assistant messages with four metadata badges (Prog Hint, Maths Hint, Prog Diff, Maths Diff) and markdown/LaTeX rendering.
+- **`ChatBubble.tsx`**: User messages as brand-coloured bubbles with image/file attachments. Assistant messages with four metadata badges (Prog Hint, Maths Hint, Prog Diff, Maths Diff), full-width bubble layout for stable markdown panel centring, and markdown/LaTeX rendering.
 
 ### 4.10 Markdown, Code, and LaTeX Rendering
 
-**`frontend/src/components/MarkdownRenderer.tsx`:** GFM tables via `remark-gfm` (pipe escaping in math spans), syntax-highlighted code blocks via `react-syntax-highlighter` (Prism `one-light` theme, compact rendering for short snippets), inline code with subtle borders, LaTeX via KaTeX (`$...$` inline, `$$...$$` display with custom spacing), and standard markdown formatting.
+**`frontend/src/components/MarkdownRenderer.tsx`:** GFM tables via `remark-gfm` (pipe escaping in math spans), syntax-highlighted block code via `react-syntax-highlighter` (Prism `one-light` theme), copy button support for block code (language and plain text blocks) with in-panel text markers and text-based `Copy`/`Copied` controls, structured parsing for common teaching layouts (layer pipelines, neuron-rule cards, vector comparisons, confidence pointers), inline code with subtle borders, and KaTeX rendering with the official `copy-tex` integration so mixed text selections keep formulae in LaTeX form (without formula copy buttons). A defensive delimiter sanitiser runs before markdown math parsing to prevent malformed `$`/`$$` fragments from swallowing long prose blocks.
+
+**`frontend/src/index.css`:** Unified markdown panel sizing (`860px` max width on desktop) with centred block panels, larger but low-contrast in-panel text markers, responsive structured-panel layouts, natural KaTeX flow without formula boxes, neutral KaTeX error styling, and overflow-safe behaviour on narrow screens.
 
 Dependencies: `react-markdown`, `remark-gfm`, `remark-math`, `react-syntax-highlighter`, `katex`, `rehype-katex`.
 
@@ -219,7 +221,10 @@ Images are sent as base64 parts to the LLM. Documents have text extracted (PDF v
 - [ ] Follow-ups escalate hint by 1; new topics reset and recalculate.
 - [ ] Effective level updates in DB after topic change.
 - [ ] Greeting/off-topic filters work when enabled.
-- [ ] Code blocks with syntax highlighting; LaTeX rendering (inline and display).
+- [ ] Block code shows syntax highlighting where relevant and supports one-click copy with keyboard-accessible controls.
+- [ ] Structured teaching layouts render as stable panels (layer flows, neuron rules, vector comparisons, confidence pointers) without space-based drift.
+- [ ] Markdown block panels are centred and size-consistent (`860px` desktop max width, responsive on mobile).
+- [ ] LaTeX rendering works for both inline and display formulae, and normal text selections copy formula content as LaTeX (including mixed prose + maths selections).
 - [ ] Chat history persists across page refreshes.
 - [ ] LLM provider failover works; clear error when all fail.
 

@@ -28,6 +28,7 @@
   --markdown-code-block-bg: #f5f7fa;
   --markdown-code-toolbar-bg: #eef1f5;
   --markdown-code-toolbar-border: #d8dee6;
+  --markdown-panel-max-width: 860px;
   --markdown-table-row-alt: #f6f8fa;
   --markdown-table-row-hover: #edf1f5;
   --markdown-blockquote-bg: #f4f6f9;
@@ -112,21 +113,18 @@ html, body, #root {
 }
 
 .markdown-body pre code,
-.markdown-body .markdown-code-block code {
+.markdown-body .markdown-code-block code,
+.markdown-body .markdown-vector-value {
   background: transparent !important;
   border: 0 !important;
   padding: 0 !important;
   color: inherit;
 }
 
-.markdown-body .markdown-short-block-code {
-  white-space: pre-wrap;
-}
-
 /* Keep spacing exact in code-like layouts (for example, label/annotation diagrams). */
 .markdown-body pre,
 .markdown-body pre code,
-.markdown-body .markdown-short-block-code {
+.markdown-body .markdown-vector-value {
   letter-spacing: normal;
   word-spacing: normal;
   font-variant-ligatures: none;
@@ -134,7 +132,7 @@ html, body, #root {
 
 /* Prefer monospaced CJK-capable fallbacks so Chinese text lines up more reliably. */
 .markdown-body pre code,
-.markdown-body .markdown-short-block-code {
+.markdown-body .markdown-vector-value {
   font-family:
     ui-monospace,
     "SFMono-Regular",
@@ -149,14 +147,143 @@ html, body, #root {
     monospace;
 }
 
+.markdown-body .markdown-code-panel,
+.markdown-body .markdown-flow-wrap {
+  width: min(100%, var(--markdown-panel-max-width));
+  margin: 0.9rem auto 1rem;
+  border: 1px solid #dfe5ec;
+  border-radius: 0.85rem;
+  background: #f7f9fc;
+  box-shadow: none;
+}
+
+.markdown-body .markdown-code-panel {
+  position: relative;
+  overflow: hidden;
+}
+
+.markdown-body .markdown-panel-controls {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.56rem;
+  right: 0.56rem;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+  pointer-events: none;
+}
+
+.markdown-body .markdown-panel-marker {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.38rem;
+  max-width: calc(100% - 5.3rem);
+  padding: 0.1rem 0.52rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid #dbe2eb;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  color: #677382;
+  font-size: 0.9rem;
+  font-weight: 620;
+  line-height: 1;
+  letter-spacing: 0.012em;
+  opacity: 0.72;
+  pointer-events: auto;
+  transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.markdown-body .markdown-panel-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 3.1rem;
+  height: 1.58rem;
+  padding: 0 0.62rem;
+  border: 1px solid #dbe2eb;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  color: #6a7684;
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  opacity: 0.7;
+  pointer-events: auto;
+  transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.markdown-body .markdown-code-panel:hover .markdown-panel-marker,
+.markdown-body .markdown-code-panel:focus-within .markdown-panel-marker,
+.markdown-body .markdown-code-panel:hover .markdown-panel-copy-btn,
+.markdown-body .markdown-code-panel:focus-within .markdown-panel-copy-btn {
+  opacity: 0.96;
+}
+
+.markdown-body .markdown-panel-copy-btn:hover {
+  border-color: #c4ccd7;
+  color: var(--markdown-text-strong);
+}
+
+.markdown-body .markdown-panel-copy-btn:focus-visible {
+  outline: 2px solid #99aac0;
+  outline-offset: 1px;
+}
+
+.markdown-body .markdown-code-content {
+  overflow: hidden;
+  padding-top: 1.9rem;
+}
+
+.markdown-body .markdown-code-block {
+  background: transparent;
+}
+
+.markdown-body .markdown-code-block > div {
+  background: transparent;
+}
+
+.markdown-body .markdown-plain-code {
+  margin: 0;
+  background: transparent;
+  color: var(--markdown-text-strong);
+}
+
+.markdown-body .markdown-plain-code code {
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.markdown-body .markdown-short-block-code {
+  display: inline-block;
+  max-width: 100%;
+  margin: 0.12rem 0;
+  padding: 0.32rem 0.58rem;
+  white-space: pre-wrap;
+  border: 1px solid var(--markdown-inline-code-border);
+  border-radius: 0.55rem;
+  background: var(--markdown-inline-code-bg);
+  color: var(--markdown-inline-code-text);
+  line-height: 1.45;
+}
+
 /* Structured flow blocks replace fragile space-based alignment. */
 .markdown-body .markdown-flow-wrap {
-  margin: 0.9rem 0 1rem;
   overflow-x: auto;
-  border: 1px solid var(--markdown-border);
-  border-radius: 0.85rem;
   background: linear-gradient(180deg, var(--markdown-surface) 0%, var(--markdown-surface-soft) 100%);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
+}
+
+.markdown-body .markdown-flow-wrap.markdown-flow-embedded {
+  width: 100%;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .markdown-body .markdown-flow-track {
@@ -204,8 +331,203 @@ html, body, #root {
   line-height: 1;
 }
 
+.markdown-body .markdown-structured-panel {
+  width: 100%;
+  margin: 0;
+  padding: 0.85rem 0.95rem;
+  color: var(--markdown-text);
+}
+
+.markdown-body .markdown-structured-intro p,
+.markdown-body .markdown-structured-outro p {
+  margin: 0;
+}
+
+.markdown-body .markdown-structured-intro p + p,
+.markdown-body .markdown-structured-outro p + p {
+  margin-top: 0.38rem;
+}
+
+.markdown-body .markdown-structured-outro {
+  margin-top: 0.88rem;
+}
+
+.markdown-body .markdown-pipeline-track {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: max-content;
+  align-items: stretch;
+  width: max-content;
+  min-width: 100%;
+}
+
+.markdown-body .markdown-pipeline-column {
+  display: grid;
+  align-content: start;
+  justify-items: center;
+  min-width: 7.2rem;
+  padding: 0.42rem 0.55rem;
+  text-align: center;
+}
+
+.markdown-body .markdown-pipeline-heading {
+  color: var(--markdown-text-strong);
+  font-size: 0.95rem;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.markdown-body .markdown-pipeline-main {
+  margin-top: 0.24rem;
+  color: var(--markdown-text-strong);
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.markdown-body .markdown-pipeline-caption {
+  margin-top: 0.18rem;
+  color: var(--markdown-muted);
+  font-size: 0.9rem;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.markdown-body .markdown-pipeline-arrow {
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  min-width: 2rem;
+  color: var(--markdown-muted);
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.markdown-body .markdown-pipeline-samples {
+  margin: 0.9rem 0 0;
+  padding: 0.78rem 0.2rem 0 0.2rem;
+  border-top: 1px dashed var(--markdown-border);
+  overflow-x: auto;
+}
+
+.markdown-body .markdown-pipeline-samples code {
+  font-size: 0.88rem;
+  color: var(--markdown-text-strong);
+}
+
+.markdown-body .markdown-neuron-grid {
+  display: grid;
+  gap: 0.72rem;
+}
+
+.markdown-body .markdown-neuron-card {
+  border: 1px solid var(--markdown-border);
+  border-radius: 0.72rem;
+  background: #fff;
+  padding: 0.72rem 0.82rem;
+}
+
+.markdown-body .markdown-neuron-title {
+  margin: 0;
+  color: var(--markdown-text-strong);
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.markdown-body .markdown-neuron-weight {
+  margin: 0.48rem 0 0;
+  color: var(--markdown-text-strong);
+  font-weight: 600;
+}
+
+.markdown-body .markdown-neuron-detail {
+  margin: 0.34rem 0 0;
+}
+
+.markdown-body .markdown-vector-rows {
+  display: grid;
+  gap: 0.52rem;
+}
+
+.markdown-body .markdown-vector-row {
+  display: grid;
+  gap: 0.52rem;
+  align-items: center;
+}
+
+.markdown-body .markdown-vector-value {
+  width: fit-content;
+  max-width: 100%;
+  padding: 0.28rem 0.45rem;
+  overflow-x: auto;
+  border: 1px solid var(--markdown-inline-code-border);
+  border-radius: 0.45rem;
+  background: var(--markdown-inline-code-bg);
+  color: var(--markdown-inline-code-text);
+  font-size: 0.9rem;
+}
+
+.markdown-body .markdown-vector-label {
+  color: var(--markdown-muted);
+  font-size: 0.93rem;
+}
+
+.markdown-body .markdown-confidence-vector {
+  margin-top: 0.22rem;
+  text-align: center;
+}
+
+.markdown-body .markdown-confidence-vector code {
+  display: inline-block;
+  max-width: 100%;
+  padding: 0.3rem 0.48rem;
+  overflow-x: auto;
+  border: 1px solid var(--markdown-inline-code-border);
+  border-radius: 0.45rem;
+  background: var(--markdown-inline-code-bg);
+  color: var(--markdown-inline-code-text);
+}
+
+.markdown-body .markdown-confidence-pointer {
+  margin-top: 0.2rem;
+  text-align: center;
+  color: var(--markdown-muted);
+  letter-spacing: 0;
+}
+
+.markdown-body .markdown-confidence-note {
+  margin: 0.28rem 0 0;
+  text-align: center;
+  color: var(--markdown-text-strong);
+  font-weight: 600;
+}
+
 /* Keep a single horizontal flow on small screens; scrolling preserves order. */
 @media (max-width: 640px) {
+  .markdown-body .markdown-panel-controls {
+    top: 0.4rem;
+    left: 0.44rem;
+    right: 0.44rem;
+  }
+
+  .markdown-body .markdown-panel-marker {
+    font-size: 0.82rem;
+  }
+
+  .markdown-body .markdown-panel-copy-btn {
+    min-width: 2.82rem;
+    height: 1.46rem;
+    padding-inline: 0.54rem;
+    font-size: 0.72rem;
+  }
+
+  .markdown-body .markdown-code-content {
+    padding-top: 1.7rem;
+  }
+
   .markdown-body .markdown-flow-track {
     padding: 0.7rem 0.75rem;
   }
@@ -218,6 +540,19 @@ html, body, #root {
   .markdown-body .markdown-flow-arrow {
     width: 1.8rem;
     min-width: 1.8rem;
+  }
+
+  .markdown-body .markdown-structured-panel {
+    padding: 0.72rem 0.72rem 0.78rem;
+  }
+
+  .markdown-body .markdown-pipeline-column {
+    min-width: 6.4rem;
+    padding-inline: 0.38rem;
+  }
+
+  .markdown-body .markdown-neuron-card {
+    padding: 0.65rem 0.7rem;
   }
 }
 
@@ -245,63 +580,29 @@ html, body, #root {
   border-color: #e6ebf1;
 }
 
-.markdown-body .markdown-code-block {
-  border-color: var(--markdown-code-toolbar-border);
-  background: var(--markdown-code-block-bg);
-}
-
-.markdown-body .markdown-code-block > div {
-  background: transparent;
-}
-
-.markdown-body .markdown-plain-code {
-  background: var(--markdown-code-block-bg);
-  border-color: var(--markdown-code-toolbar-border);
-  color: var(--markdown-text-strong);
-}
-
-.markdown-body .markdown-plain-code code {
-  font-size: inherit;
-  line-height: inherit;
-}
-
-.markdown-body td .markdown-code-block,
-.markdown-body td .markdown-plain-code,
-.markdown-body th .markdown-code-block,
-.markdown-body th .markdown-plain-code {
-  margin: 0;
-  border-radius: 0.5rem;
+.markdown-body td .markdown-code-panel,
+.markdown-body th .markdown-code-panel,
+.markdown-body td .markdown-flow-wrap,
+.markdown-body th .markdown-flow-wrap {
+  width: 100%;
+  margin: 0.2rem 0;
 }
 
 .markdown-body td .markdown-short-block-code,
 .markdown-body th .markdown-short-block-code {
-  background: transparent;
-  border: 0;
-  padding: 0;
-  border-radius: 0;
-  color: var(--markdown-text-strong);
-}
-
-.markdown-body td .markdown-plain-code,
-.markdown-body th .markdown-plain-code {
-  padding: 0.45rem 0.65rem;
-}
-
-.markdown-body td .markdown-plain-code code,
-.markdown-body th .markdown-plain-code code {
-  font-size: 0.9rem;
+  margin: 0;
 }
 
 /* ── KaTeX math formula spacing ────────────────────────────────────── */
 
 .markdown-body .katex-display {
-  margin: 1.35rem 0;
-  padding: 0.95rem 1.15rem;
+  margin: 1.1rem 0;
+  padding: 0;
   overflow-x: auto;
-  background: linear-gradient(180deg, var(--markdown-surface) 0%, var(--markdown-surface-soft) 100%);
-  border: 1px solid var(--markdown-border);
-  border-radius: 0.75rem;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .markdown-body .katex-display > .katex {
@@ -312,6 +613,11 @@ html, body, #root {
 .markdown-body .katex {
   font-size: 1.12em;
   color: var(--markdown-text-strong);
+}
+
+.markdown-body .katex-error {
+  color: var(--markdown-text);
+  font-style: normal;
 }
 
 /* Let KaTeX control spacing itself, otherwise aligned text can drift. */

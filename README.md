@@ -26,6 +26,7 @@ The **pedagogy engine** controls every AI response:
 ## Features
 
 - **Streaming AI chat** over WebSocket with session management, chat history, and session-isolated hidden pedagogy state.
+- **Readable markdown teaching panels**: centred block panels with a consistent desktop width, structured rendering for space-sensitive learning diagrams, larger low-contrast in-panel text markers, text-based `Copy`/`Copied` controls for block code, KaTeX `copy-tex` behaviour so formulae copy as LaTeX in normal text selections, and defensive sanitisation for malformed OCR/AI math delimiters.
 - **Three LLM providers with failover**: Google Gemini (Google AI Studio or Vertex AI via explicit transport selection, default provider), Anthropic Claude, OpenAI GPT.
 - **File and image uploads**: drag-and-drop, file picker, or paste. Up to 3 images and 2 documents per message. PDFs, code files, and notebooks are parsed for context.
 - **Notebook workspace**: open `.ipynb` files in a split-pane layout with JupyterLite (browser-side Python via Pyodide) on the left and AI tutor chat on the right. Pre-loaded with NumPy, SciPy, Pandas, Matplotlib, and SymPy.

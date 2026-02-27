@@ -15,6 +15,9 @@ export function ChatBubble({ message }: ChatBubbleProps) {
   const attachments = message.attachments ?? EMPTY_ATTACHMENTS;
   const [imageUrls, setImageUrls] = useState<Record<string, string>>({});
   const bubbleContainerClass = isUser ? "justify-end" : "justify-start";
+  const bubbleSizeClass = isUser
+    ? "max-w-[88%] md:max-w-[78%]"
+    : "w-full max-w-[88%] md:max-w-[78%]";
   const bubbleCardClass = isUser
     ? "bg-brand text-white ring-1 ring-inset ring-white/10 shadow-sm rounded-2xl rounded-br-md"
     : "border bg-[var(--assistant-bubble-bg)] border-[color:var(--assistant-bubble-border)] text-[var(--assistant-bubble-text)] shadow-[0_8px_22px_rgba(17,24,39,0.06)] rounded-2xl rounded-bl-md";
@@ -95,7 +98,7 @@ export function ChatBubble({ message }: ChatBubbleProps) {
   return (
     <div className={`mb-4 flex ${bubbleContainerClass}`}>
       <div
-        className={`max-w-[88%] px-4 py-3 md:max-w-[78%] ${bubbleCardClass}`}
+        className={`${bubbleSizeClass} px-4 py-3 ${bubbleCardClass}`}
       >
         {isUser ? (
           <div className="space-y-2.5">
@@ -161,7 +164,7 @@ export function ChatBubble({ message }: ChatBubbleProps) {
                 </span>
               </div>
             )}
-            <div className="max-w-none">
+            <div className="w-full max-w-none">
               <MarkdownRenderer content={message.content} />
             </div>
           </div>

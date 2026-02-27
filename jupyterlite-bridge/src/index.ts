@@ -37,6 +37,7 @@ const watchedPanelIds = new Set<string>();
 let isolationQueue: Promise<void> = Promise.resolve();
 let restoreTimerId: number | null = null;
 const WORKSPACE_STYLE_ID = "guided-cursor-workspace-style";
+const WORKSPACE_NOTEBOOK_SCOPE_CLASS = "gc-workspace-notebook";
 const CLEAR_RECENTS_COMMAND = "docmanager:clear-recents";
 const SAVE_TIMEOUT_MS = 15000;
 const LOCAL_AUTOSAVE_DELAY_MS = 5000;
@@ -51,6 +52,7 @@ const autosaveInFlightPanelIds = new Set<string>();
 const titleRenameDisabledPanelIds = new Set<string>();
 const downloadPatchedPanelIds = new Set<string>();
 const injectedRuntimePaths = new Set<string>();
+const outputNormalisationInFlightPanelIds = new Set<string>();
 let pendingKernelImportPaths: string[] = ["/drive"];
 let pendingKernelRuntimeFiles: KernelRuntimeFile[] = [];
 let runtimeSyncToken = 0;
@@ -187,6 +189,7 @@ function watchPanel(panel: NotebookPanel): void {
   watchedPanelIds.add(panel.id);
 
   panel.context.model.contentChanged.connect(() => {
+    normalisePanelOutputs(panel);
     postToParent({ command: "notebook-dirty" });
     schedulePanelAutosave(panel);
   });
@@ -224,6 +227,7 @@ function setActiveNotebookPanel(panel: NotebookPanel | null): void {
   activePanel = panel;
   if (panel) {
     watchPanel(panel);
+    normalisePanelOutputs(panel);
     if (panel.context.path === activeNotebookPath) {
       const syncedToken = syncedPanelTokenById.get(panel.id);
       if (syncedToken !== runtimeSyncToken) {
@@ -259,6 +263,193 @@ function normaliseNotebookTitle(notebookTitle?: string): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isTextPrimitive(value: unknown): value is string | number | boolean | null {
+  return (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    value === null
+  );
+}
+
+function normaliseOutputTextField(value: unknown): unknown {
+  if (isStringArray(value)) {
+    return value.join("");
+  }
+  if (Array.isArray(value) && value.every((item) => isTextPrimitive(item))) {
+    return value.map((item) => (item === null ? "" : String(item))).join("");
+  }
+  return value;
+}
+
+function normaliseOutputTracebackField(value: unknown): unknown {
+  if (isStringArray(value)) {
+    // Keep traceback as one string to avoid comma insertion from Array#toString.
+    return value.join("\n");
+  }
+  return value;
+}
+
+function normaliseNotebookOutput(
+  output: Record<string, unknown>
+): Record<string, unknown> {
+  let changed = false;
+  let nextOutput = output;
+  const outputType =
+    typeof output.output_type === "string" ? output.output_type : "";
+
+  if ("text" in output) {
+    const normalisedText = normaliseOutputTextField(output.text);
+    if (normalisedText !== output.text) {
+      nextOutput = { ...nextOutput, text: normalisedText };
+      changed = true;
+    }
+  }
+
+  if (
+    (outputType === "display_data" || outputType === "execute_result") &&
+    isRecord(output.data)
+  ) {
+    let dataChanged = false;
+    const nextData = { ...output.data };
+    for (const [mimeType, mimeValue] of Object.entries(output.data)) {
+      if (!mimeType.startsWith("text/")) {
+        continue;
+      }
+      const normalisedMimeValue = normaliseOutputTextField(mimeValue);
+      if (normalisedMimeValue !== mimeValue) {
+        nextData[mimeType] = normalisedMimeValue;
+        dataChanged = true;
+      }
+    }
+    if (dataChanged) {
+      nextOutput = {
+        ...nextOutput,
+        data: nextData,
+      };
+      changed = true;
+    }
+  }
+
+  if (outputType === "error" && "traceback" in output) {
+    const normalisedTraceback = normaliseOutputTracebackField(output.traceback);
+    if (normalisedTraceback !== output.traceback) {
+      nextOutput = { ...nextOutput, traceback: normalisedTraceback };
+      changed = true;
+    }
+  }
+
+  return changed ? nextOutput : output;
+}
+
+function normaliseNotebookJsonForRender(
+  notebookJson: Record<string, unknown>
+): Record<string, unknown> {
+  if (!Array.isArray(notebookJson.cells)) {
+    return notebookJson;
+  }
+
+  let changed = false;
+  const cells = notebookJson.cells.map((cell) => {
+    if (!isRecord(cell) || !Array.isArray(cell.outputs)) {
+      return cell;
+    }
+
+    let cellChanged = false;
+    const outputs = cell.outputs.map((output) => {
+      if (!isRecord(output)) {
+        return output;
+      }
+      const normalisedOutput = normaliseNotebookOutput(output);
+      if (normalisedOutput !== output) {
+        cellChanged = true;
+      }
+      return normalisedOutput;
+    });
+
+    if (!cellChanged) {
+      return cell;
+    }
+
+    changed = true;
+    return {
+      ...cell,
+      outputs,
+    };
+  });
+
+  if (!changed) {
+    return notebookJson;
+  }
+
+  return {
+    ...notebookJson,
+    cells,
+  };
+}
+
+function normalisePanelOutputs(panel: NotebookPanel): void {
+  if (panel.isDisposed || outputNormalisationInFlightPanelIds.has(panel.id)) {
+    return;
+  }
+
+  const widgets = panel.content.widgets as readonly {
+    model?: {
+      outputs?: {
+        toJSON?: () => Array<Record<string, unknown>>;
+        clear?: () => void;
+        fromJSON?: (value: Array<Record<string, unknown>>) => void;
+      };
+    };
+  }[];
+
+  outputNormalisationInFlightPanelIds.add(panel.id);
+  try {
+    for (const widget of widgets) {
+      const outputs = widget.model?.outputs;
+      if (
+        !outputs ||
+        typeof outputs.toJSON !== "function" ||
+        typeof outputs.clear !== "function" ||
+        typeof outputs.fromJSON !== "function"
+      ) {
+        continue;
+      }
+
+      const rawOutputs = outputs.toJSON();
+      if (!Array.isArray(rawOutputs) || rawOutputs.length === 0) {
+        continue;
+      }
+
+      let changed = false;
+      const normalisedOutputs = rawOutputs.map((rawOutput) => {
+        if (!isRecord(rawOutput)) {
+          return rawOutput;
+        }
+        const nextOutput = normaliseNotebookOutput(rawOutput);
+        if (nextOutput !== rawOutput) {
+          changed = true;
+        }
+        return nextOutput;
+      });
+
+      if (!changed) {
+        continue;
+      }
+
+      // Normalise live output models so freshly executed cells do not render list commas.
+      outputs.clear();
+      outputs.fromJSON(normalisedOutputs);
+    }
+  } finally {
+    outputNormalisationInFlightPanelIds.delete(panel.id);
+  }
 }
 
 function findPreferredKernelSpec(
@@ -676,22 +867,148 @@ async function saveWorkspaceFiles(
   return writtenPaths;
 }
 
-function injectWorkspaceChromeStyles(): void {
-  if (document.getElementById(WORKSPACE_STYLE_ID)) {
-    return;
-  }
-  const style = document.createElement("style");
-  style.id = WORKSPACE_STYLE_ID;
-  style.textContent = `
-    .jp-StatusBar,
-    .jp-StatusBar-Widget,
-    [class*="jp-StatusBar-"] {
+function ensureWorkspaceNotebookScopeClass(): void {
+  document.body.classList.add(WORKSPACE_NOTEBOOK_SCOPE_CLASS);
+}
+
+function buildWorkspaceNotebookCss(): string {
+  const scope = `body.${WORKSPACE_NOTEBOOK_SCOPE_CLASS}`;
+  return `
+    ${scope} {
+      --jp-notebook-max-width: 100%;
+      --jp-notebook-padding-offset: 0px;
+      --jp-private-sidebar-tab-width: 0px;
+      --gc-notebook-right-gutter-mobile: 16px;
+      --gc-notebook-right-gutter: clamp(
+        0px,
+        calc(var(--jp-cell-prompt-width, 64px) + 8px),
+        96px
+      );
+    }
+    @media (max-width: 960px) {
+      ${scope} {
+        --gc-notebook-right-gutter: var(--gc-notebook-right-gutter-mobile);
+      }
+    }
+    ${scope} .jp-StatusBar,
+    ${scope} .jp-StatusBar-Widget,
+    ${scope} [class*="jp-StatusBar-"] {
       display: none !important;
     }
-    .jp-SideBar { display: none !important; }
-    .jp-LeftStackedPanel { display: none !important; }
-    .jp-RightStackedPanel { display: none !important; }
+    ${scope} .jp-SideBar,
+    ${scope} .jp-LeftStackedPanel,
+    ${scope} .jp-RightStackedPanel,
+    ${scope} #jp-left-stack,
+    ${scope} #jp-right-stack {
+      width: 0 !important;
+      min-width: 0 !important;
+      max-width: 0 !important;
+      flex: 0 0 0 !important;
+      border: none !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      overflow: hidden !important;
+      visibility: hidden !important;
+    }
+    /* Lumino keeps absolute split widths; force the centre notebook pane to own full width. */
+    ${scope} #jp-main-content-panel > .jp-SideBar.jp-mod-left,
+    ${scope} #jp-main-content-panel > .jp-SideBar.jp-mod-right {
+      display: none !important;
+      left: 0 !important;
+      right: auto !important;
+      width: 0 !important;
+      min-width: 0 !important;
+      max-width: 0 !important;
+      visibility: hidden !important;
+    }
+    ${scope} #jp-main-content-panel > #jp-main-vsplit-panel {
+      left: 0 !important;
+      right: 0 !important;
+      width: 100% !important;
+      min-width: 0 !important;
+      max-width: none !important;
+    }
+    ${scope} #jp-main-vsplit-panel > #jp-main-split-panel,
+    ${scope} #jp-main-split-panel > #jp-main-dock-panel {
+      left: 0 !important;
+      right: 0 !important;
+      width: 100% !important;
+      min-width: 0 !important;
+      max-width: none !important;
+    }
+    ${scope} #jp-main-content-panel > .lm-SplitPanel-handle {
+      display: none !important;
+      width: 0 !important;
+      height: 0 !important;
+      min-width: 0 !important;
+      max-width: 0 !important;
+      border: none !important;
+    }
+    ${scope} #jp-main-vsplit-panel > .lm-SplitPanel-handle,
+    ${scope} #jp-main-split-panel > .lm-SplitPanel-handle {
+      display: none !important;
+      width: 0 !important;
+      height: 0 !important;
+      min-width: 0 !important;
+      max-width: 0 !important;
+      border: none !important;
+    }
+    ${scope} #jp-main-dock-panel {
+      padding: 0 !important;
+    }
+    ${scope} #jp-menu-panel {
+      padding-left: 0 !important;
+    }
+    /* Force notebook canvas edge-to-edge in workspace mode to avoid centred grey gutters. */
+    ${scope} .jp-NotebookPanel .jp-NotebookPanel-toolbar {
+      padding-left: 0 !important;
+      padding-right: var(--gc-notebook-right-gutter) !important;
+      background: var(--jp-layout-color0) !important;
+    }
+    ${scope} .jp-NotebookPanel .jp-WindowedPanel-outer {
+      width: 100% !important;
+      padding-left: 0 !important;
+      padding-right: 0 !important;
+      background: var(--jp-layout-color0) !important;
+    }
+    ${scope} .jp-NotebookPanel .jp-WindowedPanel-inner,
+    ${scope} .jp-NotebookPanel .jp-WindowedPanel-outer > * {
+      box-sizing: border-box !important;
+      padding-left: 0 !important;
+      padding-right: var(--gc-notebook-right-gutter) !important;
+      background: var(--jp-layout-color0) !important;
+    }
+    ${scope} .jp-NotebookPanel .jp-WindowedPanel-viewport {
+      left: 0 !important;
+      right: 0 !important;
+      background: var(--jp-layout-color0) !important;
+      box-shadow: none !important;
+    }
+    ${scope} .jp-NotebookPanel .jp-Notebook {
+      width: 100% !important;
+      max-width: none !important;
+      background: var(--jp-layout-color0) !important;
+    }
+    /* Keep plain-text outputs faithful so ASCII tables stay aligned. */
+    ${scope} .jp-NotebookPanel .jp-OutputArea-output pre,
+    ${scope} .jp-NotebookPanel .jp-ThemedContainer .jp-RenderedText pre {
+      white-space: pre !important;
+      word-break: normal !important;
+      overflow-wrap: normal !important;
+      overflow-x: auto !important;
+    }
   `;
+}
+
+function injectWorkspaceChromeStyles(): void {
+  ensureWorkspaceNotebookScopeClass();
+  let style = document.getElementById(WORKSPACE_STYLE_ID) as HTMLStyleElement | null;
+  if (!style) {
+    style = document.createElement("style");
+    style.id = WORKSPACE_STYLE_ID;
+  }
+  style.textContent = buildWorkspaceNotebookCss();
+  // Keep this style as the last sheet so notebook-theme rules do not override it.
   document.head.appendChild(style);
 }
 
@@ -819,6 +1136,15 @@ function applyNotebookPresentation(
   app: JupyterFrontEnd
 ): void {
   const title = normaliseNotebookTitle(notebookTitle);
+  injectWorkspaceChromeStyles();
+  // Re-apply after panel mount so late notebook styles cannot pull layout back.
+  window.requestAnimationFrame(() => {
+    if (!panel.isDisposed) {
+      injectWorkspaceChromeStyles();
+    }
+  });
+  // Keep the notebook in full-width mode for consistent edge alignment.
+  panel.addClass("jp-mod-fullwidth");
   disableNotebookTitleAutoRename(panel);
   patchNotebookDownload(panel, app);
   panel.title.label = title;
@@ -1086,9 +1412,13 @@ const plugin: JupyterFrontEndPlugin<void> = {
         }
 
         if (message.command === "load-notebook") {
+          const rawNotebookJson = isRecord(message.notebook_json)
+            ? message.notebook_json
+            : EMPTY_NOTEBOOK;
+          // Standardise Jupyter text-array fields before rendering to avoid comma artefacts.
           const notebookJson = withAvailableKernelMetadata(
             app,
-            message.notebook_json ?? EMPTY_NOTEBOOK
+            normaliseNotebookJsonForRender(rawNotebookJson)
           );
           const workspaceFiles = Array.isArray(message.workspace_files)
             ? message.workspace_files
@@ -1123,6 +1453,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
             };
             if (model.fromJSON) {
               model.fromJSON(notebookJson);
+              normalisePanelOutputs(activePanel);
               void activePanel.context.save();
               applyNotebookPresentation(activePanel, notebookTitle, app);
               syncedPanelTokenById.set(activePanel.id, runtimeSyncToken);
@@ -1164,7 +1495,9 @@ const plugin: JupyterFrontEndPlugin<void> = {
               notebookJson = snapshot.content as Record<string, unknown>;
             }
           }
-          reply(message, { notebook_json: notebookJson });
+          reply(message, {
+            notebook_json: normaliseNotebookJsonForRender(notebookJson),
+          });
           return;
         }
 

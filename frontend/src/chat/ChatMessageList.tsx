@@ -3,7 +3,7 @@ import { ChatMessage } from "../api/types";
 import { ChatBubble } from "./ChatBubble";
 import type { StreamingMeta } from "./useChatSocket";
 
-const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 160;
+const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 96;
 
 interface ChatMessageListProps {
   messages: ChatMessage[];
