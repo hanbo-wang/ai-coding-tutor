@@ -73,7 +73,8 @@ class _FakePedagogyEngine:
             is_elaboration=bool(raw_meta.get("is_elaboration")),
             programming_difficulty=int(raw_meta.get("programming_difficulty", 3)),
             maths_difficulty=int(raw_meta.get("maths_difficulty", 3)),
-            hint_level=int(raw_meta.get("hint_level", 2)),
+            programming_hint_level=2,
+            maths_hint_level=2,
             source=source,
         )
 
@@ -86,18 +87,21 @@ class _FakePedagogyEngine:
             is_elaboration=False,
             programming_difficulty=3,
             maths_difficulty=2,
-            hint_level=2,
+            programming_hint_level=2,
+            maths_hint_level=2,
             source="two_step_recovery_route",
         )
 
     def apply_stream_meta(self, student_state, meta):
-        student_state.current_hint_level = meta.hint_level
         student_state.current_programming_difficulty = meta.programming_difficulty
         student_state.current_maths_difficulty = meta.maths_difficulty
+        student_state.current_programming_hint_level = meta.programming_hint_level
+        student_state.current_maths_hint_level = meta.maths_hint_level
         return ProcessResult(
-            hint_level=meta.hint_level,
             programming_difficulty=meta.programming_difficulty,
             maths_difficulty=meta.maths_difficulty,
+            programming_hint_level=meta.programming_hint_level,
+            maths_hint_level=meta.maths_hint_level,
             is_same_problem=meta.same_problem,
         )
 
@@ -121,7 +125,8 @@ class _SessionAwareFallbackPedagogyEngine(_FakePedagogyEngine):
             is_elaboration=False,
             programming_difficulty=3,
             maths_difficulty=3,
-            hint_level=2,
+            programming_hint_level=2,
+            maths_hint_level=2,
             source="two_step_recovery_route",
         )
 
@@ -238,7 +243,7 @@ def test_ws_single_pass_emits_meta_before_token_and_strips_header(tmp_path, monk
     chunks = [
         "<<GC_META_V1>>",
         '{"same_problem":false,"is_elaboration":false,',
-        '"programming_difficulty":3,"maths_difficulty":2,"hint_level":2}',
+        '"programming_difficulty":3,"maths_difficulty":2}',
         "<<END_GC_META>>",
         "Hello",
         " world",
@@ -264,9 +269,10 @@ def test_ws_single_pass_emits_meta_before_token_and_strips_header(tmp_path, monk
         meta_event = next(e for e in events if e["type"] == "meta")
         done_event = next(e for e in events if e["type"] == "done")
         assert meta_event["source"] == "single_pass_header_route"
-        assert done_event["hint_level"] == meta_event["hint_level"]
         assert done_event["programming_difficulty"] == meta_event["programming_difficulty"]
         assert done_event["maths_difficulty"] == meta_event["maths_difficulty"]
+        assert done_event["programming_hint_level"] == meta_event["programming_hint_level"]
+        assert done_event["maths_hint_level"] == meta_event["maths_hint_level"]
 
         session_event = next(e for e in events if e["type"] == "session")
         stored_messages = _run(_list_messages(session_factory, session_event["session_id"]))
@@ -370,7 +376,7 @@ def test_ws_auto_mode_retries_single_pass_after_stable_two_step_recovery_turns(
         [  # Third turn: auto retries single-pass and receives a valid hidden header
             "<<GC_META_V1>>",
             '{"same_problem":false,"is_elaboration":false,'
-            '"programming_difficulty":3,"maths_difficulty":2,"hint_level":2}',
+            '"programming_difficulty":3,"maths_difficulty":2}',
             "<<END_GC_META>>",
             "Back",
             " again",
@@ -433,7 +439,8 @@ def test_ws_auto_mode_does_not_retry_single_pass_after_emergency_recovery_meta(
             is_elaboration=False,
             programming_difficulty=3,
             maths_difficulty=3,
-            hint_level=2,
+            programming_hint_level=5,
+            maths_hint_level=5,
             source="emergency_full_hint_fallback",
         )
 
@@ -514,7 +521,7 @@ def test_ws_auto_mode_header_failure_degrade_is_isolated_per_session(
         [
             "<<GC_META_V1>>",
             '{"same_problem":false,"is_elaboration":false,'
-            '"programming_difficulty":3,"maths_difficulty":2,"hint_level":2}',
+            '"programming_difficulty":3,"maths_difficulty":2}',
             "<<END_GC_META>>",
             "Fresh",
             " session",

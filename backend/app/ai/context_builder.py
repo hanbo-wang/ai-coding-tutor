@@ -3,7 +3,8 @@ import logging
 from app.ai.llm_base import LLMProvider
 from app.ai.prompts import (
     BASE_SYSTEM_PROMPT,
-    HINT_LEVEL_INSTRUCTIONS,
+    PROGRAMMING_HINT_INSTRUCTIONS,
+    MATHS_HINT_INSTRUCTIONS,
     PROGRAMMING_LEVEL_INSTRUCTIONS,
     MATHS_LEVEL_INSTRUCTIONS,
     SINGLE_PASS_PEDAGOGY_PROTOCOL_PROMPT,
@@ -19,16 +20,19 @@ COMPRESSION_PROMPT = (
 
 
 def build_system_prompt(
-    hint_level: int,
+    programming_hint_level: int,
+    maths_hint_level: int,
     programming_level: int,
     maths_level: int,
     notebook_context: str | None = None,
 ) -> str:
-    """Assemble the full system prompt from base + hint + student levels."""
+    """Assemble the full system prompt from base + hint instructions + student levels."""
     parts = [
         BASE_SYSTEM_PROMPT,
         "",
-        HINT_LEVEL_INSTRUCTIONS.get(hint_level, HINT_LEVEL_INSTRUCTIONS[3]),
+        PROGRAMMING_HINT_INSTRUCTIONS.get(programming_hint_level, PROGRAMMING_HINT_INSTRUCTIONS[3]),
+        "",
+        MATHS_HINT_INSTRUCTIONS.get(maths_hint_level, MATHS_HINT_INSTRUCTIONS[3]),
         "",
         PROGRAMMING_LEVEL_INSTRUCTIONS.get(programming_level, PROGRAMMING_LEVEL_INSTRUCTIONS[3]),
         "",
@@ -48,16 +52,22 @@ def build_single_pass_system_prompt(
 ) -> str:
     """Assemble the single-pass prompt that emits hidden metadata then the answer."""
 
-    hint_lines: list[str] = ["Hint level rules (choose exactly one hint level and obey it):"]
-    for level in sorted(HINT_LEVEL_INSTRUCTIONS):
-        hint_lines.append(f"- Level {level}: {HINT_LEVEL_INSTRUCTIONS[level]}")
+    prog_hint_lines: list[str] = ["Programming hint level rules (choose the level computed by the formula):"]
+    for level in sorted(PROGRAMMING_HINT_INSTRUCTIONS):
+        prog_hint_lines.append(f"- Level {level}: {PROGRAMMING_HINT_INSTRUCTIONS[level]}")
+
+    maths_hint_lines: list[str] = ["Maths hint level rules (choose the level computed by the formula):"]
+    for level in sorted(MATHS_HINT_INSTRUCTIONS):
+        maths_hint_lines.append(f"- Level {level}: {MATHS_HINT_INSTRUCTIONS[level]}")
 
     parts = [
         BASE_SYSTEM_PROMPT,
         "",
         SINGLE_PASS_PEDAGOGY_PROTOCOL_PROMPT,
         "",
-        "\n".join(hint_lines),
+        "\n".join(prog_hint_lines),
+        "",
+        "\n".join(maths_hint_lines),
         "",
         PROGRAMMING_LEVEL_INSTRUCTIONS.get(programming_level, PROGRAMMING_LEVEL_INSTRUCTIONS[3]),
         "",

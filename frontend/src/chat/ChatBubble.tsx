@@ -29,9 +29,9 @@ export function ChatBubble({ message }: ChatBubbleProps) {
   );
   const hasAssistantMeta =
     !isUser &&
-    typeof message.hint_level_used === "number" &&
-    typeof message.problem_difficulty === "number" &&
-    typeof message.maths_difficulty === "number";
+    typeof message.programming_difficulty === "number" &&
+    typeof message.maths_difficulty === "number" &&
+    typeof message.programming_hint_level_used === "number";
 
   useEffect(() => {
     let cancelled = false;
@@ -148,13 +148,16 @@ export function ChatBubble({ message }: ChatBubbleProps) {
             {hasAssistantMeta && (
               <div className="mb-3 flex flex-wrap gap-2 text-[10px] font-semibold uppercase tracking-[0.12em]">
                 <span className="rounded-full border border-[var(--assistant-bubble-border)] bg-white/75 px-2.5 py-1 text-[var(--markdown-muted)]">
-                  Hint {message.hint_level_used}
+                  Prog Diff {message.programming_difficulty}
                 </span>
                 <span className="rounded-full border border-[var(--assistant-bubble-border)] bg-white/75 px-2.5 py-1 text-[var(--markdown-muted)]">
-                  Programming {message.problem_difficulty}
+                  Maths Diff {message.maths_difficulty}
                 </span>
                 <span className="rounded-full border border-[var(--assistant-bubble-border)] bg-white/75 px-2.5 py-1 text-[var(--markdown-muted)]">
-                  Maths {message.maths_difficulty}
+                  Prog Hint {message.programming_hint_level_used}
+                </span>
+                <span className="rounded-full border border-[var(--assistant-bubble-border)] bg-white/75 px-2.5 py-1 text-[var(--markdown-muted)]">
+                  Maths Hint {message.maths_hint_level_used ?? message.maths_difficulty}
                 </span>
               </div>
             )}

@@ -17,10 +17,11 @@
 
 The **pedagogy engine** controls every AI response:
 
-1. **Graduated hints**: five levels from Socratic questions, through conceptual nudges, structural outlines, and concrete examples, to full solutions. New problems always start at a lower hint level; follow-ups escalate one level at a time.
-2. **Adaptive student levels**: effective programming and maths levels (1.0–5.0) update automatically via exponential moving average, shaping how the tutor explains concepts. When a student updates their self-assessed level in Profile, the corresponding effective level is rebased to that value.
-3. **Same-problem and elaboration detection**: the LLM determines whether the student is continuing the same problem and whether the message is a follow-up elaboration request, then adjusts the hint level accordingly.
-4. **Difficulty classification**: the LLM rates each message for programming and maths difficulty so the tutor can calibrate the gap between the problem and the student's level.
+1. **Graduated hints**: five levels per dimension (programming and maths, computed independently) from Socratic questions, through conceptual nudges, structural outlines, and concrete examples, to full solutions. New problems are capped at hint level 4; follow-ups escalate one level at a time up to 5.
+2. **Deterministic hint computation**: the backend computes hint levels using a gap formula (`1 + difficulty - effective_level`, clamped to [1, 4]) rather than relying on the LLM to choose. The LLM classifies difficulty; the backend derives the hint level.
+3. **Adaptive student levels**: effective programming and maths levels (1.0 to 5.0) update automatically via exponential moving average, shaping how the tutor explains concepts. When a student updates their self-assessed level in Profile, the corresponding effective level is rebased to that value.
+4. **Same-problem and elaboration detection**: the LLM determines whether the student is continuing the same problem and whether the message is a follow-up elaboration request. Same-problem turns increment each hint level by 1.
+5. **Difficulty classification**: the LLM rates each message for programming and maths difficulty independently so the tutor can calibrate the gap between the problem and the student's level.
 
 ## Features
 
@@ -137,6 +138,7 @@ Production runs on Docker Compose + Nginx reverse proxy + HTTPS, deployed via Gi
 | -------- | ----------- |
 | [phase-1-auth.md](docs/phase-1-auth.md) | Authentication system |
 | [phase-2-chat.md](docs/phase-2-chat.md) | Chat, pedagogy engine, file uploads |
+| [pedagogy-algorithm.md](docs/pedagogy-algorithm.md) | Full pedagogy algorithm reference |
 | [phase-3-workspace.md](docs/phase-3-workspace.md) | Notebook workspace and Learning Hub |
 | [phase-4-robustness.md](docs/phase-4-robustness.md) | Rate limiting, cost control, testing |
 | [phase-5-deployment.md](docs/phase-5-deployment.md) | Production deployment and CI/CD |

@@ -16,261 +16,133 @@
 
 ## Backend Work
 
-### 1. Project skeleton
+### 1. Project Skeleton
 
-Create the `backend/` directory with the following files.
-
-| File | Purpose |
-|------|---------|
-| `backend/Dockerfile` | Python 3.11-slim image. Installs system dependencies (`gcc`, `libpq-dev`), Python requirements, and runs Uvicorn. |
-| `backend/requirements.txt` | FastAPI, uvicorn[standard], SQLAlchemy[asyncio], asyncpg, alembic, python-jose[cryptography], bcrypt, pydantic[email], pydantic-settings, httpx |
-| `backend/alembic.ini` | Points to the migrations directory. Logging configured for Alembic and SQLAlchemy. |
-| `backend/app/__init__.py` | Empty file that marks the directory as a package. |
+`backend/Dockerfile`: Python 3.11-slim, system deps, pip install, Uvicorn.
+`backend/requirements.txt`: FastAPI, uvicorn, SQLAlchemy[asyncio], asyncpg, alembic, python-jose, bcrypt, pydantic, pydantic-settings, httpx.
 
 ### 2. Configuration
 
-**`backend/app/config.py`** uses Pydantic `BaseSettings` to load values from environment variables (with `.env` file support):
+**`backend/app/config.py`:** Pydantic `BaseSettings` loading from `.env`. Core fields: `database_url`, `jwt_secret_key`, `jwt_access_token_expire_minutes`, `jwt_refresh_token_expire_days`, `cors_origins`, plus AI and upload settings. A single global `settings` instance is imported everywhere.
 
-```python
-class Settings(BaseSettings):
-    database_url: str
-    jwt_secret_key: str
-    jwt_access_token_expire_minutes: int
-    jwt_refresh_token_expire_days: int
-    cors_origins: list[str]
-    # Additional AI and upload settings are also defined here.
-```
+### 3. Database Setup
 
-A single global `settings` instance is created at module level and imported everywhere. Keep all keys from `.github/workflows/templates/env.dev.example` in `.env`, because `config.py` defines structure only and does not hard-code runtime values.
+**`backend/app/db/session.py`:** Async SQLAlchemy engine and session factory (`expire_on_commit=False`).
+**`backend/app/db/init_db.py`:** Runs `alembic upgrade head` on startup.
 
-### 3. Database setup
+### 4. User Model
 
-**`backend/app/db/session.py`** creates an async SQLAlchemy engine and session factory:
-
-```python
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
-
-engine = create_async_engine(settings.database_url, echo=True)
-AsyncSessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-```
-
-`echo=True` logs all SQL queries during development. `expire_on_commit=False` keeps ORM objects usable after a commit without re-querying.
-
-**`backend/app/db/init_db.py`** runs on startup and executes `alembic upgrade head`. This keeps the schema aligned with migration history in all environments.
-
-### 4. User model
-
-**`backend/app/models/user.py`** defines the SQLAlchemy 2.0 declarative base and the `User` ORM model.
+**`backend/app/models/user.py`:** SQLAlchemy 2.0 declarative model.
 
 | Column | Type | Notes |
 |--------|------|-------|
-| `id` | UUID | Primary key, auto-generated via `uuid.uuid4()` |
-| `email` | VARCHAR(255) | Unique, indexed. Used for login. |
-| `username` | VARCHAR(50) | Unique, indexed. Editable display name used in chat. |
-| `password_hash` | VARCHAR(255) | Bcrypt hash |
-| `programming_level` | INTEGER | 1 to 5, default 3 |
-| `maths_level` | INTEGER | 1 to 5, default 3 |
-| `created_at` | TIMESTAMP | Server default via `func.now()` |
+| `id` | UUID | Primary key |
+| `email` | VARCHAR(255) | Unique, indexed |
+| `username` | VARCHAR(50) | Unique, indexed |
+| `password_hash` | VARCHAR(255) | Bcrypt |
+| `programming_level` | INTEGER | 1-5, default 3 |
+| `maths_level` | INTEGER | 1-5, default 3 |
+| `created_at` | TIMESTAMP | Server default |
 
-The `Base` class declared here is imported by all other models and by Alembic metadata loading.
+### 5. User Schemas
 
-### 5. User schemas
+**`backend/app/schemas/user.py`:** `UserCreate` (email, username, password, optional levels), `UserLogin` (email, password), `UserProfile` (read model with `from_attributes`), `UserProfileUpdate` (optional username and levels; updating a skill slider rebases the corresponding hidden effective level), `ChangePassword`, `TokenResponse`.
 
-**`backend/app/schemas/user.py`** contains Pydantic v2 models:
+### 6. Auth Service
 
-- `UserCreate`: email (validated via `EmailStr`), username (str, 3 to 50 characters), password (minimum 8 characters), programming_level (optional, default 3, range 1 to 5), maths_level (optional, default 3, range 1 to 5).
-- `UserLogin`: email, password.
-- `UserProfile`: id, email, username, programming_level, maths_level, created_at. Uses `from_attributes = True` to map directly from ORM objects.
-- `UserProfileUpdate`: username (optional str), programming_level (optional, range 1 to 5), maths_level (optional, range 1 to 5). Used for the `PUT /api/auth/me` endpoint. When a skill level is updated, the backend also resets the corresponding hidden effective level baseline to the same value.
-- `ChangePassword`: current_password (str), new_password (str, minimum 8 characters).
-- `TokenResponse`: access_token, token_type (defaults to `"bearer"`).
-
-### 6. Auth service
-
-**`backend/app/services/auth_service.py`** contains pure business logic with no HTTP concerns:
-
-- `hash_password(plain: str) -> str`: Hashes a plaintext password using bcrypt.
-- `verify_password(plain: str, hashed: str) -> bool`: Verifies a plaintext password against a bcrypt hash.
-- `create_access_token(user_id: str) -> str`: Creates a short-lived JWT (30 min by default). The payload includes `sub` (user ID), `exp` (expiry timestamp), and `token_type: "access"`.
-- `create_refresh_token(user_id: str) -> str`: Creates a long-lived JWT (7 days by default). Same payload structure with `token_type: "refresh"`.
-- `decode_token(token: str) -> dict`: Decodes and validates a JWT. Raises `ValueError` if the token is expired or invalid.
-
-All tokens are signed with HS256 using the `jwt_secret_key` from settings.
+**`backend/app/services/auth_service.py`:** `hash_password`, `verify_password` (bcrypt), `create_access_token` (30 min, HS256), `create_refresh_token` (7 days), `decode_token`.
 
 ### 7. Dependencies
 
-**`backend/app/dependencies.py`**:
+**`backend/app/dependencies.py`:** `get_db()` (async session generator), `get_current_user` (extracts Bearer token, validates access type, loads user or raises 401).
 
-- `get_db()`: Async generator that yields an `AsyncSession` and closes it automatically.
-- `get_current_user(credentials, db)`: Extracts the Bearer token from the `Authorization` header using FastAPI's `HTTPBearer` scheme. Decodes the token, checks that `token_type` is `"access"`, extracts the user ID from the `sub` claim, and loads the user from the database. Returns the `User` object or raises `401 Unauthorized`.
+### 8. Auth Router
 
-### 8. Auth router
-
-**`backend/app/routers/auth.py`** is mounted at prefix `/api/auth`.
-
-A helper function `set_refresh_cookie(response, refresh_token)` sets the refresh token as an httpOnly cookie with these properties:
-
-| Property | Value | Notes |
-|----------|-------|-------|
-| `httponly` | `True` | Prevents JavaScript access |
-| `secure` | `False` | Set to `True` in production with HTTPS |
-| `samesite` | `"lax"` | CSRF protection |
-| `path` | `"/api/auth"` | Cookie is only sent to auth endpoints |
-| `max_age` | `604800` | 7 days in seconds |
-
-**Endpoints:**
+**`backend/app/routers/auth.py`** (prefix `/api/auth`):
 
 | Endpoint | Method | What it does |
 |----------|--------|-------------|
-| `/api/auth/register` | POST | Validates input. Checks email uniqueness (returns 400 "Email already registered" if duplicate). Hashes password, creates user, returns access token in body and sets refresh token cookie. |
-| `/api/auth/login` | POST | Accepts email and password. Validates credentials, returns access token in body and sets refresh token cookie. |
-| `/api/auth/refresh` | POST | Reads refresh token from cookie, validates it, verifies user still exists, generates a new access token, rotates the refresh token (issues a new one and sets a new cookie), returns new access token. |
-| `/api/auth/logout` | POST | Deletes the refresh token cookie. |
-| `/api/auth/me` | GET | Returns the current user's profile (requires Bearer token). |
-| `/api/auth/me` | PUT | Updates username, programming_level, and maths_level (requires Bearer token). |
-| `/api/auth/me/password` | PUT | Changes the user's password. Requires current_password and new_password. Verifies current password before updating. |
+| `/api/auth/register` | POST | Create user, return access token, set refresh cookie |
+| `/api/auth/login` | POST | Validate credentials, return tokens |
+| `/api/auth/refresh` | POST | Read cookie, rotate refresh token, return new access token |
+| `/api/auth/logout` | POST | Delete refresh cookie |
+| `/api/auth/me` | GET | Return current user profile |
+| `/api/auth/me` | PUT | Update username and skill levels |
+| `/api/auth/me/password` | PUT | Change password (requires current password) |
 
-The refresh token cookie is never exposed to JavaScript. The session survives page refreshes because the browser automatically sends the cookie, and `AuthContext` calls `/api/auth/refresh` on mount.
+Refresh cookie: httpOnly, secure (production), samesite lax, path `/api/auth`, 7 day max age.
 
-### 9. FastAPI app entry point
+### 9. FastAPI App
 
-**`backend/app/main.py`**:
+**`backend/app/main.py`:** Lifespan context manager calls `init_db()` on startup and `engine.dispose()` on shutdown. CORS middleware with `allow_credentials=True`. `GET /health` returns a browser-facing health page or JSON for probes.
 
-- Creates the FastAPI app with a `lifespan` async context manager. On startup it calls `init_db()` to apply migrations. On shutdown it calls `engine.dispose()` to close the database connection pool.
-- Configures CORS middleware with origins from settings and `allow_credentials=True`.
-- Includes routers required by the current implementation.
-- Provides a `GET /health` endpoint for readiness checks. Browser requests receive a human-readable health page; non-HTML probes receive `{"status": "healthy"}`.
+### 10. Alembic Migration
 
-### 10. Alembic migration
-
-Create the first migration for the `users` table:
-
-```bash
-alembic revision --autogenerate -m "create users table"
-alembic upgrade head
-```
-
-Migrations are the single source of truth for schema changes. `init_db()` runs `alembic upgrade head` at startup, so containers automatically apply pending revisions.
+First migration creates the `users` table. `init_db()` runs `alembic upgrade head` at startup so containers apply pending revisions automatically.
 
 ### 11. Docker Compose
 
-**`docker-compose.yml`** (project root):
+`db`: PostgreSQL 15 with named volume and health check. `backend`: depends on db (healthy), loads `.env`, mounts source for live reload, port 8000.
 
-- `db` service: PostgreSQL 15 with a named volume (`postgres_data`) for data persistence. Includes a health check using `pg_isready` (5 second interval, 5 retries). Exposed on port 5432.
-- `backend` service: Builds from `backend/Dockerfile`, depends on `db` (waits for healthy status), loads `.env` file, mounts `./backend:/app` for live code reloading, runs Uvicorn with `--reload` on port 8000.
-
-**`.github/workflows/templates/env.dev.example`**: Template with all required environment variables including `DATABASE_URL`, `JWT_SECRET_KEY`, `CORS_ORIGINS`, and LLM API keys.
-
-**`start.bat`** (project root): Windows one-click startup script. It checks Docker engine connectivity (15-second timeout), starts `db` and `backend`, waits for `/health`, verifies provider connectivity via `/api/health/ai`, then starts the frontend only when at least one LLM provider is available. If a check fails, it prints diagnostics and recent logs.
+**`start.bat`**: Windows one-click startup. Checks Docker, starts services, waits for health, verifies AI provider connectivity, then launches the frontend.
 
 ---
 
 ## Frontend Work
 
-### 12. Project skeleton
+### 12. Project Skeleton
 
-Initialise with Vite:
+Vite + React + TypeScript + Tailwind CSS v4 (via `@tailwindcss/vite` plugin). API proxy and WebSocket proxy configured in `vite.config.ts`.
 
-```bash
-npm create vite@latest frontend -- --template react-ts
-cd frontend
-npm install tailwindcss @tailwindcss/vite react-router-dom
-```
+### 13. API Layer
 
-This project uses **Tailwind CSS v4**, which does not require a separate `tailwind.config.js` file. Tailwind is loaded via the `@tailwindcss/vite` plugin in `vite.config.ts`.
+**`frontend/src/api/http.ts`:** Fetch wrapper with in-memory access token, automatic Bearer header, `credentials: "include"`, 401 retry via `/api/auth/refresh`, and `getAccessToken()` export for WebSocket use.
 
-| File | Purpose |
-|------|---------|
-| `frontend/vite.config.ts` | Vite config with React and Tailwind v4 plugins, API proxy to `localhost:8000`, WebSocket proxy, and `@` path alias |
-| `frontend/src/index.css` | Tailwind import and custom theme colours matching the project logo |
-| `frontend/src/main.tsx` | React entry point. Wraps `<App />` in `BrowserRouter` and `AuthProvider` |
-| `frontend/src/App.tsx` | React Router setup with four routes (see Section 18) |
+**`frontend/src/api/types.ts`:** TypeScript interfaces matching backend schemas.
 
-### 13. API layer
+### 14. Auth Context
 
-**`frontend/src/api/http.ts`**: A thin wrapper around `fetch` that manages JWT tokens.
+**`frontend/src/auth/AuthContext.tsx`:** Provides `user`, `login`, `register`, `logout`, `updateProfile`, `changePassword`, `isLoading`. Restores session on mount via `/api/auth/refresh`.
 
-- Stores the access token in memory (not localStorage, for security).
-- Attaches the access token to every request as `Authorization: Bearer <token>`.
-- Sets `Content-Type: application/json` automatically when a request body is present.
-- Includes `credentials: "include"` on all requests so the browser sends httpOnly cookies.
-- On a 401 response (except for auth endpoints), automatically calls `/api/auth/refresh`. If the refresh succeeds, retries the original request with the new token. If it fails, redirects to `/login`.
-- Handles empty response bodies gracefully (e.g. the logout endpoint).
-- Exports `getAccessToken()` so the WebSocket helper (Phase 2) can pass the token as a query parameter.
+### 15. Auth Pages
 
-**`frontend/src/api/types.ts`**: TypeScript interfaces matching the backend schemas: `User` (with email and username), `TokenResponse`, `LoginCredentials` (email + password), `RegisterData` (email + username + password + levels), `UserProfileUpdate`, `ChangePasswordData`.
+**`LoginPage.tsx`**: Email + password form, redirects to `/chat` on success.
+**`RegisterPage.tsx`**: "Tell us about you" onboarding with email, username, password, confirm password, and two skill sliders (1-5).
+**`ProtectedRoute.tsx`**: Loading spinner during session check, redirects to `/login` if unauthenticated.
 
-### 14. Auth context
+### 16. Profile Page
 
-**`frontend/src/auth/AuthContext.tsx`**:
+**`ProfilePage.tsx`**: Read-only email, editable username, skill sliders (updating rebases hidden effective levels), change password link.
+**`ChangePasswordPage.tsx`**: Current password verification, new password with confirmation.
 
-React context providing: `user`, `login()`, `register()`, `logout()`, `updateProfile()`, `changePassword()`, `isLoading`.
+### 17. Shared Components
 
-- On mount, calls `/api/auth/refresh` to restore the session. If successful, stores the access token in memory and fetches the user profile via `GET /api/auth/me`. If it fails, the user remains logged out.
-- `login()` sends credentials (email + password) to `/api/auth/login`, stores the access token, and fetches the user profile.
-- `register()` sends data to `/api/auth/register`, stores the access token, and fetches the user profile.
-- `logout()` calls `/api/auth/logout`, then clears the in-memory token and user state.
-- `updateProfile()` sends updated username and skill levels to `PUT /api/auth/me` and updates the local user state. The backend keeps hidden effective levels aligned with any changed self-assessed skill sliders.
-- `changePassword()` sends current and new password to `PUT /api/auth/me/password`.
-
-### 15. Auth pages
-
-**`frontend/src/auth/LoginPage.tsx`**: Form with email and password fields. Calls `login()` from context. Redirects to `/chat` on success. Displays error messages in a red alert box. Submit button is disabled while the request is in progress.
-
-**`frontend/src/auth/RegisterPage.tsx`**: An onboarding-style registration page titled "Tell us about you". The form contains:
-
-1. An email field.
-2. A username field (3 to 50 characters).
-3. A password field and a confirm password field.
-4. A "What best describes you?" section with two range sliders:
-   - Programming level (1 to 5, labelled Beginner to Expert).
-   - Mathematics level (1 to 5, labelled Beginner to Expert).
-
-Validates that the two passwords match and that the password is at least 8 characters before submitting. On email conflict (400 response), displays "Email already registered." Calls `register()`. Redirects to `/chat` on success.
-
-**`frontend/src/auth/ProtectedRoute.tsx`**: Wraps routes that require authentication. Shows a `LoadingSpinner` while the session check is in progress. If the user is not logged in, redirects to `/login` and preserves the original location so the user can be sent back after logging in.
-
-### 16. Profile page
-
-**`frontend/src/profile/ProfilePage.tsx`**: Displays the user's email (read-only) and "Member since" date. Provides an editable username field. Provides range sliders for programming_level and maths_level (labelled Beginner to Expert). Includes a "Change Password" link that navigates to a separate page. Calls `updateProfile()` on form submission. Saving updated skill sliders also rebases the corresponding hidden effective tutor levels on the backend. Shows a green success message or a red error message after saving.
-
-**`frontend/src/profile/ChangePasswordPage.tsx`**: A standalone page at `/change-password`. Contains fields for current password, new password, and confirm new password. Validates that the two new passwords match and the new password is at least 8 characters. Calls `changePassword()` from the auth context. Shows success or error messages. Includes a link back to the profile page.
-
-### 17. Shared components
-
-**`frontend/src/components/Navbar.tsx`**: Top bar with the brand text "Guided Cursor: AI Coding Tutor" (uses the project's brand colour). When logged in, shows links for Chat, My Notebooks, Learning Hub, and Profile, plus a Logout button. An Admin link appears when `user.is_admin` is true. When logged out, shows Login and Register links.
-
-**`frontend/src/components/LoadingSpinner.tsx`**: A simple CSS spinner using Tailwind's `animate-spin` utility. Used by `ProtectedRoute` during session restoration.
+**`Navbar.tsx`**: Brand text, nav links (Chat, My Notebooks, Learning Hub, Profile), Admin link when `is_admin`, Logout button.
+**`LoadingSpinner.tsx`**: Tailwind `animate-spin` spinner.
 
 ### 18. Routing
 
-**`frontend/src/App.tsx`** defines the following routes:
-
-| Path | Component | Auth required |
-|------|-----------|---------------|
-| `/login` | `LoginPage` | No |
-| `/register` | `RegisterPage` | No |
-| `/chat` | `ChatPage` (wrapped in `ProtectedRoute`) | Yes |
-| `/profile` | `ProfilePage` (wrapped in `ProtectedRoute`) | Yes |
-| `/change-password` | `ChangePasswordPage` (wrapped in `ProtectedRoute`) | Yes |
-| `/` | Redirects to `/chat` | No (redirect handles auth) |
+| Path | Component | Auth |
+|------|-----------|------|
+| `/login` | LoginPage | No |
+| `/register` | RegisterPage | No |
+| `/chat` | ChatPage | Yes |
+| `/profile` | ProfilePage | Yes |
+| `/change-password` | ChangePasswordPage | Yes |
+| `/` | Redirect to `/chat` | No |
 
 ---
 
 ## Verification Checklist
 
-- [ ] `docker compose up db backend` starts the backend and database without errors.
-- [ ] `GET /health` returns 200 (browser requests show the health page; non-HTML probes return `{"status": "healthy"}`).
-- [ ] `POST /api/auth/register` creates a user with email and username, returns an access token, and sets a refresh cookie.
-- [ ] Registering with a duplicate email returns 400 with "Email already registered".
-- [ ] `POST /api/auth/login` accepts email and password, returns an access token and sets a refresh cookie.
-- [ ] `GET /api/auth/me` returns the user profile with both email and username.
-- [ ] `PUT /api/auth/me` updates username and skill levels, and rebases the corresponding hidden effective levels when a skill slider changes. Returns the updated profile.
-- [ ] `PUT /api/auth/me/password` changes the password after verifying the current password.
-- [ ] `POST /api/auth/refresh` returns a new access token and rotates the refresh cookie.
-- [ ] Frontend register page shows "Tell us about you" heading with email, username, password, and skill level sliders.
-- [ ] Frontend login page accepts email and password.
-- [ ] Refreshing the page does not log the user out (refresh token works).
-- [ ] Clicking logout clears the session; protected pages redirect to login.
-- [ ] Profile page displays the email (read-only), editable username, skill levels, and a "Change Password" link.
-- [ ] The Change Password page allows updating the password after verifying the current one.
+- [ ] Backend and database start without errors.
+- [ ] Health endpoint returns 200.
+- [ ] Register creates user, returns token, sets cookie.
+- [ ] Duplicate email returns 400.
+- [ ] Login works with email + password.
+- [ ] Profile returns email and username.
+- [ ] Profile update rebases hidden effective levels when skill sliders change.
+- [ ] Password change verifies current password.
+- [ ] Refresh endpoint rotates tokens.
+- [ ] Page refresh preserves session.
+- [ ] Logout clears session; protected pages redirect to login.

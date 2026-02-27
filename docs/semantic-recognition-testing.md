@@ -11,7 +11,7 @@ The runtime default embedding provider is **Cohere `embed-v4.0`**. The applicati
 
 The embedding service is used only for the optional greeting/off-topic filters.
 
-Same-problem detection, elaboration detection, difficulty classification, and hint selection are handled by the LLM metadata routes (`Single-Pass Header Route` and `Two-Step Recovery Route`).
+Same-problem detection, elaboration detection, and difficulty classification are handled by the LLM metadata routes (`Single-Pass Header Route` and `Two-Step Recovery Route`). Hint levels are computed deterministically by the backend using the gap formula (see `docs/pedagogy-algorithm.md`).
 
 ## Calibration Script
 

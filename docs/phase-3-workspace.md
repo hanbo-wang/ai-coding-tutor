@@ -50,82 +50,34 @@
 
 **Script:** `scripts/build-jupyterlite.sh`
 
-The script currently does the following:
+Installs `jupyterlite-core`, `jupyterlite-pyodide-kernel`, and `jupyterlab`. Builds the bridge extension from `jupyterlite-bridge/`, then builds JupyterLite into `frontend/public/jupyterlite/`. The script patches `jupyter-lite.json` for workspace settings (autosave every 12s, no close confirmation, no recents) and verifies the bridge extension is registered.
 
-1. Installs required Python tooling:
-   - `jupyterlite-core`
-   - `jupyterlite-pyodide-kernel`
-   - `jupyterlab`
-2. Builds the bridge extension:
-   - `cd jupyterlite-bridge`
-   - `npm install`
-   - `npm run build`
-3. Builds JupyterLite in a temporary Linux directory (to reduce `/mnt/*` I/O stalls).
-4. Injects the built lab extension from `jupyterlite-bridge/labextension/`.
-5. Generates `frontend/public/jupyterlite/`.
-6. Patches generated `jupyter-lite.json` files to enforce workspace settings.
-7. Verifies `jupyterlite-bridge` is registered in `federated_extensions`; build fails if missing.
-
-Current `docmanager` patch values:
-
-- `autosave: true`
-- `autosaveInterval: 12` seconds
-- `confirmClosingDocument: false`
-- `renameUntitledFileOnSave: false`
-- `maxNumberRecents: 0`
-
-**Output path:** `frontend/public/jupyterlite/`
-
-**Git note:** `frontend/public/jupyterlite/` remains generated artefact output and is ignored by `.gitignore`.
+The output directory is git-ignored as a generated artefact.
 
 ### 3.2 Bridge Extension
 
 **Directory:** `jupyterlite-bridge/`
 
-- Plugin type: `JupyterFrontEndPlugin<void>` with `autoStart: true`.
-- Build command: `npm run build`.
-- Packaged as a proper labextension (`jupyter labextension build .`) into `labextension/`.
-
-**Bridge commands:**
+A `JupyterFrontEndPlugin` with `autoStart: true`, packaged as a labextension.
 
 | Command                     | Direction        | Purpose                                               |
 | --------------------------- | ---------------- | ----------------------------------------------------- |
-| `ping`                    | Parent -> iframe | Health check for bridge readiness.                    |
-| `ready`                   | Iframe -> parent | Bridge ready signal (sent multiple times on startup). |
-| `load-notebook`           | Parent -> iframe | Save/open notebook payload and inject `workspace_files` inside JupyterLite. |
-| `get-notebook-state`      | Parent -> iframe | Return full current notebook JSON.                    |
-| `get-current-cell`        | Parent -> iframe | Return active cell source and index.                  |
-| `get-error-output`        | Parent -> iframe | Return latest error traceback text if present.        |
-| `notebook-dirty`          | Iframe -> parent | Notify that notebook content changed.                 |
-| `notebook-save-requested` | Iframe -> parent | Notify that user triggered manual save in Jupyter UI. |
+| `ping`                    | Parent to iframe | Health check for bridge readiness.                    |
+| `ready`                   | Iframe to parent | Bridge ready signal (sent multiple times on startup). |
+| `load-notebook`           | Parent to iframe | Save/open notebook payload and inject `workspace_files`. |
+| `get-notebook-state`      | Parent to iframe | Return full current notebook JSON.                    |
+| `get-current-cell`        | Parent to iframe | Return active cell source and index.                  |
+| `get-error-output`        | Parent to iframe | Return latest error traceback text if present.        |
+| `notebook-dirty`          | Iframe to parent | Notify that notebook content changed.                 |
+| `notebook-save-requested` | Iframe to parent | Notify that user triggered manual save in Jupyter UI. |
 
 ### 3.3 Kernel and Package Defaults
 
-JupyterLite config is patched to use:
-
-- Kernel display name: `Numerical Computing`
-- Pyodide packages preloaded:
-  - `numpy`
-  - `scipy`
-  - `pandas`
-  - `matplotlib`
-  - `sympy`
+Kernel display name: `Numerical Computing`. Preloaded Pyodide packages: numpy, scipy, pandas, matplotlib, sympy.
 
 ### 3.4 Single-Notebook Workspace Isolation
 
-The bridge enforces single-document behaviour:
-
-- Forces JupyterLab shell mode to `single-document`.
-- Hides sidebars and status bar in workspace mode.
-- Best-effort saves the active notebook before switching workspaces.
-- Disposes unrelated main-area widgets without triggering close-confirm prompts.
-- Deletes notebook files other than the active workspace notebook.
-- Shuts down unrelated sessions.
-- Clears recent documents (`docmanager:clear-recents`).
-- Generates a title-based filename so JupyterLab naturally shows the title in the tab. Sets `document.title` and `panel.title.caption` but does not override `panel.title.label` (to avoid desynchronising internal path tracking).
-- Overrides `docmanager:download` so the downloaded file uses the display title as its filename.
-
-This is the main protection against notebook cross-visibility and stale state carry-over.
+The bridge enforces single-document behaviour: forces single-document shell mode, hides sidebars and status bar, disposes unrelated widgets, deletes other notebook files, shuts down unrelated sessions, and clears recent documents. It generates a title-based filename so JupyterLab shows the title in the tab, and overrides download to use the display title.
 
 ---
 
@@ -133,60 +85,19 @@ This is the main protection against notebook cross-visibility and stale state ca
 
 ### 4.1 Migrations and Data Model
 
-#### Migration `004_add_user_notebooks_table.py`
+**Migration `004`** adds `user_notebooks` for personal notebooks (ownership, metadata, storage info, current state, extracted context).
 
-Adds `user_notebooks` for personal notebooks:
+**Migration `005`** adds `users.is_admin`, `learning_zones`, `zone_notebooks`, `zone_shared_files`, and `zone_notebook_progress` (unique on `user_id, zone_notebook_id`). Zone and notebook descriptions are optional.
 
-- ownership (`user_id`)
-- metadata (`title`, `original_filename`, `size_bytes`)
-- storage info (`stored_filename`, `storage_path`)
-- current state (`notebook_json`)
-- extracted context (`extracted_text`)
-
-#### Migration `005_add_admin_and_zones.py`
-
-Adds:
-
-- `users.is_admin`
-- `learning_zones`
-- `zone_notebooks`
-- `zone_shared_files`
-- `zone_notebook_progress` with unique `(user_id, zone_notebook_id)`
-
-`learning_zones.description` and `zone_notebooks.description` are nullable, so zone and notebook descriptions are optional.
-
-#### Migration `006_add_scoped_chat_session_uniqueness.py`
-
-Adds partial unique index on `chat_sessions`:
-
-- unique on `(user_id, session_type, module_id)`
-- applied only when `session_type IN ('notebook', 'zone')` and `module_id IS NOT NULL`
-
-This prevents duplicate scoped sessions for the same user and notebook scope.
+**Migration `006`** adds a partial unique index on `chat_sessions` for `(user_id, session_type, module_id)` when `session_type IN ('notebook', 'zone')` and `module_id IS NOT NULL`.
 
 ### 4.2 Notebook Storage Layout
 
-Root storage comes from `NOTEBOOK_STORAGE_DIR` (default `/tmp/ai_coding_tutor_notebooks`).
-
-- Personal notebooks:
-  - `/tmp/ai_coding_tutor_notebooks/<normalised_user_email>/`
-- Admin zone content:
-  - `/tmp/ai_coding_tutor_notebooks/learning_zone_notebooks/<zone_id>/notebooks`
-  - `/tmp/ai_coding_tutor_notebooks/learning_zone_notebooks/<zone_id>/shared`
-
-Shared zone files keep their relative paths and are served to zone notebook runtime as `workspace_files`. The server stores notebook payloads independently in backend-managed files and DB JSON fields. Workspace edits update backend state, not the original local upload file on the user's machine.
+Root storage from `NOTEBOOK_STORAGE_DIR` (default `/tmp/ai_coding_tutor_notebooks`). Personal notebooks: `<root>/<normalised_user_email>/`. Admin zone content: `<root>/learning_zone_notebooks/<zone_id>/notebooks` and `.../shared`. Shared zone files keep their relative paths and are served as `workspace_files` for zone notebook runtime.
 
 ### 4.3 Personal Notebook Service and API
 
-**Service file:** `backend/app/services/notebook_service.py`
-
-Core service behaviours:
-
-- Validate `.ipynb` extension and JSON structure.
-- Enforce notebook count and file size limits from config.
-- Persist notebook file and JSON state.
-- Refresh extracted text on demand for tutor context.
-- Rename notebook title with normalised display filename.
+**Service:** `backend/app/services/notebook_service.py` validates `.ipynb` extension and JSON structure, enforces notebook count and file size limits, persists notebook file and JSON state, refreshes extracted text, and handles rename.
 
 **Router:** `backend/app/routers/notebooks.py`
 
@@ -206,15 +117,13 @@ Core service behaviours:
 | Endpoint                                                  | Method | Behaviour                                         |
 | --------------------------------------------------------- | ------ | ------------------------------------------------- |
 | `/api/zones`                                            | GET    | List zones for authenticated users.               |
-| `/api/zones/{zone_id}`                                  | GET    | Zone detail + notebook list +`has_progress`.    |
+| `/api/zones/{zone_id}`                                  | GET    | Zone detail + notebook list + `has_progress`.   |
 | `/api/zones/{zone_id}/notebooks/{notebook_id}`          | GET    | Return notebook JSON (progress copy or original). |
 | `/api/zones/{zone_id}/notebooks/{notebook_id}/runtime-files` | GET    | Return runtime dependency files for zone notebook execution. |
 | `/api/zones/{zone_id}/notebooks/{notebook_id}/progress` | PUT    | Save user's progress notebook state.              |
 | `/api/zones/{zone_id}/notebooks/{notebook_id}/progress` | DELETE | Reset user's progress to original.                |
 
-**Admin router:** `backend/app/routers/admin.py`
-
-All endpoints require `get_admin_user`. All mutation endpoints log actions to `admin_audit_log`.
+**Admin router:** `backend/app/routers/admin.py` (all endpoints require `get_admin_user`, all mutations log to `admin_audit_log`)
 
 | Endpoint                                         | Method | Behaviour                                 |
 | ------------------------------------------------ | ------ | ----------------------------------------- |
@@ -224,8 +133,8 @@ All endpoints require `get_admin_user`. All mutation endpoints log actions to `a
 | `/api/admin/zones/{zone_id}`                   | DELETE | Delete zone and related data.             |
 | `/api/admin/zones/{zone_id}/notebooks`         | GET    | List notebooks in zone.                   |
 | `/api/admin/zones/{zone_id}/notebooks`         | POST   | Upload notebook to zone.                  |
-| `/api/admin/zones/{zone_id}/assets`            | POST   | Import files/folders into a zone; `.ipynb` files auto-create notebooks and other files become shared zone files. |
-| `/api/admin/zones/{zone_id}/shared-files`      | GET    | List shared zone files for admin management. |
+| `/api/admin/zones/{zone_id}/assets`            | POST   | Import files/folders; `.ipynb` auto-create notebooks, others become shared files. |
+| `/api/admin/zones/{zone_id}/shared-files`      | GET    | List shared zone files.                   |
 | `/api/admin/notebooks/{notebook_id}/metadata`  | PATCH  | Update zone notebook title and optional description. |
 | `/api/admin/notebooks/{notebook_id}`           | PUT    | Replace notebook content.                 |
 | `/api/admin/shared-files/{shared_file_id}`     | DELETE | Delete shared zone file.                  |
@@ -233,57 +142,15 @@ All endpoints require `get_admin_user`. All mutation endpoints log actions to `a
 | `/api/admin/zones/{zone_id}/notebooks/reorder` | PUT    | Reorder notebooks.                        |
 | `/api/admin/audit-log`                         | GET    | Return paginated admin audit log entries. |
 
-Zone and notebook name updates are recorded in `admin_audit_log` with change details.
-
 ### 4.5 Notebook-Aware and Scoped Chat
 
-**Schema update:** `backend/app/schemas/chat.py`
+`ChatMessageIn` supports `notebook_id`, `zone_notebook_id`, `cell_code`, and `error_output`. The chat router accepts only one notebook scope per message, builds notebook context for the system prompt, and uses scoped `session_type` values (`general`, `notebook`, `zone`). It reuses a provided `session_id` only when it matches the current scope. General sidebar returns only `general` sessions; `/api/chat/sessions/find` handles scoped session restore.
 
-`ChatMessageIn` supports:
-
-- `notebook_id`
-- `zone_notebook_id`
-- `cell_code`
-- `error_output`
-
-**Router logic:** `backend/app/routers/chat.py`
-
-- Accepts only one notebook scope per message (`notebook_id` or `zone_notebook_id`).
-- Builds notebook context block and appends it to `build_system_prompt(...)`.
-- Uses scoped `session_type`:
-  - `general`
-  - `notebook`
-  - `zone`
-- Reuses a provided `session_id` only when it matches the current scope; mismatched IDs are ignored and the current scope is resolved instead.
-- Keeps general sidebar clean by returning only `general` sessions from `/api/chat/sessions`.
-- Adds `/api/chat/sessions/find` for scoped session restore in workspace.
-
-**Service logic:** `backend/app/services/chat_service.py`
-
-- `get_or_create_session(...)` resolves and reuses scoped sessions, and validates that any provided `session_id` matches the active request scope before reuse.
-- Handles unique-index races with `IntegrityError` fallback lookup.
+The chat service resolves and reuses scoped sessions, validates scope matching, and handles unique-index races with `IntegrityError` fallback lookup.
 
 ### 4.6 Admin Email Rules
 
-**Config:** `backend/app/config.py`
-
-`ADMIN_EMAIL` supports:
-
-- comma-separated values
-- space-separated values
-- semicolon-separated values
-- JSON array strings
-
-Examples:
-
-- `ADMIN_EMAIL=alice@example.com,bob@example.com`
-- `ADMIN_EMAIL=alice@example.com bob@example.com`
-- `ADMIN_EMAIL=["alice@example.com","bob@example.com"]`
-
-**Promotion flow:**
-
-- On registration (`auth.py`): matching email gets `is_admin=True`.
-- On startup (`init_db.py`): existing matching users are promoted.
+`ADMIN_EMAIL` in config supports comma, space, and semicolon separators, plus JSON array strings. On registration, matching emails get `is_admin=True`. On startup, existing matching users are promoted.
 
 ---
 
@@ -291,99 +158,33 @@ Examples:
 
 ### 5.1 Routes and Navigation
 
-**App routes:** `frontend/src/App.tsx`
+Routes: `/my-notebooks`, `/notebook/:notebookId`, `/learning-hub`, `/zones/:zoneId`, `/zone-notebook/:zoneId/:notebookId`, `/admin`, `/health`.
 
-- `/my-notebooks`
-- `/notebook/:notebookId`
-- `/learning-hub`
-- `/zones/:zoneId`
-- `/zone-notebook/:zoneId/:notebookId`
-- `/admin`
-- `/health`
-
-**Navbar:** `frontend/src/components/Navbar.tsx`
-
-- Shows `Chat`, `My Notebooks`, `Learning Hub`, `Profile` for logged-in users.
-- Shows `Admin` only when `user.is_admin` is true.
+Navbar shows Chat, My Notebooks, Learning Hub, Profile for logged-in users, and Admin when `user.is_admin`.
 
 ### 5.2 My Notebooks Page
 
-**File:** `frontend/src/notebook/MyNotebooksPage.tsx`
-
-Implemented user actions:
-
-- Upload `.ipynb`
-- Open notebook workspace
-- Rename notebook
-- Delete notebook
-
-Notebook cards show title, filename, size, and upload date.
+**`frontend/src/notebook/MyNotebooksPage.tsx`:** Upload `.ipynb`, open notebook workspace, rename, and delete. Notebook cards show title, filename, size, and upload date.
 
 ### 5.3 Notebook Workspace Panel
 
-**File:** `frontend/src/workspace/NotebookPanel.tsx`
-
-Key behaviours:
-
-- Loads `/jupyterlite/lab/index.html` in iframe with a cache-busting bridge version parameter.
-- Waits for bridge readiness via `ping` polling (`waitForNotebookBridgeReady`).
-- Loads notebook JSON from backend and sends `load-notebook`.
-- In zone workspace mode, fetches `/api/zones/{zone_id}/notebooks/{notebook_id}/runtime-files` and passes them as `workspace_files` to `load-notebook`.
-- Applies retry on load timeout for better stability.
-- Bridge performs local in-browser save with a 5s debounce after edits.
-- Listens for `notebook-dirty` and syncs to backend every 30s only when dirty.
-- Syncs to backend immediately when user clicks Save in Jupyter UI.
-- Sends one final `keepalive` save on `beforeunload` and `pagehide`.
-- Reports save status: `Saved`, `Saving...`, `Unsaved changes`, `Save failed`.
+**`frontend/src/workspace/NotebookPanel.tsx`:** Loads `/jupyterlite/lab/index.html` in an iframe with cache-busting. Waits for bridge readiness via `ping` polling, then loads notebook JSON via `load-notebook`. In zone mode, fetches and passes `workspace_files`. Bridge performs local in-browser save with 5s debounce; frontend syncs to backend every 30s when dirty, immediately on manual save, and once on `beforeunload`/`pagehide`. Reports save status.
 
 ### 5.4 Workspace Chat Panel
 
-**File:** `frontend/src/workspace/WorkspaceChatPanel.tsx`
-
-Key behaviours:
-
-- Resolves scoped session via `/api/chat/sessions/find`.
-- Restores scoped message history when available.
-- Clears local chat state and temporarily disables input while scoped session restore is in progress.
-- Sends messages with notebook scope and live cell/error context.
-- Provides `New chat` button that deletes current scoped session and starts fresh.
-- Workspace pages key the chat panel by scope so route changes remount the panel and close the previous WebSocket connection.
+**`frontend/src/workspace/WorkspaceChatPanel.tsx`:** Resolves scoped session via `/api/chat/sessions/find`, restores scoped message history, sends messages with notebook scope and live cell/error context. Provides `New chat` button that deletes the current scoped session. Workspace pages key the chat panel by scope so route changes remount and close the previous WebSocket.
 
 ### 5.5 Zone Notebook Workspace
 
-**File:** `frontend/src/workspace/ZoneNotebookWorkspacePage.tsx`
-
-Differences from personal workspace:
-
-- Uses zone notebook endpoints for load/save.
-- Sends `zone_notebook_id` in chat scope.
-- Loads zone runtime dependency files into notebook workspace before execution.
-- Shows notebooks only in student UI; shared dependency file management is admin-only.
-- Shows `Reset to Original` button in the top-right of notebook panel.
-- Reset deletes progress and reloads notebook state.
+**`frontend/src/workspace/ZoneNotebookWorkspacePage.tsx`:** Uses zone notebook endpoints, sends `zone_notebook_id` in chat scope, loads zone runtime dependency files, shows `Reset to Original` button. Shared dependency files are shown in admin dashboard only, not in student zone pages.
 
 ### 5.6 Admin Dashboard
 
-**File:** `frontend/src/admin/AdminDashboardPage.tsx`
+**`frontend/src/admin/AdminDashboardPage.tsx`:** Zone CRUD with optional descriptions, file/folder import, shared file management, notebook metadata editing, notebook replace/delete/reorder, usage and audit panels. Links to the frontend `/health` page for model diagnostics.
 
-Key behaviours:
+### 5.7 Split Layout
 
-- Creates and edits zones with optional descriptions.
-- Imports files or folders into a zone via `/api/admin/zones/{zone_id}/assets`.
-- Creates notebooks from imported `.ipynb` files.
-- Lists and deletes shared zone dependency files via admin-only controls.
-- Edits notebook metadata (title and optional description).
-- Supports notebook replace, delete, and reorder actions.
-- Shows usage and audit panels for admins.
-- Provides a direct link to the frontend `/health` page for current model diagnostics and smoke-tested model availability.
-- The `/health` page fetches model status data from `/api/health/ai/models`.
-
-### 5.7 Split Layout Dependency
-
-The project uses the official `react-split` package directly:
-
-- import: `import Split from "react-split";`
-- used in personal and zone workspace pages.
+Uses the official `react-split` package for personal and zone workspace pages.
 
 ---
 

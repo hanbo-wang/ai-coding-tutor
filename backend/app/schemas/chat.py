@@ -21,9 +21,10 @@ class ChatMessageOut(BaseModel):
     session_id: UUID
     role: str
     content: str
-    hint_level_used: int | None = None
-    problem_difficulty: int | None = None
+    programming_difficulty: int | None = None
     maths_difficulty: int | None = None
+    programming_hint_level_used: int | None = None
+    maths_hint_level_used: int | None = None
     attachments: list[AttachmentOut] = Field(default_factory=list)
     created_at: datetime
 

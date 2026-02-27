@@ -50,9 +50,10 @@ def upgrade() -> None:
         sa.Column("session_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("role", sa.String(10), nullable=False),
         sa.Column("content", sa.Text(), nullable=False),
-        sa.Column("hint_level_used", sa.Integer(), nullable=True),
-        sa.Column("problem_difficulty", sa.Integer(), nullable=True),
+        sa.Column("programming_difficulty", sa.Integer(), nullable=True),
         sa.Column("maths_difficulty", sa.Integer(), nullable=True),
+        sa.Column("programming_hint_level_used", sa.Integer(), nullable=True),
+        sa.Column("maths_hint_level_used", sa.Integer(), nullable=True),
         sa.Column(
             "created_at", sa.DateTime(), nullable=True, server_default=sa.text("now()")
         ),

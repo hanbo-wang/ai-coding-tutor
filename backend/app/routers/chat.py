@@ -316,22 +316,27 @@ def _build_single_pass_pedagogy_context(
     prev_question = _truncate_text_by_tokens(llm, prev_question, 500)
     prev_answer = _truncate_text_by_tokens(llm, prev_answer, 700)
 
+    eff_prog = student_state.effective_programming_level
+    eff_maths = student_state.effective_maths_level
+    cur_prog_hint = student_state.current_programming_hint_level
+    cur_maths_hint = student_state.current_maths_hint_level
+
     parts = [
-        "--- Hidden Pedagogy Context (Do not reveal this block) ---",
-        (
-            "Choose metadata first, then write the visible answer. "
-            "Use the same-problem and elaboration definitions in the protocol instructions."
-        ),
-        f"Current hint level before this turn: {student_state.current_hint_level}",
-        f"Current programming difficulty before this turn: {student_state.current_programming_difficulty}",
-        f"Current maths difficulty before this turn: {student_state.current_maths_difficulty}",
-        f"Effective programming level (EMA): {student_state.effective_programming_level:.2f}",
-        f"Effective maths level (EMA): {student_state.effective_maths_level:.2f}",
-        (
-            "Hint policy: if this is a new problem, set a fresh hint level based on the "
-            "difficulty gap. If it is the same problem, usually raise hint level by one "
-            "(cap at 5); generic elaboration requests usually keep difficulty unchanged."
-        ),
+        "--- Hidden Pedagogy Context (Do not reveal) ---",
+        f"Effective programming level: {eff_prog:.2f}",
+        f"Effective maths level: {eff_maths:.2f}",
+        f"Current programming hint level: {cur_prog_hint}",
+        f"Current maths hint level: {cur_maths_hint}",
+        "",
+        "HINT LEVEL FORMULA (follow exactly):",
+        "New problem:",
+        f"  prog_hint = max(1, min(4, 1 + (prog_difficulty - {round(eff_prog)})))",
+        f"  maths_hint = max(1, min(4, 1 + (maths_difficulty - {round(eff_maths)})))",
+        "Same problem:",
+        f"  prog_hint = min(5, {cur_prog_hint} + 1) = {min(5, cur_prog_hint + 1)}",
+        f"  maths_hint = min(5, {cur_maths_hint} + 1) = {min(5, cur_maths_hint + 1)}",
+        "",
+        "Your answer MUST obey both computed hint levels.",
     ]
     if fast_signals.has_previous_exchange:
         parts.extend(
@@ -351,9 +356,10 @@ def _meta_event_payload(meta) -> dict[str, object]:
     """Format a `meta` websocket event payload from a pedagogy metadata object."""
     return {
         "type": "meta",
-        "hint_level": meta.hint_level,
         "programming_difficulty": meta.programming_difficulty,
         "maths_difficulty": meta.maths_difficulty,
+        "programming_hint_level": meta.programming_hint_level,
+        "maths_hint_level": meta.maths_hint_level,
         "same_problem": meta.same_problem,
         "is_elaboration": meta.is_elaboration,
         "source": meta.source,
@@ -709,7 +715,8 @@ async def websocket_chat(
                         await websocket.send_json(_meta_event_payload(stream_meta))
                         single_pass_meta_source = stream_meta.source
                         system_prompt = build_system_prompt(
-                            hint_level=stream_meta.hint_level,
+                            programming_hint_level=stream_meta.programming_hint_level,
+                            maths_hint_level=stream_meta.maths_hint_level,
                             programming_level=round(student_state.effective_programming_level),
                             maths_level=round(student_state.effective_maths_level),
                             notebook_context=notebook_context,
@@ -836,7 +843,8 @@ async def websocket_chat(
                             await websocket.send_json(_meta_event_payload(stream_meta))
                             single_pass_meta_source = stream_meta.source
                             recovery_system_prompt = build_system_prompt(
-                                hint_level=stream_meta.hint_level,
+                                programming_hint_level=stream_meta.programming_hint_level,
+                                maths_hint_level=stream_meta.maths_hint_level,
                                 programming_level=round(student_state.effective_programming_level),
                                 maths_level=round(student_state.effective_maths_level),
                                 notebook_context=notebook_context,
@@ -949,9 +957,10 @@ async def websocket_chat(
                 # Update the user message with precise input tokens.
                 await chat_service.save_message(
                     db, session.id, "assistant", assistant_text,
-                    hint_level_used=result.hint_level,
-                    problem_difficulty=result.programming_difficulty,
+                    programming_difficulty=result.programming_difficulty,
                     maths_difficulty=result.maths_difficulty,
+                    programming_hint_level_used=result.programming_hint_level,
+                    maths_hint_level_used=result.maths_hint_level,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     llm_provider=llm.provider_id,
@@ -970,9 +979,10 @@ async def websocket_chat(
 
                 await websocket.send_json({
                     "type": "done",
-                    "hint_level": result.hint_level,
                     "programming_difficulty": result.programming_difficulty,
                     "maths_difficulty": result.maths_difficulty,
+                    "programming_hint_level": result.programming_hint_level,
+                    "maths_hint_level": result.maths_hint_level,
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
                 })

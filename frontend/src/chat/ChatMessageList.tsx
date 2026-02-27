@@ -93,9 +93,10 @@ export function ChatMessageList({
           message={{
             role: "assistant",
             content: streamingContent,
-            hint_level_used: streamingMeta?.hintLevel,
-            problem_difficulty: streamingMeta?.programmingDifficulty,
+            programming_difficulty: streamingMeta?.programmingDifficulty,
             maths_difficulty: streamingMeta?.mathsDifficulty,
+            programming_hint_level_used: streamingMeta?.programmingHintLevel,
+            maths_hint_level_used: streamingMeta?.mathsHintLevel,
           }}
         />
       )}

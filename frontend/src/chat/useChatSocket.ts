@@ -4,9 +4,10 @@ import { ChatMessage } from "../api/types";
 import { createChatSocket, WsEvent } from "../api/ws";
 
 export interface StreamingMeta {
-  hintLevel: number;
   programmingDifficulty: number;
   mathsDifficulty: number;
+  programmingHintLevel: number;
+  mathsHintLevel: number;
   sameProblem?: boolean;
   isElaboration?: boolean;
   source?: string;
@@ -53,9 +54,10 @@ export function useChatSocket(onSessionCreated?: (sessionId: string) => void) {
         break;
       case "meta":
         setStreamingMeta({
-          hintLevel: event.hint_level,
           programmingDifficulty: event.programming_difficulty,
           mathsDifficulty: event.maths_difficulty,
+          programmingHintLevel: event.programming_hint_level,
+          mathsHintLevel: event.maths_hint_level,
           sameProblem: event.same_problem,
           isElaboration: event.is_elaboration,
           source: event.source,
@@ -64,15 +66,18 @@ export function useChatSocket(onSessionCreated?: (sessionId: string) => void) {
       case "done":
         {
           const fallbackMeta = streamingMetaRef.current;
-          const hintLevel = Number.isFinite(event.hint_level)
-            ? event.hint_level
-            : fallbackMeta?.hintLevel;
           const programmingDifficulty = Number.isFinite(event.programming_difficulty)
             ? event.programming_difficulty
             : fallbackMeta?.programmingDifficulty;
           const mathsDifficulty = Number.isFinite(event.maths_difficulty)
             ? event.maths_difficulty
             : fallbackMeta?.mathsDifficulty;
+          const programmingHintLevel = Number.isFinite(event.programming_hint_level)
+            ? event.programming_hint_level
+            : fallbackMeta?.programmingHintLevel;
+          const mathsHintLevel = Number.isFinite(event.maths_hint_level)
+            ? event.maths_hint_level
+            : fallbackMeta?.mathsHintLevel;
 
           setStreamingContent((prev) => {
             if (prev) {
@@ -81,9 +86,10 @@ export function useChatSocket(onSessionCreated?: (sessionId: string) => void) {
                 {
                   role: "assistant",
                   content: prev,
-                  hint_level_used: hintLevel,
-                  problem_difficulty: programmingDifficulty,
+                  programming_difficulty: programmingDifficulty,
                   maths_difficulty: mathsDifficulty,
+                  programming_hint_level_used: programmingHintLevel,
+                  maths_hint_level_used: mathsHintLevel,
                 },
               ]);
             }

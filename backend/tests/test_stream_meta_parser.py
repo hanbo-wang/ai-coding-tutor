@@ -13,10 +13,10 @@ def test_parses_header_and_body_across_chunks() -> None:
     assert out2.meta_parsed is False
     assert out2.body_chunks == []
 
-    out3 = parser.feed("\"maths_difficulty\":2,\"hint_level\":3}<<END_GC_META>>Hello")
+    out3 = parser.feed("\"maths_difficulty\":2}<<END_GC_META>>Hello")
     assert out3.meta_parsed is True
     assert out3.meta is not None
-    assert out3.meta["hint_level"] == 3
+    assert out3.meta["maths_difficulty"] == 2
     assert out3.body_chunks == ["Hello"]
 
     out4 = parser.feed(" world")

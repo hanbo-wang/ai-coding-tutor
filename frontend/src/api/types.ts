@@ -42,9 +42,10 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   attachments?: Attachment[];
-  hint_level_used?: number;
-  problem_difficulty?: number;
+  programming_difficulty?: number;
   maths_difficulty?: number;
+  programming_hint_level_used?: number;
+  maths_hint_level_used?: number;
   created_at?: string;
 }
 

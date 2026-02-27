@@ -16,10 +16,12 @@ class StudentState:
     user_id: str
     effective_programming_level: float
     effective_maths_level: float
-    current_hint_level: int = 1
-    starting_hint_level: int = 1
     current_programming_difficulty: int = 3
     current_maths_difficulty: int = 3
+    current_programming_hint_level: int = 1
+    current_maths_hint_level: int = 1
+    starting_programming_hint_level: int = 1
+    starting_maths_hint_level: int = 1
     last_question_text: Optional[str] = field(default=None, repr=False)
     last_answer_text: Optional[str] = field(default=None, repr=False)
     skip_next_ema_update_once: bool = False
@@ -29,9 +31,10 @@ class StudentState:
 class ProcessResult:
     filter_result: Optional[str] = None  # "greeting", "off_topic", or None
     canned_response: Optional[str] = None
-    hint_level: Optional[int] = None
     programming_difficulty: Optional[int] = None
     maths_difficulty: Optional[int] = None
+    programming_hint_level: Optional[int] = None
+    maths_hint_level: Optional[int] = None
     is_same_problem: bool = False
 
 
@@ -50,7 +53,8 @@ class StreamPedagogyMeta:
     is_elaboration: bool
     programming_difficulty: int
     maths_difficulty: int
-    hint_level: int
+    programming_hint_level: int
+    maths_hint_level: int
     source: str = "single_pass_header_route"
 
 
@@ -107,6 +111,29 @@ class PedagogyEngine:
             previous_answer_text=previous_answer,
         )
 
+    @staticmethod
+    def compute_hint_levels(
+        *,
+        programming_difficulty: int,
+        maths_difficulty: int,
+        student_state: StudentState,
+        same_problem: bool,
+    ) -> tuple[int, int]:
+        """Compute deterministic hint levels from the gap between difficulty and effective level.
+
+        New problem: hint = max(1, min(4, 1 + gap)), capped at 4.
+        Same problem: previous hint + 1, capped at 5.
+        """
+        if same_problem:
+            prog_hint = min(5, student_state.current_programming_hint_level + 1)
+            maths_hint = min(5, student_state.current_maths_hint_level + 1)
+        else:
+            prog_gap = programming_difficulty - round(student_state.effective_programming_level)
+            maths_gap = maths_difficulty - round(student_state.effective_maths_level)
+            prog_hint = max(1, min(4, 1 + prog_gap))
+            maths_hint = max(1, min(4, 1 + maths_gap))
+        return prog_hint, maths_hint
+
     def coerce_stream_meta(
         self,
         raw_meta: dict[str, Any],
@@ -121,10 +148,9 @@ class PedagogyEngine:
         is_elaboration = self._coerce_bool(raw_meta.get("is_elaboration"))
         prog = self._coerce_int(raw_meta.get("programming_difficulty"))
         maths = self._coerce_int(raw_meta.get("maths_difficulty"))
-        hint = self._coerce_int(raw_meta.get("hint_level"))
         if same_problem is None or is_elaboration is None:
             raise ValueError("Missing boolean metadata fields")
-        if prog is None or maths is None or hint is None:
+        if prog is None or maths is None:
             raise ValueError("Missing integer metadata fields")
 
         has_any_previous = bool(fast_signals.has_previous_exchange)
@@ -134,12 +160,22 @@ class PedagogyEngine:
         if not same_problem:
             is_elaboration = False
 
+        clamped_prog = self._clamp_int(prog)
+        clamped_maths = self._clamp_int(maths)
+        prog_hint, maths_hint = self.compute_hint_levels(
+            programming_difficulty=clamped_prog,
+            maths_difficulty=clamped_maths,
+            student_state=student_state,
+            same_problem=same_problem,
+        )
+
         return StreamPedagogyMeta(
             same_problem=same_problem,
             is_elaboration=is_elaboration,
-            programming_difficulty=self._clamp_int(prog),
-            maths_difficulty=self._clamp_int(maths),
-            hint_level=self._clamp_int(hint),
+            programming_difficulty=clamped_prog,
+            maths_difficulty=clamped_maths,
+            programming_hint_level=prog_hint,
+            maths_hint_level=maths_hint,
             source=source,
         )
 
@@ -153,14 +189,14 @@ class PedagogyEngine:
         student_state.skip_next_ema_update_once = True
         programming_difficulty = round(student_state.effective_programming_level)
         maths_difficulty = round(student_state.effective_maths_level)
-        hint_level = 5
 
         return StreamPedagogyMeta(
             same_problem=False,
             is_elaboration=False,
             programming_difficulty=self._clamp_int(programming_difficulty),
             maths_difficulty=self._clamp_int(maths_difficulty),
-            hint_level=self._clamp_int(hint_level),
+            programming_hint_level=5,
+            maths_hint_level=5,
             source="emergency_full_hint_fallback",
         )
 
@@ -194,12 +230,13 @@ class PedagogyEngine:
                 source="two_step_recovery_route",
             )
             logger.info(
-                "Pedagogy two-step-recovery metadata: same_problem=%s elaboration=%s prog=%d maths=%d hint=%d",
+                "Pedagogy two-step-recovery metadata: same_problem=%s elaboration=%s prog=%d maths=%d prog_hint=%d maths_hint=%d",
                 meta.same_problem,
                 meta.is_elaboration,
                 meta.programming_difficulty,
                 meta.maths_difficulty,
-                meta.hint_level,
+                meta.programming_hint_level,
+                meta.maths_hint_level,
             )
             return meta
         except Exception as exc:
@@ -225,18 +262,22 @@ class PedagogyEngine:
                 student_state.skip_next_ema_update_once = False
             else:
                 self._update_effective_levels(student_state)
-            student_state.starting_hint_level = meta.hint_level
+            student_state.starting_programming_hint_level = meta.programming_hint_level
+            student_state.starting_maths_hint_level = meta.maths_hint_level
         elif not meta.same_problem:
-            student_state.starting_hint_level = meta.hint_level
+            student_state.starting_programming_hint_level = meta.programming_hint_level
+            student_state.starting_maths_hint_level = meta.maths_hint_level
 
-        student_state.current_hint_level = self._clamp_int(meta.hint_level)
         student_state.current_programming_difficulty = self._clamp_int(meta.programming_difficulty)
         student_state.current_maths_difficulty = self._clamp_int(meta.maths_difficulty)
+        student_state.current_programming_hint_level = self._clamp_int(meta.programming_hint_level)
+        student_state.current_maths_hint_level = self._clamp_int(meta.maths_hint_level)
 
         return ProcessResult(
-            hint_level=student_state.current_hint_level,
             programming_difficulty=student_state.current_programming_difficulty,
             maths_difficulty=student_state.current_maths_difficulty,
+            programming_hint_level=student_state.current_programming_hint_level,
+            maths_hint_level=student_state.current_maths_hint_level,
             is_same_problem=bool(meta.same_problem),
         )
 
@@ -280,9 +321,10 @@ class PedagogyEngine:
             "student_state": {
                 "effective_programming_level": round(student_state.effective_programming_level, 2),
                 "effective_maths_level": round(student_state.effective_maths_level, 2),
-                "current_hint_level": int(student_state.current_hint_level),
                 "current_programming_difficulty": int(student_state.current_programming_difficulty),
                 "current_maths_difficulty": int(student_state.current_maths_difficulty),
+                "current_programming_hint_level": int(student_state.current_programming_hint_level),
+                "current_maths_hint_level": int(student_state.current_maths_hint_level),
             },
             "has_previous_exchange": bool(fast_signals.has_previous_exchange),
         }
@@ -325,15 +367,14 @@ class PedagogyEngine:
 
         if not isinstance(text, str) or not text:
             return None
-        patterns = {
+        required_patterns = {
             "same_problem": r'"same_problem"\s*:\s*(true|false|"true"|"false")',
             "is_elaboration": r'"is_elaboration"\s*:\s*(true|false|"true"|"false")',
             "programming_difficulty": r'"programming_difficulty"\s*:\s*(\d+)',
             "maths_difficulty": r'"maths_difficulty"\s*:\s*(\d+)',
-            "hint_level": r'"hint_level"\s*:\s*(\d+)',
         }
         extracted: dict[str, Any] = {}
-        for key, pattern in patterns.items():
+        for key, pattern in required_patterns.items():
             match = re.search(pattern, text, flags=re.IGNORECASE)
             if not match:
                 return None
@@ -353,16 +394,14 @@ class PedagogyEngine:
     def _update_effective_levels(student_state: StudentState) -> None:
         """Update effective levels using EMA based on previous problem performance.
 
-        Programming difficulty updates effective_programming_level.
-        Maths difficulty updates effective_maths_level.
+        Each dimension uses its own hint level for independent calculation.
         """
-        final_hint = student_state.current_hint_level
-
         # --- Programming ---
+        prog_hint = student_state.current_programming_hint_level
         prog_diff = student_state.current_programming_difficulty
         eff_prog = student_state.effective_programming_level
 
-        prog_demonstrated = prog_diff * (6 - final_hint) / 5
+        prog_demonstrated = prog_diff * (6 - prog_hint) / 5
         prog_weight = min(1.0, prog_diff / max(eff_prog, 1.0))
         prog_lr = 0.2 * prog_weight
 
@@ -370,10 +409,11 @@ class PedagogyEngine:
         student_state.effective_programming_level = max(1.0, min(5.0, new_prog))
 
         # --- Maths ---
+        maths_hint = student_state.current_maths_hint_level
         maths_diff = student_state.current_maths_difficulty
         eff_maths = student_state.effective_maths_level
 
-        maths_demonstrated = maths_diff * (6 - final_hint) / 5
+        maths_demonstrated = maths_diff * (6 - maths_hint) / 5
         maths_weight = min(1.0, maths_diff / max(eff_maths, 1.0))
         maths_lr = 0.2 * maths_weight
 

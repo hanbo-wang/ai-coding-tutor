@@ -4,9 +4,10 @@ export type WsEvent =
   | { type: "session"; session_id: string }
   | {
       type: "meta";
-      hint_level: number;
       programming_difficulty: number;
       maths_difficulty: number;
+      programming_hint_level: number;
+      maths_hint_level: number;
       same_problem: boolean;
       is_elaboration: boolean;
       source:
@@ -18,9 +19,10 @@ export type WsEvent =
   | { type: "token"; content: string }
   | {
       type: "done";
-      hint_level: number;
       programming_difficulty: number;
       maths_difficulty: number;
+      programming_hint_level: number;
+      maths_hint_level: number;
       input_tokens: number;
       output_tokens: number;
     }
