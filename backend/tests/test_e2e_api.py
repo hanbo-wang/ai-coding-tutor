@@ -183,6 +183,110 @@ async def test_e2e_admin_usage_and_audit_log_for_admin(
 
 
 @pytest.mark.asyncio
+async def test_e2e_admin_model_switch_and_model_usage_endpoints(
+    e2e_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Admin should be able to list and switch available LLM models with password confirmation."""
+
+    async def _fake_model_catalog_health(force: bool = False) -> dict:
+        return {
+            "smoke_tested_models": {
+                "llm": {
+                    "anthropic": {
+                        "ready": True,
+                        "checked_models": {"claude-sonnet-4-6": True},
+                        "available_models": ["claude-sonnet-4-6"],
+                    },
+                    "openai": {
+                        "ready": True,
+                        "checked_models": {"gpt-5-mini": True},
+                        "available_models": ["gpt-5-mini"],
+                    },
+                    "google-aistudio": {
+                        "ready": True,
+                        "transport": "aistudio",
+                        "checked_models": {"gemini-3-flash-preview": True},
+                        "available_models": ["gemini-3-flash-preview"],
+                    },
+                    "google-vertex": {
+                        "ready": True,
+                        "transport": "vertex",
+                        "checked_models": {"gemini-3.1-pro-preview": True},
+                        "available_models": ["gemini-3.1-pro-preview"],
+                    },
+                },
+            },
+            "checked_at": "2026-02-27T00:00:00Z",
+            "cached": force is False,
+        }
+
+    monkeypatch.setattr(
+        "app.routers.admin.ai_model_catalog_health_check",
+        _fake_model_catalog_health,
+    )
+    monkeypatch.setattr(settings, "admin_email", "admin@example.com")
+    monkeypatch.setattr(settings, "llm_provider", "anthropic")
+    monkeypatch.setattr(settings, "llm_model_anthropic", "claude-sonnet-4-6")
+    monkeypatch.setattr(settings, "llm_model_openai", "gpt-5-mini")
+    monkeypatch.setattr(settings, "openai_api_key", "test-openai-key")
+
+    register_payload = await _register_user(
+        e2e_client,
+        email="admin@example.com",
+        username="admin_user",
+    )
+    headers = _auth_headers(register_payload["access_token"])
+
+    models_response = await e2e_client.get("/api/admin/llm/models", headers=headers)
+    assert models_response.status_code == 200
+    models_data = models_response.json()
+    assert models_data["current"]["provider"] == "anthropic"
+    assert any(
+        item["provider"] == "openai"
+        and item["provider_label"] == "OpenAI"
+        and item["model"] == "gpt-5-mini"
+        for item in models_data["available_models"]
+    )
+
+    bad_password_response = await e2e_client.post(
+        "/api/admin/llm/switch",
+        headers=headers,
+        json={
+            "provider": "openai",
+            "model": "gpt-5-mini",
+            "admin_password": "WrongPass123",
+        },
+    )
+    assert bad_password_response.status_code == 400
+
+    switch_response = await e2e_client.post(
+        "/api/admin/llm/switch",
+        headers=headers,
+        json={
+            "provider": "openai",
+            "model": "gpt-5-mini",
+            "admin_password": "StrongPass123",
+        },
+    )
+    assert switch_response.status_code == 200
+    switch_data = switch_response.json()
+    assert switch_data["message"] == "LLM switched successfully."
+    assert switch_data["current"]["provider"] == "openai"
+    assert switch_data["current"]["model"] == "gpt-5-mini"
+
+    usage_response = await e2e_client.get(
+        "/api/admin/usage/by-model?provider=openai&model=gpt-5-mini",
+        headers=headers,
+    )
+    assert usage_response.status_code == 200
+    usage_data = usage_response.json()
+    assert usage_data["provider"] == "openai"
+    assert usage_data["model"] == "gpt-5-mini"
+    assert usage_data["today"]["input_tokens"] == 0
+    assert usage_data["today"]["output_tokens"] == 0
+
+
+@pytest.mark.asyncio
 async def test_e2e_upload_access_is_owner_scoped(e2e_client: AsyncClient) -> None:
     """Uploaded files should only be readable by their owner."""
     owner = await _register_user(

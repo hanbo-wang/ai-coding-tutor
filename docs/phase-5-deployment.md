@@ -67,8 +67,7 @@ Optional start-up validation in `backend/app/config.py`:
 - Reject placeholder or short `JWT_SECRET_KEY` (minimum 32 characters).
 - Reject missing `DATABASE_URL`.
 - When `LLM_PROVIDER=google`, ensure `GOOGLE_GEMINI_TRANSPORT` is set and matching credentials are present.
-- When using Vertex AI, ensure `GOOGLE_VERTEX_GEMINI_LOCATION` and `GOOGLE_VERTEX_EMBEDDING_LOCATION` are set.
-- Warn if no embedding provider key is configured (the default chat path still works without embeddings).
+- When using Vertex AI, ensure `GOOGLE_VERTEX_GEMINI_LOCATION` is set (for Gemini 3 preview models, use `global`).
 
 ---
 
@@ -141,7 +140,7 @@ Back up PostgreSQL regularly using `docker compose exec` with `pg_dump`. If usin
 - [ ] The manual deploy workflow completes successfully.
 - [ ] `Deploy Production (Manual)` with `reset_mode=none` completes without removing volumes.
 - [ ] The `/health` page returns 200 in a browser, and non-HTML probes still receive liveness JSON.
-- [ ] The deploy workflow post-check confirms the configured LLM provider is available.
-- [ ] `GET /api/health/ai/models` returns the current configured models and smoke-test results.
+- [ ] The deploy workflow post-check confirms the current running LLM provider is available.
+- [ ] `GET /api/health/ai/models` returns the current running model and smoke-tested available LLM models.
 - [ ] `reset_mode=all_volumes` requires `reset_confirm=RESET_ALL_VOLUMES` and fails safely without it.
 - [ ] The backup job runs and produces valid `.sql.gz` files.

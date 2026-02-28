@@ -6,12 +6,16 @@ from types import SimpleNamespace
 import pytest
 
 from app.routers.chat import (
+    GOOGLE_AI_STUDIO_PROVIDER,
+    GOOGLE_VERTEX_PROVIDER,
     _build_enriched_message,
     _build_multimodal_user_parts,
     _build_notebook_context_block,
     _resolve_ws_token,
+    _runtime_usage_provider_id,
     _split_uploads,
     _truncate_text_by_tokens,
+    _user_facing_llm_error_message,
     _validate_upload_mix,
 )
 
@@ -160,6 +164,32 @@ def test_build_notebook_context_block_includes_cell_and_error() -> None:
     assert "print('x')" in block
     assert "--- Error Output ---" in block
     assert "Traceback line" in block
+
+
+def test_runtime_usage_provider_id_maps_google_by_transport(monkeypatch) -> None:
+    monkeypatch.setattr("app.routers.chat.settings.google_gemini_transport", "aistudio")
+    assert _runtime_usage_provider_id("google") == GOOGLE_AI_STUDIO_PROVIDER
+
+    monkeypatch.setattr("app.routers.chat.settings.google_gemini_transport", "vertex")
+    assert _runtime_usage_provider_id("google") == GOOGLE_VERTEX_PROVIDER
+
+
+def test_runtime_usage_provider_id_keeps_non_google_provider() -> None:
+    assert _runtime_usage_provider_id("openai") == "openai"
+
+
+def test_user_facing_llm_error_message_for_vertex_location_issue(monkeypatch) -> None:
+    monkeypatch.setattr("app.routers.chat.settings.google_gemini_transport", "vertex")
+    message = _user_facing_llm_error_message(
+        Exception("Gemini API error 404: model not found in location"),
+        "google",
+    )
+    assert "GOOGLE_VERTEX_GEMINI_LOCATION to 'global'" in message
+
+
+def test_user_facing_llm_error_message_falls_back_to_generic() -> None:
+    message = _user_facing_llm_error_message(Exception("timeout"), "openai")
+    assert message == "AI service temporarily unavailable. Please try again."
 
 
 @pytest.mark.asyncio

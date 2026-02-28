@@ -4,7 +4,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from app.ai.embedding_service import EmbeddingService
 from app.ai.llm_base import LLMProvider
 from app.ai.prompts import PEDAGOGY_TWO_STEP_RECOVERY_JSON_PROMPT
 
@@ -29,8 +28,6 @@ class StudentState:
 
 @dataclass
 class ProcessResult:
-    filter_result: Optional[str] = None  # "greeting", "off_topic", or None
-    canned_response: Optional[str] = None
     programming_difficulty: Optional[int] = None
     maths_difficulty: Optional[int] = None
     programming_hint_level: Optional[int] = None
@@ -40,8 +37,6 @@ class ProcessResult:
 
 @dataclass
 class PedagogyFastSignals:
-    filter_result: Optional[str] = None
-    canned_response: Optional[str] = None
     has_previous_exchange: bool = False
     previous_question_text: Optional[str] = None
     previous_answer_text: Optional[str] = None
@@ -61,10 +56,8 @@ class StreamPedagogyMeta:
 class PedagogyEngine:
     def __init__(
         self,
-        embedding_service: EmbeddingService | None,
         llm: LLMProvider,
     ):
-        self.embedding_service = embedding_service
         self.llm = llm
 
     async def prepare_fast_signals(
@@ -75,30 +68,11 @@ class PedagogyEngine:
         enable_greeting_filter: bool = False,
         enable_off_topic_filter: bool = False,
     ) -> PedagogyFastSignals:
-        """Run embedding-only checks and return fast pedagogy signals."""
-
-        embedding: list[float] | None = None
-        if (enable_greeting_filter or enable_off_topic_filter) and self.embedding_service is not None:
-            embedding = await self.embedding_service.embed_text(user_message)
-
-        if embedding and self.embedding_service is not None:
-            if enable_greeting_filter and self.embedding_service.check_greeting(embedding):
-                return PedagogyFastSignals(
-                    filter_result="greeting",
-                    canned_response=(
-                        f"Hello {username}! I am your AI coding tutor. "
-                        "Ask me a question about programming, mathematics, or physics "
-                        "and I will guide you through it."
-                    ),
-                )
-            if enable_off_topic_filter and self.embedding_service.check_off_topic(embedding):
-                return PedagogyFastSignals(
-                    filter_result="off_topic",
-                    canned_response=(
-                        "I can only help with programming, mathematics, and science questions. "
-                        "Please ask me something related to these subjects."
-                    ),
-                )
+        """Build fast non-LLM signals from local session context."""
+        _ = user_message
+        _ = username
+        _ = enable_greeting_filter
+        _ = enable_off_topic_filter
 
         previous_question = student_state.last_question_text or None
         previous_answer = student_state.last_answer_text or None

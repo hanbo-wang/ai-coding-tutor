@@ -171,6 +171,44 @@ export interface AdminUsage {
   this_month: AdminUsagePeriod;
 }
 
+export interface AdminUsageByModelResponse {
+  provider: string;
+  model: string;
+  today: AdminUsagePeriod;
+  this_week: AdminUsagePeriod;
+  this_month: AdminUsagePeriod;
+}
+
+export interface AdminLlmModelOption {
+  provider: string;
+  provider_label: string;
+  model: string;
+  input_per_mtok: number;
+  output_per_mtok: number;
+}
+
+export interface AdminCurrentLlm {
+  provider: string;
+  model: string;
+  google_gemini_transport?: string | null;
+}
+
+export interface AdminLlmModelsResponse {
+  current: AdminCurrentLlm;
+  available_models: AdminLlmModelOption[];
+  checked_at: string;
+  cached: boolean;
+}
+
+export interface AdminLlmSwitchResponse {
+  message: string;
+  current: AdminCurrentLlm;
+  pricing: {
+    input_per_mtok: number;
+    output_per_mtok: number;
+  };
+}
+
 export interface AuditLogEntry {
   id: string;
   admin_email: string;
@@ -191,36 +229,25 @@ export interface AuditLogResponse {
 }
 
 export interface HealthModelProviderStatus {
-  configured: boolean;
+  ready: boolean;
   reason?: string;
   transport?: string;
   checked_models: Record<string, boolean>;
   available_models: string[];
 }
 
-export interface HealthModelSnapshot {
-  provider: string;
-  model: string;
-  google_gemini_transport?: string;
-}
-
-export interface HealthCurrentModels {
-  llm_provider: string;
-  google_gemini_transport: string;
-  llm_models: Record<string, string>;
-  active_llm: HealthModelSnapshot;
-  embedding_provider: string;
-  embedding_models: Record<string, string>;
-  active_embedding: HealthModelSnapshot;
-}
-
 export interface HealthModelSmokeResults {
   llm: Record<string, HealthModelProviderStatus>;
-  embeddings: Record<string, HealthModelProviderStatus>;
+}
+
+export interface HealthCurrentLlm {
+  provider: string;
+  model: string;
+  google_gemini_transport?: string | null;
 }
 
 export interface HealthModelsResponse {
-  current: HealthCurrentModels;
+  current: HealthCurrentLlm;
   smoke_tested_models: HealthModelSmokeResults;
   cached: boolean;
   checked_at: string;

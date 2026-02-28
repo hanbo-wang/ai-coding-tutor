@@ -99,14 +99,6 @@ export function useChatSocket(onSessionCreated?: (sessionId: string) => void) {
           setIsStreaming(false);
           break;
         }
-      case "canned":
-        setMessages((items) => [
-          ...items,
-          { role: "assistant", content: event.content },
-        ]);
-        setStreamingMeta(null);
-        setIsStreaming(false);
-        break;
       case "error":
         setMessages((items) => [
           ...items,

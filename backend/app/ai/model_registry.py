@@ -20,10 +20,9 @@ SUPPORTED_LLM_MODELS: dict[str, set[str]] = {
     },
 }
 
-SUPPORTED_EMBEDDING_MODELS: dict[str, set[str]] = {
-    "cohere": {"embed-v4.0"},
-    "vertex": {"multimodalembedding@001"},
-    "voyage": {"voyage-multimodal-3.5"},
+GLOBAL_ONLY_GOOGLE_VERTEX_MODELS: set[str] = {
+    "gemini-3-flash-preview",
+    "gemini-3.1-pro-preview",
 }
 
 
@@ -48,13 +47,6 @@ _MODEL_ALIASES = {
     "gemini 3.1 pro preview": "gemini-3.1-pro-preview",
     "gemini-3-pro-preview": "gemini-3.1-pro-preview",
     "gemini 3 pro preview": "gemini-3.1-pro-preview",
-    # Embeddings
-    "embed-v4.0": "embed-v4.0",
-    "cohere embed-v4.0": "embed-v4.0",
-    "multimodalembedding@001": "multimodalembedding@001",
-    "vertex multimodalembedding@001": "multimodalembedding@001",
-    "voyage-multimodal-3.5": "voyage-multimodal-3.5",
-    "voyage multimodal 3.5": "voyage-multimodal-3.5",
 }
 
 
@@ -79,6 +71,10 @@ def normalise_llm_provider(value: str) -> str:
         "vertex": "google",
         "gemini": "google",
         "vertexai": "google",
+        "google-aistudio": "google",
+        "google-ai-studio": "google",
+        "google-vertex": "google",
+        "google-vertex-ai": "google",
         "anthropic": "anthropic",
         "claude": "anthropic",
         "openai": "openai",
@@ -86,17 +82,13 @@ def normalise_llm_provider(value: str) -> str:
     return aliases.get(provider, provider)
 
 
-def normalise_embedding_provider(value: str) -> str:
-    provider = value.strip().lower()
-    aliases = {
-        "vertex": "vertex",
-        "google": "vertex",
-        "vertexai": "vertex",
-        "cohere": "cohere",
-        "voyage": "voyage",
-        "voyageai": "voyage",
-    }
-    return aliases.get(provider, provider)
+def normalise_google_vertex_location(location: str, model_id: str = "") -> str:
+    """Normalise Vertex location, using `global` for known global-only models."""
+    normalised = str(location or "").strip().lower() or "global"
+    canonical_model = normalise_model_alias(model_id) if str(model_id or "").strip() else ""
+    if canonical_model in GLOBAL_ONLY_GOOGLE_VERTEX_MODELS:
+        return "global"
+    return normalised
 
 
 def validate_supported_llm_model(provider: str, model_id: str) -> str:
@@ -107,19 +99,6 @@ def validate_supported_llm_model(provider: str, model_id: str) -> str:
     if canonical_model not in supported:
         raise ValueError(
             f"Unsupported LLM model '{model_id}' for provider '{provider}'. "
-            f"Supported models: {sorted(supported)}"
-        )
-    return canonical_model
-
-
-def validate_supported_embedding_model(provider: str, model_id: str) -> str:
-    """Return the canonical embedding model ID or raise ValueError."""
-    canonical_provider = normalise_embedding_provider(provider)
-    canonical_model = normalise_model_alias(model_id)
-    supported = SUPPORTED_EMBEDDING_MODELS.get(canonical_provider, set())
-    if canonical_model not in supported:
-        raise ValueError(
-            f"Unsupported embedding model '{model_id}' for provider '{provider}'. "
             f"Supported models: {sorted(supported)}"
         )
     return canonical_model

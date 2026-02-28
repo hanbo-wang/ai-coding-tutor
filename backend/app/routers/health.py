@@ -7,6 +7,7 @@ from fastapi import APIRouter
 
 from app.ai.verify_keys import smoke_test_supported_models, verify_all_keys
 from app.config import settings
+from app.ai.model_registry import normalise_llm_provider
 
 router = APIRouter(prefix="/api/health", tags=["health"])
 AI_HEALTH_CACHE_TTL = timedelta(seconds=30)
@@ -22,40 +23,38 @@ def _utc_now_naive() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def _current_model_snapshot() -> dict:
-    llm_models = {
-        "google": settings.llm_model_google,
+def invalidate_ai_model_catalog_cache() -> None:
+    """Clear cached `/api/health/ai/models` data after runtime model changes."""
+    global _last_ai_models_result, _last_ai_models_at
+    _last_ai_models_result = None
+    _last_ai_models_at = None
+
+
+def _active_google_provider() -> str:
+    transport = str(settings.google_gemini_transport).strip().lower()
+    return "google-aistudio" if transport == "aistudio" else "google-vertex"
+
+
+def _current_runtime_llm() -> dict[str, str | None]:
+    provider = normalise_llm_provider(settings.llm_provider)
+    if provider == "google":
+        active_provider = _active_google_provider()
+    else:
+        active_provider = provider
+    model_by_provider = {
         "anthropic": settings.llm_model_anthropic,
         "openai": settings.llm_model_openai,
-    }
-    embedding_models = {
-        "cohere": settings.embedding_model_cohere,
-        "vertex": settings.embedding_model_vertex,
-        "voyage": settings.embedding_model_voyage,
-    }
-    active_llm = {
-        "provider": settings.llm_provider,
-        "model": llm_models.get(settings.llm_provider, ""),
-    }
-    if settings.llm_provider == "google":
-        active_llm["google_gemini_transport"] = settings.google_gemini_transport
-    active_embedding = {
-        "provider": settings.embedding_provider,
-        "model": embedding_models.get(settings.embedding_provider, ""),
+        "google": settings.llm_model_google,
     }
     return {
-        "llm_provider": settings.llm_provider,
-        "google_gemini_transport": settings.google_gemini_transport,
-        "llm_models": llm_models,
-        "active_llm": active_llm,
-        "embedding_provider": settings.embedding_provider,
-        "embedding_models": embedding_models,
-        "active_embedding": active_embedding,
+        "provider": active_provider,
+        "model": model_by_provider.get(provider, ""),
+        "google_gemini_transport": settings.google_gemini_transport if provider == "google" else None,
     }
 
 
 async def ai_model_catalog_health_check(force: bool = False) -> dict:
-    """Return configured model selections and smoke-tested available models."""
+    """Return smoke-tested available LLM models only."""
     global _last_ai_models_result, _last_ai_models_at
 
     now = _utc_now_naive()
@@ -74,18 +73,14 @@ async def ai_model_catalog_health_check(force: bool = False) -> dict:
     smoke_results = await smoke_test_supported_models(
         anthropic_key=settings.anthropic_api_key,
         openai_key=settings.openai_api_key,
-        google_transport=settings.google_gemini_transport,
         google_api_key=settings.google_api_key,
         google_credentials_path=settings.google_application_credentials,
         google_credentials_host_path=settings.google_application_credentials_host_path,
         google_project_id=settings.google_cloud_project_id,
         google_location=settings.google_vertex_gemini_location,
-        cohere_key=settings.cohere_api_key,
-        voyage_key=settings.voyageai_api_key,
-        vertex_embedding_location=settings.google_vertex_embedding_location,
     )
     payload = {
-        "current": _current_model_snapshot(),
+        "current": _current_runtime_llm(),
         "smoke_tested_models": smoke_results,
     }
     _last_ai_models_result = payload
@@ -102,11 +97,10 @@ def _render_model_status_table(group: dict[str, dict]) -> str:
     for provider, details in group.items():
         checked_models = details.get("checked_models", {})
         available_models = details.get("available_models", [])
-        configured = bool(details.get("configured"))
+        ready = bool(details.get("ready"))
         reason = str(details.get("reason", "") or "")
-        provider_label = provider
-        if provider == "google" and details.get("transport"):
-            provider_label = f"google ({details['transport']})"
+        transport = str(details.get("transport", "") or "")
+
         checked_html = (
             "<ul>"
             + "".join(
@@ -122,12 +116,17 @@ def _render_model_status_table(group: dict[str, dict]) -> str:
             if available_models
             else "<span class='muted'>None</span>"
         )
-        status_html = "Configured" if configured else "Not configured"
+        status_html = "Ready" if ready else "Unavailable"
         if reason:
             status_html += f"<br><span class='muted'>{escape(reason)}</span>"
+
+        display_provider = provider
+        if transport:
+            display_provider = f"{provider} ({transport})"
+
         rows.append(
             "<tr>"
-            f"<td>{escape(provider_label)}</td>"
+            f"<td>{escape(display_provider)}</td>"
             f"<td>{status_html}</td>"
             f"<td>{checked_html}</td>"
             f"<td>{available_html}</td>"
@@ -138,37 +137,12 @@ def _render_model_status_table(group: dict[str, dict]) -> str:
 
 def render_health_page_html(data: dict) -> str:
     """Render a simple browser-facing `/health` page without changing probe semantics."""
-    current = data.get("current", {})
     smoke = data.get("smoke_tested_models", {})
+    current = data.get("current", {})
+    current_provider = escape(str(current.get("provider", "")))
+    current_model = escape(str(current.get("model", "")))
     checked_at = escape(str(data.get("checked_at", "")))
     cached = "Yes" if data.get("cached") else "No"
-
-    active_llm = current.get("active_llm", {})
-    active_embedding = current.get("active_embedding", {})
-    llm_models = current.get("llm_models", {})
-    embedding_models = current.get("embedding_models", {})
-
-    llm_config_rows = "".join(
-        "<tr>"
-        f"<td>{escape(provider)}</td>"
-        f"<td><code>{escape(str(model_id))}</code></td>"
-        "</tr>"
-        for provider, model_id in llm_models.items()
-    )
-    embedding_config_rows = "".join(
-        "<tr>"
-        f"<td>{escape(provider)}</td>"
-        f"<td><code>{escape(str(model_id))}</code></td>"
-        "</tr>"
-        for provider, model_id in embedding_models.items()
-    )
-
-    google_transport = current.get("google_gemini_transport", "")
-    active_llm_transport_note = (
-        f" ({escape(str(google_transport))})"
-        if active_llm.get("provider") == "google" and google_transport
-        else ""
-    )
 
     return f"""<!doctype html>
 <html lang="en">
@@ -185,8 +159,6 @@ def render_health_page_html(data: dict) -> str:
       --muted: #475569;
       --line: #dbe2ea;
       --brand: #0b3a67;
-      --ok: #0f766e;
-      --bad: #b91c1c;
     }}
     * {{ box-sizing: border-box; }}
     body {{
@@ -200,7 +172,6 @@ def render_health_page_html(data: dict) -> str:
     h2 {{ margin: 0 0 .75rem; font-size: 1.1rem; color: var(--brand); }}
     p {{ margin: 0; color: var(--muted); line-height: 1.5; }}
     .grid {{ display: grid; gap: 1rem; }}
-    .grid.two {{ grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }}
     .card {{
       background: var(--card);
       border: 1px solid var(--line);
@@ -215,7 +186,7 @@ def render_health_page_html(data: dict) -> str:
       background: #fff; color: var(--muted); font-size: .9rem;
     }}
     .pill strong {{ color: var(--ink); }}
-    .actions {{ margin-top: .75rem; }}
+    .actions {{ margin-top: .75rem; margin-bottom: 1rem; }}
     .button {{
       display: inline-block; text-decoration: none; color: white; background: var(--brand);
       border-radius: 10px; padding: .55rem .85rem; font-weight: 600; font-size: .9rem;
@@ -235,20 +206,14 @@ def render_health_page_html(data: dict) -> str:
     ul {{ margin: 0; padding-left: 1rem; }}
     li {{ margin: .15rem 0; }}
     .muted {{ color: var(--muted); }}
-    .banner {{
-      border-left: 4px solid var(--brand);
-      background: #f7fbff;
-      padding: .75rem .9rem;
-      margin-bottom: 1rem;
-      border-radius: 10px;
-    }}
   </style>
 </head>
 <body>
   <div class="wrap">
     <h1>System Health</h1>
-    <p>Browser view for the current configured models and smoke-tested available models.</p>
+    <p>Current running model and smoke-tested LLM provider availability.</p>
     <div class="meta">
+      <div class="pill"><strong>Current model</strong> <code>{current_provider} / {current_model}</code></div>
       <div class="pill"><strong>Checked at</strong> {checked_at}</div>
       <div class="pill"><strong>Cached</strong> {cached}</div>
     </div>
@@ -256,62 +221,19 @@ def render_health_page_html(data: dict) -> str:
       <a class="button" href="/health?force=true">Run smoke checks again</a>
     </div>
 
-    <div class="banner">
-      <p>
-        <strong>Current LLM:</strong>
-        <code>{escape(str(active_llm.get("provider", "")))}</code>
-        <code>{escape(str(active_llm.get("model", "")))}</code>{active_llm_transport_note}
-        &nbsp;|&nbsp;
-        <strong>Current embeddings:</strong>
-        <code>{escape(str(active_embedding.get("provider", "")))}</code>
-        <code>{escape(str(active_embedding.get("model", "")))}</code>
-      </p>
-    </div>
-
-    <div class="grid two">
-      <section class="card">
-        <h2>Configured LLM Models</h2>
-        <table>
-          <thead><tr><th>Provider</th><th>Configured model</th></tr></thead>
-          <tbody>{llm_config_rows}</tbody>
-        </table>
-      </section>
-      <section class="card">
-        <h2>Configured Embedding Models</h2>
-        <table>
-          <thead><tr><th>Provider</th><th>Configured model</th></tr></thead>
-          <tbody>{embedding_config_rows}</tbody>
-        </table>
-      </section>
-    </div>
-
-    <div class="grid" style="margin-top: 1rem;">
+    <div class="grid">
       <section class="card">
         <h2>Smoke-Tested Available LLM Models</h2>
         <table>
           <thead>
             <tr>
               <th>Provider</th>
-              <th>Provider status</th>
+              <th>Status</th>
               <th>Checked models</th>
               <th>Available models</th>
             </tr>
           </thead>
           <tbody>{_render_model_status_table(smoke.get("llm", {}))}</tbody>
-        </table>
-      </section>
-      <section class="card">
-        <h2>Smoke-Tested Available Embedding Models</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Provider</th>
-              <th>Provider status</th>
-              <th>Checked models</th>
-              <th>Available models</th>
-            </tr>
-          </thead>
-          <tbody>{_render_model_status_table(smoke.get("embeddings", {}))}</tbody>
         </table>
       </section>
     </div>
@@ -323,7 +245,7 @@ def render_health_page_html(data: dict) -> str:
 
 @router.get("/ai")
 async def ai_health_check(force: bool = False):
-    """Check that external AI service API keys are valid."""
+    """Check that external LLM service API keys are valid."""
     global _last_ai_health_result, _last_ai_health_at
 
     now = _utc_now_naive()
@@ -342,7 +264,6 @@ async def ai_health_check(force: bool = False):
     results = await verify_all_keys(
         anthropic_key=settings.anthropic_api_key,
         openai_key=settings.openai_api_key,
-        google_transport=settings.google_gemini_transport,
         google_api_key=settings.google_api_key,
         google_credentials_path=settings.google_application_credentials,
         google_credentials_host_path=settings.google_application_credentials_host_path,
@@ -351,12 +272,6 @@ async def ai_health_check(force: bool = False):
         google_location=settings.google_vertex_gemini_location,
         anthropic_model_id=settings.llm_model_anthropic,
         openai_model_id=settings.llm_model_openai,
-        vertex_embedding_model_id=settings.embedding_model_vertex,
-        vertex_embedding_location=settings.google_vertex_embedding_location,
-        cohere_model_id=settings.embedding_model_cohere,
-        cohere_key=settings.cohere_api_key,
-        voyage_model_id=settings.embedding_model_voyage,
-        voyage_key=settings.voyageai_api_key,
     )
     _last_ai_health_result = results
     _last_ai_health_at = now
@@ -369,5 +284,5 @@ async def ai_health_check(force: bool = False):
 
 @router.get("/ai/models")
 async def ai_models_health_api(force: bool = False):
-    """Return configured model selections and smoke-tested available models."""
+    """Return smoke-tested available LLM models."""
     return await ai_model_catalog_health_check(force=force)

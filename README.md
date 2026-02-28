@@ -32,10 +32,9 @@ The **pedagogy engine** controls every AI response:
 - **Notebook workspace**: open `.ipynb` files in a split-pane layout with JupyterLite (browser-side Python via Pyodide) on the left and AI tutor chat on the right. Pre-loaded with NumPy, SciPy, Pandas, Matplotlib, and SymPy.
 - **Notebook-aware tutoring**: the tutor sees notebook content, the current cell code, and the latest error output.
 - **Learning Hub**: admin-managed learning zones with curated notebooks and shared dependency files. Each student gets an independent working copy with reset-to-original support.
-- **Admin dashboard**: zone management, bulk asset import, token usage and cost tracking (today / this week / this month), a full audit log, and a direct link to the `/health` diagnostics page.
+- **Admin dashboard**: zone management, bulk asset import, runtime LLM model switching (password-confirmed), model input/output pricing visibility, total usage plus selected-model usage tracking (today / this week / this month), a full audit log, and a direct link to the `/health` diagnostics page.
 - **Rate limiting and cost control**: per-user and global request limits, weekly token budgets, concurrent connection caps. All configurable via `.env`.
 - **Precise token and cost tracking**: counts come from each provider's API response and are stored per message.
-- **Optional semantic filters (disabled by default)**: embedding-based greeting and off-topic detection to handle non-tutoring messages without calling the LLM.
 
 ## Tech Stack
 
@@ -44,7 +43,6 @@ The **pedagogy engine** controls every AI response:
 | Frontend   | React 18, TypeScript (strict), Vite, Tailwind CSS v4                      |
 | Backend    | FastAPI, SQLAlchemy 2.0 (async), Alembic, Pydantic v2                     |
 | AI         | Google Gemini (AI Studio or Vertex AI), Anthropic Claude, OpenAI GPT (configurable with failover) |
-| Embeddings | Cohere (default), Vertex AI, Voyage AI                                    |
 | Database   | PostgreSQL 15, asyncpg                                                    |
 | DevOps     | Docker Compose, Nginx, GitHub Actions CI/CD                               |
 
@@ -56,7 +54,7 @@ Frontend (React + Vite + Tailwind)
   ├── Chat (WebSocket streaming, session sidebar)
   ├── Notebook workspace (JupyterLite + scoped chat)
   ├── Learning Hub (zone browse + zone workspace)
-  └── Admin dashboard (zones, usage, audit log)
+  └── Admin dashboard (zones, model switch, usage, audit log)
          │
          │  REST + WebSocket (JWT)
          ▼
@@ -65,10 +63,9 @@ Backend (FastAPI, async)
   ├── Chat API (sessions, messages, streaming)
   ├── Notebook API (CRUD, save/restore)
   ├── Zone API (browse, progress, runtime files)
-  ├── Admin API (zone management, usage, audit log)
+  ├── Admin API (zone management, model switch, usage, audit log)
   └── AI subsystem
        ├── LLM providers (3 providers, retry + fallback)
-       ├── Embedding service (3 providers, semantic pre-filters)
        ├── Pedagogy engine (graduated hints, difficulty, EMA levels)
        └── Context builder (system prompt, notebook context)
          │
@@ -131,7 +128,7 @@ Production runs on Docker Compose + Nginx reverse proxy + HTTPS, deployed via Gi
 - **Deploy**: run the manual `Deploy Production` workflow in GitHub Actions with an image tag.
 - **Rollback**: re-run the deploy workflow with an earlier image tag.
 - **Config**: create `.env` from `.github/workflows/templates/env.prod.example`. Pre-place the Google service account JSON on the server.
-- **Health**: `/health` (browser page for configured models and smoke-tested availability; non-HTML probes still get liveness JSON), `/api/health/ai` for provider verification, `/api/health/ai/models` for model-level smoke checks.
+- **Health**: `/health` (browser page showing the current running model and smoke-tested LLM availability; non-HTML probes still get liveness JSON), `/api/health/ai` for LLM provider verification, `/api/health/ai/models` for model-level smoke checks plus the current running model snapshot.
 
 ## Documentation
 
@@ -144,4 +141,3 @@ Production runs on Docker Compose + Nginx reverse proxy + HTTPS, deployed via Gi
 | [phase-4-robustness.md](docs/phase-4-robustness.md) | Rate limiting, cost control, testing |
 | [phase-5-deployment.md](docs/phase-5-deployment.md) | Production deployment and CI/CD |
 | [ai-models-and-pricing.md](docs/ai-models-and-pricing.md) | Supported models, defaults, pricing |
-| [semantic-recognition-testing.md](docs/semantic-recognition-testing.md) | Embedding threshold calibration |

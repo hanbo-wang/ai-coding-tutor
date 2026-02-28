@@ -25,32 +25,6 @@ LLM_MODEL_PRICING: dict[str, dict[str, dict[str, float]]] = {
     },
 }
 
-# Embedding pricing metadata for documentation / observability only (not used in admin totals).
-EMBEDDING_MODEL_PRICING: dict[str, dict[str, dict[str, float | str]]] = {
-    "vertex": {
-        "multimodalembedding@001": {
-            "text_per_1k_chars": 0.0002,
-            "image_per_item": 0.0001,
-            "unit": "USD",
-        }
-    },
-    "cohere": {
-        "embed-v4.0": {
-            # Cohere pricing page (Embed 4): "Cost" and "Image cost", per 1M tokens.
-            "text_per_mtok": 0.12,
-            "image_per_mtok": 0.47,
-            "unit": "USD",
-        }
-    },
-    "voyage": {
-        "voyage-multimodal-3.5": {
-            "text_per_mtok": 0.02,
-            "image_per_item": 0.04,
-            "unit": "USD",
-        }
-    },
-}
-
 # Backwards-compatible provider-level defaults (used as a fallback).
 LLM_PRICING: dict[str, dict[str, float]] = {
     "anthropic": {"input_per_mtok": 3.00, "output_per_mtok": 15.00},

@@ -253,8 +253,6 @@ jobs:
 
             if not ai_health.get("google"):
                 sys.exit("Vertex Gemini health check failed (google=false)")
-            if "vertex_embedding" in ai_health and not ai_health.get("vertex_embedding"):
-                sys.exit("Vertex embedding health check failed (vertex_embedding=false)")
             PY
             then
               echo "Post-deploy health check failed. Printing recent backend logs..."

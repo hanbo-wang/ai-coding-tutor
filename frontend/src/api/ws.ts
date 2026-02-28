@@ -26,8 +26,7 @@ export type WsEvent =
       input_tokens: number;
       output_tokens: number;
     }
-  | { type: "error"; message: string }
-  | { type: "canned"; content: string; filter: string };
+  | { type: "error"; message: string };
 
 export interface ChatSendOptions {
   sessionId?: string | null;

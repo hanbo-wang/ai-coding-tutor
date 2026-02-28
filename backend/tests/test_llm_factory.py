@@ -54,6 +54,25 @@ def test_factory_builds_vertex_google_provider(monkeypatch) -> None:
     assert provider.kwargs["model_id"] == "gemini-3-flash-preview"
 
 
+def test_factory_normalises_vertex_location_for_global_only_models(monkeypatch) -> None:
+    monkeypatch.setattr("app.ai.llm_factory.GoogleServiceAccountTokenProvider", lambda path: f"token:{path}")
+    monkeypatch.setattr("app.ai.llm_factory.resolve_google_project_id", lambda path, pid: pid or "proj")
+    monkeypatch.setattr("app.ai.llm_factory.GoogleGeminiProvider", _FakeProvider)
+
+    provider = get_llm_provider(
+        _settings(
+            google_gemini_transport="vertex",
+            google_application_credentials="/tmp/sa.json",
+            google_cloud_project_id="demo",
+            google_vertex_gemini_location="europe-west2",
+            llm_model_google="gemini-3-flash-preview",
+        )
+    )
+
+    assert isinstance(provider, _FakeProvider)
+    assert provider.kwargs["location"] == "global"
+
+
 def test_factory_uses_google_ai_studio_when_transport_selected(monkeypatch) -> None:
     monkeypatch.setattr("app.ai.llm_factory.GoogleGeminiAIStudioProvider", _FakeProvider)
     monkeypatch.setattr(

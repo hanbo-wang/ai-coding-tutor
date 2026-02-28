@@ -10,6 +10,7 @@ import httpx
 
 from app.ai.google_auth import GoogleServiceAccountTokenProvider
 from app.ai.llm_base import LLMError, LLMMessage, LLMProvider, LLMUsage
+from app.ai.model_registry import normalise_google_vertex_location
 
 logger = logging.getLogger(__name__)
 
@@ -186,7 +187,7 @@ class GoogleGeminiVertexProvider(_GoogleGeminiBaseProvider):
         super().__init__(model_id=model_id)
         self._token_provider = token_provider
         self._project_id = project_id
-        self._location = location
+        self._location = normalise_google_vertex_location(location, model_id)
 
     def _build_stream_url(self) -> str:
         host = (

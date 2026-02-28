@@ -50,6 +50,8 @@ from app.services.zone_service import get_zone_notebook_for_context
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["chat"])
+GOOGLE_AI_STUDIO_PROVIDER = "google-aistudio"
+GOOGLE_VERTEX_PROVIDER = "google-vertex"
 
 
 @dataclass
@@ -366,6 +368,48 @@ def _meta_event_payload(meta) -> dict[str, object]:
     }
 
 
+def _current_llm_runtime_signature() -> tuple[str, str, str]:
+    """Return the active runtime LLM selection as a comparable tuple."""
+    provider = settings.llm_provider
+    models = {
+        "anthropic": settings.llm_model_anthropic,
+        "openai": settings.llm_model_openai,
+        "google": settings.llm_model_google,
+    }
+    transport = settings.google_gemini_transport if provider == "google" else ""
+    return provider, models.get(provider, ""), transport
+
+
+def _runtime_usage_provider_id(provider_id: str) -> str:
+    """Return the provider id persisted to chat usage records."""
+    canonical = str(provider_id or "").strip().lower()
+    if canonical != "google":
+        return canonical
+    transport = str(settings.google_gemini_transport or "").strip().lower()
+    if transport == "aistudio":
+        return GOOGLE_AI_STUDIO_PROVIDER
+    if transport == "vertex":
+        return GOOGLE_VERTEX_PROVIDER
+    return canonical
+
+
+def _user_facing_llm_error_message(exc: Exception, llm_provider_id: str) -> str:
+    """Return a concise, actionable error message for common provider failures."""
+    detail = str(exc).strip().lower()
+    if llm_provider_id == "google" and str(settings.google_gemini_transport).strip().lower() == "vertex":
+        if any(token in detail for token in ("location", "region", "not found", "unsupported", "404")):
+            return (
+                "Google Vertex AI could not serve the selected model in this location. "
+                "Set GOOGLE_VERTEX_GEMINI_LOCATION to 'global' and try again."
+            )
+        if any(token in detail for token in ("credential", "access token", "service account", "permission", "403", "401")):
+            return (
+                "Google Vertex AI authentication failed. Check the service account file path, "
+                "project ID, and IAM permissions."
+            )
+    return "AI service temporarily unavailable. Please try again."
+
+
 # ── WebSocket endpoint ──────────────────────────────────────────────
 
 
@@ -396,7 +440,8 @@ async def websocket_chat(
 
     try:
         llm = get_llm_provider(settings)
-        embedding_service, pedagogy_engine = await get_ai_services(llm)
+        pedagogy_engine = await get_ai_services(llm)
+        llm_runtime_signature = _current_llm_runtime_signature()
     except Exception as exc:
         logger.error("Failed to initialise AI services: %s", exc)
         await websocket.send_json({"type": "error", "message": "Service unavailable"})
@@ -452,6 +497,25 @@ async def websocket_chat(
             user_message = payload.content.strip()
             if not user_message and not payload.upload_ids:
                 continue
+
+            current_signature = _current_llm_runtime_signature()
+            if current_signature != llm_runtime_signature:
+                try:
+                    llm = get_llm_provider(settings)
+                    pedagogy_engine = await get_ai_services(llm)
+                    llm_runtime_signature = current_signature
+                    logger.info(
+                        "Applied runtime LLM switch to provider=%s model=%s",
+                        llm.provider_id,
+                        llm.model_id,
+                    )
+                except Exception as exc:
+                    logger.error("Failed to apply runtime LLM switch: %s", exc)
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "Model switch could not be applied right now. Please retry.",
+                    })
+                    continue
 
             # Enforce per user rate limit.
             if not rate_limiter.check_user(user_id_str):
@@ -596,32 +660,11 @@ async def websocket_chat(
                 await websocket.send_json({"type": "session", "session_id": str(session.id)})
 
                 # Run pedagogy pipeline.
-                has_notebook_context = bool(notebook_id or zone_notebook_id)
-                topic_filters_allowed = (not bool(uploads)) and (not has_notebook_context)
                 fast_signals = await pedagogy_engine.prepare_fast_signals(
                     enriched_user_message,
                     student_state,
                     username=db_user.username,
-                    enable_greeting_filter=(
-                        topic_filters_allowed and settings.chat_enable_greeting_filter
-                    ),
-                    enable_off_topic_filter=(
-                        topic_filters_allowed and settings.chat_enable_off_topic_filter
-                    ),
                 )
-
-                if fast_signals.filter_result:
-                    await websocket.send_json({
-                        "type": "canned",
-                        "content": fast_signals.canned_response,
-                        "filter": fast_signals.filter_result,
-                    })
-                    await chat_service.save_message(
-                        db, session.id, "assistant", fast_signals.canned_response or ""
-                    )
-                    await db.commit()
-                    chat_summary_cache_service.schedule_refresh(session.id)
-                    continue
 
                 # Record the request for rate limiting (counted when LLM is called).
                 rate_limiter.record(user_id_str)
@@ -726,7 +769,7 @@ async def websocket_chat(
                         logger.error("LLM error: %s", exc)
                         await websocket.send_json({
                             "type": "error",
-                            "message": "AI service temporarily unavailable. Please try again.",
+                            "message": _user_facing_llm_error_message(exc, llm.provider_id),
                         })
                         await db.commit()
                         continue
@@ -810,7 +853,7 @@ async def websocket_chat(
                         logger.error("LLM error: %s", exc)
                         await websocket.send_json({
                             "type": "error",
-                            "message": "AI service temporarily unavailable. Please try again.",
+                            "message": _user_facing_llm_error_message(exc, llm.provider_id),
                         })
                         await db.commit()
                         continue
@@ -856,7 +899,7 @@ async def websocket_chat(
                             logger.error("LLM error: %s", exc)
                             await websocket.send_json({
                                 "type": "error",
-                                "message": "AI service temporarily unavailable. Please try again.",
+                                "message": _user_facing_llm_error_message(exc, llm.provider_id),
                             })
                             await db.commit()
                             continue
@@ -963,7 +1006,7 @@ async def websocket_chat(
                     maths_hint_level_used=result.maths_hint_level,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
-                    llm_provider=llm.provider_id,
+                    llm_provider=_runtime_usage_provider_id(llm.provider_id),
                     llm_model=llm.model_id,
                     estimated_cost_usd=estimated_cost_usd,
                     llm_usage=usage_details,

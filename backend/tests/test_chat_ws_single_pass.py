@@ -196,7 +196,7 @@ def _setup_ws_test_env(
         )
 
     async def _fake_get_ai_services(incoming_llm):
-        return None, pedagogy
+        return pedagogy
 
     async def _fake_check_weekly_limit(*args, **kwargs):
         return True

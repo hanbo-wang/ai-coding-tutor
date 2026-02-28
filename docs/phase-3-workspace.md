@@ -140,7 +140,10 @@ Root storage from `NOTEBOOK_STORAGE_DIR` (default `/tmp/ai_coding_tutor_notebook
 | `/api/admin/shared-files/{shared_file_id}`     | DELETE | Delete shared zone file.                  |
 | `/api/admin/notebooks/{notebook_id}`           | DELETE | Delete zone notebook.                     |
 | `/api/admin/zones/{zone_id}/notebooks/reorder` | PUT    | Reorder notebooks.                        |
+| `/api/admin/llm/models`                        | GET    | Return current active LLM and available switch options with pricing. |
+| `/api/admin/llm/switch`                        | POST   | Switch active LLM after admin password confirmation. |
 | `/api/admin/audit-log`                         | GET    | Return paginated admin audit log entries. |
+| `/api/admin/usage/by-model`                    | GET    | Return usage and estimated cost for one selected provider/model. |
 
 ### 4.5 Notebook-Aware and Scoped Chat
 
@@ -180,7 +183,7 @@ Navbar shows Chat, My Notebooks, Learning Hub, Profile for logged-in users, and 
 
 ### 5.6 Admin Dashboard
 
-**`frontend/src/admin/AdminDashboardPage.tsx`:** Zone CRUD with optional descriptions, file/folder import, shared file management, notebook metadata editing, notebook replace/delete/reorder, usage and audit panels. Links to the frontend `/health` page for model diagnostics.
+**`frontend/src/admin/AdminDashboardPage.tsx`:** Zone CRUD with optional descriptions, file/folder import, shared file management, notebook metadata editing, notebook replace/delete/reorder, total usage panel, selected-model usage panel, and an LLM switch panel at the top. The model switch flow shows current model, available smoke-tested options, per-model input/output pricing, and requires the admin password before applying changes. Links to the frontend `/health` page for model diagnostics.
 
 ### 5.7 Split Layout
 
@@ -202,6 +205,7 @@ Uses the official `react-split` package for personal and zone workspace pages.
 - [ ] In zone workspace, imported shared files are available to notebook runtime imports.
 - [ ] Shared zone files are manageable in admin dashboard and are not shown in student zone pages.
 - [ ] Rename a zone or zone notebook in admin dashboard: audit log entry includes change details.
+- [ ] Switching the active LLM in admin dashboard requires the admin password and shows a success message.
 - [ ] Click `New chat` in workspace chat: scoped history resets for that notebook only.
 - [ ] Switch between two notebook routes and send a message immediately after the page loads: the message is stored in the active notebook's scoped chat session only.
 - [ ] Click `Reset to Original` in zone workspace: user progress is removed and original content reloads.

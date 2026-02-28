@@ -9,7 +9,6 @@ from pydantic import ConfigDict, field_validator
 from pydantic_settings import BaseSettings
 
 from app.ai.model_registry import (
-    normalise_embedding_provider,
     normalise_llm_provider,
     normalise_model_alias,
 )
@@ -80,22 +79,11 @@ class Settings(BaseSettings):
     google_cloud_project_id: str
     google_vertex_gemini_location: str
 
-    # Embedding providers
-    embedding_provider: str
-    embedding_model_cohere: str
-    embedding_model_vertex: str
-    embedding_model_voyage: str
-    google_vertex_embedding_location: str
-    cohere_api_key: str
-    voyageai_api_key: str
-
     # Chat and token limits
     llm_max_context_tokens: int
     llm_max_user_input_tokens: int
     context_compression_threshold: float
     user_weekly_weighted_token_limit: int
-    chat_enable_greeting_filter: bool
-    chat_enable_off_topic_filter: bool
     # Metadata route mode for `/ws/chat`:
     # - auto: prefer the Single-Pass Header Route, degrade to the Two-Step Recovery Route if needed
     # - single_pass_header_route: always use hidden-header streaming
@@ -157,11 +145,6 @@ class Settings(BaseSettings):
         }
         return aliases.get(transport, transport)
 
-    @field_validator("embedding_provider", mode="before")
-    @classmethod
-    def _normalise_embedding_provider(cls, value: str) -> str:
-        return normalise_embedding_provider(str(value))
-
     @field_validator("chat_metadata_route_mode", mode="before")
     @classmethod
     def _normalise_metadata_route_mode(cls, value: str) -> str:
@@ -171,9 +154,6 @@ class Settings(BaseSettings):
         "llm_model_google",
         "llm_model_anthropic",
         "llm_model_openai",
-        "embedding_model_cohere",
-        "embedding_model_vertex",
-        "embedding_model_voyage",
         mode="before",
     )
     @classmethod

@@ -108,3 +108,13 @@ async def test_vertex_gemini_stream_parses_text_and_usage(monkeypatch) -> None:
     assert "models/gemini-3-flash-preview:streamGenerateContent" in call["url"]
     assert call["headers"]["Authorization"] == "Bearer test-token"
     assert call["json"]["generationConfig"]["maxOutputTokens"] == 8
+
+
+def test_vertex_provider_normalises_location_for_global_only_models() -> None:
+    provider = GoogleGeminiProvider(
+        token_provider=_FakeTokenProvider(),
+        project_id="demo-proj",
+        location="europe-west2",
+        model_id="gemini-3-flash-preview",
+    )
+    assert "locations/global" in provider._build_stream_url()  # noqa: SLF001

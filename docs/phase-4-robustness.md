@@ -17,7 +17,7 @@
 - Structured JSON logging for significant events.
 - Improved error handling on both frontend and backend.
 
-The application exposes three health-related endpoints: `GET /health` for browser-facing health diagnostics (and basic liveness for non-HTML probes), `GET /api/health/ai` for AI provider verification, and `GET /api/health/ai/models` for model-level smoke checks.
+The application exposes three health-related endpoints: `GET /health` for browser-facing health diagnostics (including the current running model, with basic liveness JSON for non-HTML probes), `GET /api/health/ai` for AI provider verification, and `GET /api/health/ai/models` for model-level smoke checks plus the current running model snapshot.
 
 ---
 
@@ -80,7 +80,7 @@ For each `/ws/chat` message:
 3. Build enriched user text and apply the per-message input guard.
 4. Run `check_weekly_limit()` and reject if budget is exhausted.
 5. Load the latest profile values and sync the session-scoped hidden pedagogy state with current effective levels.
-6. Run fast pedagogy checks (optional filters plus previous Q+A text context).
+6. Run fast pedagogy checks (previous Q+A text context).
 7. Build prompt + context using the hidden rolling summary cache where available.
 8. Run the response controller route (Single-Pass Header, Two-Step Recovery, or emergency fallback).
 9. Capture precise `input_tokens` and `output_tokens` (including discarded attempts and recovery-route metadata usage).
@@ -117,9 +117,22 @@ The profile page shows a weekly budget card with the billing week range (Monday 
 
 Model pricing constants in `backend/app/ai/pricing.py` are used for estimated runtime cost visibility. See `docs/ai-models-and-pricing.md` for the full pricing table. After each LLM response, estimated cost is calculated from input/output token counts and stored per message with the provider and model used.
 
-### 4.2 Admin Usage Endpoint
+### 4.2 Admin Usage Endpoints
 
 `GET /api/admin/usage` (requires admin authentication) returns aggregated usage data across all users for today, this week, and this month. Each period includes `input_tokens`, `output_tokens`, `estimated_cost_usd`, and `estimated_cost_coverage` (the fraction of messages with stored cost metadata). This is a visibility tool, not a billing system.
+
+`GET /api/admin/usage/by-model?provider=...&model=...` returns the same period breakdown for one selected provider/model pair, using per-message provider/model metadata in `chat_messages`.
+
+### 4.3 Runtime Model Switching (Admin)
+
+`GET /api/admin/llm/models` returns:
+- Current active LLM provider/model (and Google transport when applicable).
+- Smoke-tested available LLM switch options.
+- Input and output pricing per million tokens for each available option.
+
+In the admin dashboard, `Select LLM model` and `Selected Model Usage` default to the current running model when the page is opened.
+
+`POST /api/admin/llm/switch` requires `provider`, `model`, and `admin_password`. The backend verifies the admin password, validates model availability, updates runtime LLM settings immediately, invalidates model-catalog cache, and records an audit entry.
 
 ---
 
@@ -160,47 +173,45 @@ Every admin endpoint that modifies Learning Hub content automatically records an
 
 `backend/tests/conftest.py` provides `MockLLMProvider` for deterministic streaming and token usage. The suite mixes `pytest` function-style tests, `pytest-asyncio` for async tests, and one `unittest.TestCase` module. `backend/pytest.ini` sets `asyncio_mode=auto`.
 
-Current automated total (default offline run, excluding `external_ai` smoke tests): **136 tests** (collected), of which 9 are skipped when external AI keys are not configured.
+The default offline run executes the full backend suite. External smoke tests marked `external_ai` are skipped unless explicitly enabled.
 
 ### 7.2 Test Files
 
-| File | Tests | Scope |
-|------|------:|-------|
-| `test_admin_audit.py` | 5 | Audit log model and service |
-| `test_admin_usage.py` | 3 | Admin usage and cost logic |
-| `test_auth.py` | 5 | Auth helpers and token lifecycle |
-| `test_auth_profile_update_levels.py` | 3 | Profile update effective-level rebasing |
-| `test_chat.py` | 11 | Chat router helper logic |
-| `test_chat_service_scoping.py` | 4 | Chat session scope-matching and reuse |
-| `test_chat_summary_cache.py` | 3 | Hidden rolling summary cache service |
-| `test_chat_usage_budget.py` | 2 | Weekly budget helper logic |
-| `test_chat_ws_single_pass.py` | 7 | WebSocket single-pass and recovery-route flow |
-| `test_config_admin_email.py` | 2 | Admin email parsing |
-| `test_config_models.py` | 4 | Model alias normalisation |
-| `test_connection_tracker.py` | 3 | Concurrent WebSocket caps |
-| `test_context_builder.py` | 5 | Token-aware context assembly |
-| `test_e2e_api.py` | 5 | End-to-end API flows |
-| `test_embedding_service_provider_order.py` | 1 | Embedding provider ordering |
-| `test_embedding_vertex.py` | 1 | Vertex AI embedding auth |
-| `test_health_ai.py` | 4 | Health check endpoints |
-| `test_llm_anthropic.py` | 1 | Anthropic provider streaming |
-| `test_llm_factory.py` | 4 | LLM factory provider selection |
-| `test_llm_google_aistudio.py` | 2 | Google AI Studio streaming |
-| `test_llm_google_vertex.py` | 1 | Google Vertex AI streaming |
-| `test_llm_openai.py` | 1 | OpenAI provider streaming |
-| `test_notebook_service.py` | 8 | Notebook naming and storage paths |
-| `test_pedagogy.py` | 18 | Pedagogy engine: hint computation, EMA, metadata coercion, emergency fallback |
-| `test_rate_limiter.py` | 4 | Sliding-window request limits |
-| `test_stream_meta_parser.py` | 5 | Hidden metadata header parsing |
-| `test_upload_service.py` | 4 | Upload classification and count limits |
-| `test_verify_keys.py` | 6 | API key verification and model smoke tests |
-| `test_zone_service.py` | 5 | Zone asset path utilities |
+| File | Scope |
+|------|-------|
+| `test_admin_audit.py` | Audit log model and service |
+| `test_admin_usage.py` | Admin usage and cost logic |
+| `test_auth.py` | Auth helpers and token lifecycle |
+| `test_auth_profile_update_levels.py` | Profile update effective-level rebasing |
+| `test_chat.py` | Chat router helper logic |
+| `test_chat_service_scoping.py` | Chat session scope-matching and reuse |
+| `test_chat_summary_cache.py` | Hidden rolling summary cache service |
+| `test_chat_usage_budget.py` | Weekly budget helper logic |
+| `test_chat_ws_single_pass.py` | WebSocket single-pass and recovery-route flow |
+| `test_config_admin_email.py` | Admin email parsing |
+| `test_config_models.py` | Model alias normalisation |
+| `test_connection_tracker.py` | Concurrent WebSocket caps |
+| `test_context_builder.py` | Token-aware context assembly |
+| `test_e2e_api.py` | End-to-end API flows |
+| `test_health_ai.py` | Health check endpoints |
+| `test_llm_anthropic.py` | Anthropic provider streaming |
+| `test_llm_factory.py` | LLM factory provider selection |
+| `test_llm_google_aistudio.py` | Google AI Studio streaming |
+| `test_llm_google_vertex.py` | Google Vertex AI streaming |
+| `test_llm_openai.py` | OpenAI provider streaming |
+| `test_notebook_service.py` | Notebook naming and storage paths |
+| `test_pedagogy.py` | Pedagogy engine: hint computation, EMA, metadata coercion, emergency fallback |
+| `test_rate_limiter.py` | Sliding-window request limits |
+| `test_stream_meta_parser.py` | Hidden metadata header parsing |
+| `test_upload_service.py` | Upload classification and count limits |
+| `test_verify_keys.py` | API key verification and model smoke tests |
+| `test_zone_service.py` | Zone asset path utilities |
 
 ### 7.3 Running the Tests
 
 Run from `backend/`: `PYTHONPATH=. pytest tests/ -q -s`
 
-`test_semantic_thresholds.py` is a manual calibration script, not an automated test. See `docs/semantic-recognition-testing.md`.
+`external_ai` smoke tests are for optional live-provider verification and are not required for routine offline CI runs.
 
 ---
 

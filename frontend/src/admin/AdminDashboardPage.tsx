@@ -3,7 +3,11 @@ import { useNavigate } from "react-router-dom";
 
 import { apiFetch } from "../api/http";
 import {
+  AdminLlmModelOption,
+  AdminLlmModelsResponse,
+  AdminLlmSwitchResponse,
   AdminUsage,
+  AdminUsageByModelResponse,
   AuditLogEntry,
   AuditLogResponse,
   LearningZone,
@@ -27,6 +31,18 @@ function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function modelKey(provider: string, model: string): string {
+  return `${provider}::${model}`;
+}
+
+function providerLabel(provider: string): string {
+  if (provider === "google-aistudio") return "Google AI Studio";
+  if (provider === "google-vertex") return "Google Cloud Vertex AI";
+  if (provider === "anthropic") return "Anthropic";
+  if (provider === "openai") return "OpenAI";
+  return provider;
 }
 
 export function AdminDashboardPage() {
@@ -69,6 +85,14 @@ export function AdminDashboardPage() {
 
   // Usage and audit state.
   const [usage, setUsage] = useState<AdminUsage | null>(null);
+  const [selectedModelUsage, setSelectedModelUsage] =
+    useState<AdminUsageByModelResponse | null>(null);
+  const [llmModels, setLlmModels] = useState<AdminLlmModelsResponse | null>(null);
+  const [selectedModelKey, setSelectedModelKey] = useState("");
+  const [adminPassword, setAdminPassword] = useState("");
+  const [switchError, setSwitchError] = useState("");
+  const [switchSuccess, setSwitchSuccess] = useState("");
+  const [switchingModel, setSwitchingModel] = useState(false);
   const [auditEntries, setAuditEntries] = useState<AuditLogEntry[]>([]);
   const [auditPage, setAuditPage] = useState(1);
   const [auditTotalPages, setAuditTotalPages] = useState(1);
@@ -122,6 +146,43 @@ export function AdminDashboardPage() {
     }
   };
 
+  const loadUsageByModel = async (provider: string, model: string) => {
+    try {
+      const query = new URLSearchParams({ provider, model }).toString();
+      const data = await apiFetch<AdminUsageByModelResponse>(
+        `/api/admin/usage/by-model?${query}`
+      );
+      setSelectedModelUsage(data);
+    } catch {
+      // Model-scoped usage is optional.
+      setSelectedModelUsage(null);
+    }
+  };
+
+  const loadLlmModels = async (): Promise<AdminLlmModelsResponse | null> => {
+    try {
+      const data = await apiFetch<AdminLlmModelsResponse>("/api/admin/llm/models");
+      setLlmModels(data);
+      const currentKey =
+        data.current.provider && data.current.model
+          ? modelKey(data.current.provider, data.current.model)
+          : "";
+      const currentExists = data.available_models.some(
+        (item) => modelKey(item.provider, item.model) === currentKey
+      );
+      const fallback =
+        data.available_models.length > 0
+          ? modelKey(data.available_models[0].provider, data.available_models[0].model)
+          : "";
+      setSelectedModelKey(currentExists ? currentKey : fallback);
+      return data;
+    } catch {
+      // Model switch controls are optional.
+      setLlmModels(null);
+      return null;
+    }
+  };
+
   const loadAuditLog = async (page: number) => {
     try {
       const data = await apiFetch<AuditLogResponse>(
@@ -139,9 +200,22 @@ export function AdminDashboardPage() {
     if (user?.is_admin) {
       void loadZones();
       void loadUsage();
+      void loadLlmModels();
       void loadAuditLog(1);
     }
   }, [user?.is_admin]);
+
+  const selectedModelOption: AdminLlmModelOption | null =
+    llmModels?.available_models.find(
+      (item) => modelKey(item.provider, item.model) === selectedModelKey
+    ) ?? null;
+
+  useEffect(() => {
+    if (!user?.is_admin || !selectedModelOption) {
+      return;
+    }
+    void loadUsageByModel(selectedModelOption.provider, selectedModelOption.model);
+  }, [user?.is_admin, selectedModelOption?.provider, selectedModelOption?.model]);
 
   if (!user?.is_admin) {
     return null;
@@ -410,6 +484,57 @@ export function AdminDashboardPage() {
     }
   };
 
+  const handleSwitchModel = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!selectedModelOption) {
+      setSwitchError("No available model selected.");
+      return;
+    }
+    const password = adminPassword.trim();
+    if (!password) {
+      setSwitchError("Please enter your admin password.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Switch the active LLM to ${selectedModelOption.provider_label} / ${selectedModelOption.model}?`
+    );
+    if (!confirmed) return;
+
+    try {
+      setSwitchingModel(true);
+      setSwitchError("");
+      setSwitchSuccess("");
+      const result = await apiFetch<AdminLlmSwitchResponse>("/api/admin/llm/switch", {
+        method: "POST",
+        body: JSON.stringify({
+          provider: selectedModelOption.provider,
+          model: selectedModelOption.model,
+          admin_password: password,
+        }),
+      });
+      const [modelsSnapshot] = await Promise.all([
+        loadLlmModels(),
+        loadUsage(),
+        loadUsageByModel(result.current.provider, result.current.model),
+        loadAuditLog(1),
+      ]);
+      const switchApplied =
+        modelsSnapshot?.current.provider === result.current.provider &&
+        modelsSnapshot?.current.model === result.current.model;
+      if (!switchApplied) {
+        throw new Error("Model switch has not completed yet. Please refresh and try again.");
+      }
+      setAdminPassword("");
+      setSwitchSuccess(result.message);
+    } catch (err) {
+      setSwitchSuccess("");
+      setSwitchError(err instanceof Error ? err.message : "Failed to switch LLM model.");
+    } finally {
+      setSwitchingModel(false);
+    }
+  };
+
   const formatTokens = (n: number) => {
     if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
     if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
@@ -477,39 +602,202 @@ export function AdminDashboardPage() {
           </div>
         )}
 
-        {usage && (
-          <div className="mb-6 grid gap-4 md:grid-cols-3">
-            {(["today", "this_week", "this_month"] as const).map((period) => {
-              const label =
-                period === "today"
-                  ? "Today"
-                  : period === "this_week"
-                    ? "This Week"
-                    : "This Month";
-              const data = usage[period];
-              return (
-                <div
-                  key={period}
-                  className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm"
-                >
-                  <h3 className="text-sm font-medium text-gray-500">{label}</h3>
-                  <div className="mt-2 space-y-1">
-                    <p className="text-sm text-gray-700">
-                      Input: <span className="font-semibold">{formatTokens(data.input_tokens)}</span>{" "}
-                      tokens
-                    </p>
-                    <p className="text-sm text-gray-700">
-                      Output: <span className="font-semibold">{formatTokens(data.output_tokens)}</span>{" "}
-                      tokens
-                    </p>
-                    <p className="text-sm font-medium text-brand">
-                      Est. cost: ${data.estimated_cost_usd.toFixed(2)}
-                    </p>
-                  </div>
+        {llmModels && (
+          <section className="mb-6 rounded-lg border border-gray-200 bg-white shadow-sm">
+            <div className="border-b border-gray-100 px-4 py-3">
+              <h2 className="text-sm font-semibold text-brand">LLM Model Switch</h2>
+            </div>
+            <div className="space-y-4 px-4 py-4">
+              {llmModels.current.provider && llmModels.current.model && (
+                <div className="rounded-md border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
+                  Current running model:{" "}
+                  <span className="font-medium">
+                    {providerLabel(llmModels.current.provider)} / {llmModels.current.model}
+                  </span>
                 </div>
-              );
-            })}
-          </div>
+              )}
+
+              {llmModels.available_models.length === 0 ? (
+                <p className="text-sm text-gray-600">
+                  No smoke-tested LLM models are currently available for switching.
+                </p>
+              ) : (
+                <form
+                  onSubmit={handleSwitchModel}
+                  className="grid gap-3 rounded-md border border-gray-200 bg-gray-50 p-3 md:grid-cols-[2fr,1fr,auto]"
+                >
+                  <label className="space-y-1">
+                    <span className="text-xs font-medium text-gray-600">
+                      Select LLM model
+                    </span>
+                    <select
+                      value={
+                        selectedModelKey ||
+                        (selectedModelOption
+                          ? modelKey(selectedModelOption.provider, selectedModelOption.model)
+                          : "")
+                      }
+                      onChange={(event) => {
+                        setSelectedModelKey(event.target.value);
+                        setSwitchError("");
+                        setSwitchSuccess("");
+                      }}
+                      className={inputBase}
+                      disabled={switchingModel}
+                    >
+                      {llmModels.available_models.map((item) => (
+                        <option
+                          key={modelKey(item.provider, item.model)}
+                          value={modelKey(item.provider, item.model)}
+                        >
+                          {item.provider_label} / {item.model}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="space-y-1">
+                    <span className="text-xs font-medium text-gray-600">Admin password</span>
+                    <input
+                      type="password"
+                      value={adminPassword}
+                      onChange={(event) => setAdminPassword(event.target.value)}
+                      className={inputBase}
+                      placeholder="Enter your password"
+                      autoComplete="current-password"
+                      disabled={switchingModel}
+                    />
+                  </label>
+
+                  <button
+                    type="submit"
+                    className={`${btnPrimary} mt-[22px]`}
+                    disabled={switchingModel || !selectedModelOption}
+                  >
+                    {switchingModel ? "Switching..." : "Confirm Switch"}
+                  </button>
+                </form>
+              )}
+
+              {selectedModelOption && (
+                <div className="rounded-md border border-blue-100 bg-blue-50/70 px-4 py-3 text-sm text-gray-700">
+                  Selected model pricing:{" "}
+                  <span className="font-medium">
+                    Input ${selectedModelOption.input_per_mtok.toFixed(2)} / 1M tokens
+                  </span>{" "}
+                  and{" "}
+                  <span className="font-medium">
+                    output ${selectedModelOption.output_per_mtok.toFixed(2)} / 1M tokens
+                  </span>
+                  .{" "}
+                  <span className="text-gray-600">
+                    ({selectedModelOption.provider_label} / {selectedModelOption.model})
+                  </span>
+                </div>
+              )}
+
+              {switchError && (
+                <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {switchError}
+                </div>
+              )}
+              {switchSuccess && (
+                <div className="rounded-md border border-green-300 bg-green-50 px-3 py-2 text-sm text-green-700">
+                  {switchSuccess}
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
+        {selectedModelUsage && (
+          <section className="mb-6">
+            <div className="mb-3">
+              <h2 className="text-sm font-semibold text-brand">Selected Model Usage</h2>
+              <p className="text-xs text-gray-600">
+                Current usage for{" "}
+                <code className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px]">
+                  {providerLabel(selectedModelUsage.provider)} / {selectedModelUsage.model}
+                </code>
+                .
+              </p>
+            </div>
+            <div className="grid gap-4 md:grid-cols-3">
+              {(["today", "this_week", "this_month"] as const).map((period) => {
+                const label =
+                  period === "today"
+                    ? "Today"
+                    : period === "this_week"
+                      ? "This Week"
+                      : "This Month";
+                const data = selectedModelUsage[period];
+                return (
+                  <div
+                    key={`selected-${period}`}
+                    className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm"
+                  >
+                    <h3 className="text-sm font-medium text-gray-500">{label}</h3>
+                    <div className="mt-2 space-y-1">
+                      <p className="text-sm text-gray-700">
+                        Input: <span className="font-semibold">{formatTokens(data.input_tokens)}</span>{" "}
+                        tokens
+                      </p>
+                      <p className="text-sm text-gray-700">
+                        Output: <span className="font-semibold">{formatTokens(data.output_tokens)}</span>{" "}
+                        tokens
+                      </p>
+                      <p className="text-sm font-medium text-brand">
+                        Est. cost: ${data.estimated_cost_usd.toFixed(2)}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        {usage && (
+          <section className="mb-6">
+            <div className="mb-3">
+              <h2 className="text-sm font-semibold text-brand">Total Usage</h2>
+              <p className="text-xs text-gray-600">
+                Combined token usage and estimated cost across all models.
+              </p>
+            </div>
+            <div className="grid gap-4 md:grid-cols-3">
+              {(["today", "this_week", "this_month"] as const).map((period) => {
+                const label =
+                  period === "today"
+                    ? "Today"
+                    : period === "this_week"
+                      ? "This Week"
+                      : "This Month";
+                const data = usage[period];
+                return (
+                  <div
+                    key={period}
+                    className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm"
+                  >
+                    <h3 className="text-sm font-medium text-gray-500">{label}</h3>
+                    <div className="mt-2 space-y-1">
+                      <p className="text-sm text-gray-700">
+                        Input: <span className="font-semibold">{formatTokens(data.input_tokens)}</span>{" "}
+                        tokens
+                      </p>
+                      <p className="text-sm text-gray-700">
+                        Output: <span className="font-semibold">{formatTokens(data.output_tokens)}</span>{" "}
+                        tokens
+                      </p>
+                      <p className="text-sm font-medium text-brand">
+                        Est. cost: ${data.estimated_cost_usd.toFixed(2)}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
         )}
 
         {auditEntries.length > 0 && (

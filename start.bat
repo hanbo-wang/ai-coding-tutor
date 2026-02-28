@@ -113,7 +113,7 @@ echo  Backend is ready!
 echo.
 
 :: Verify provider connectivity through the backend health API.
-echo  [3/5] Verifying LLM and embedding APIs...
+echo  [3/5] Verifying LLM APIs...
 set "VERIFY_ATTEMPT=0"
 :verify_loop
 set /a VERIFY_ATTEMPT+=1

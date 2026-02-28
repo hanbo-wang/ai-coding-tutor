@@ -1,4 +1,4 @@
-"""Select and return the configured LLM provider with automatic fallback."""
+"""Select and return the active LLM provider with automatic fallback."""
 
 import logging
 
@@ -11,7 +11,10 @@ from app.ai.llm_base import LLMProvider, LLMError
 from app.ai.llm_anthropic import AnthropicProvider
 from app.ai.llm_openai import OpenAIProvider
 from app.ai.llm_google import GoogleGeminiAIStudioProvider, GoogleGeminiProvider
-from app.ai.model_registry import validate_supported_llm_model
+from app.ai.model_registry import (
+    normalise_google_vertex_location,
+    validate_supported_llm_model,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,10 +63,19 @@ def _build_google_provider(settings) -> LLMProvider:
         credentials_path,
         settings.google_cloud_project_id,
     )
+    configured_location = str(settings.google_vertex_gemini_location or "")
+    location = normalise_google_vertex_location(configured_location, model_id)
+    if location != configured_location.strip().lower():
+        logger.info(
+            "Google Vertex location normalised from '%s' to '%s' for model '%s'",
+            configured_location,
+            location,
+            model_id,
+        )
     return GoogleGeminiProvider(
         token_provider=token_provider,
         project_id=project_id,
-        location=settings.google_vertex_gemini_location,
+        location=location,
         model_id=model_id,
     )
 
@@ -89,24 +101,24 @@ def _google_setup_hint() -> str:
 
 
 def get_llm_provider(settings) -> LLMProvider:
-    """Return the configured primary LLM provider, falling back to any available one."""
+    """Return the primary LLM provider, falling back to any available one."""
     provider = settings.llm_provider.lower()
 
     if provider == "anthropic" and settings.anthropic_api_key:
         try:
             return _build_anthropic_provider(settings)
         except Exception as exc:
-            logger.warning("Configured Anthropic provider unavailable, trying fallbacks: %s", exc)
+            logger.warning("Primary Anthropic provider unavailable, trying fallbacks: %s", exc)
     if provider == "openai" and settings.openai_api_key:
         try:
             return _build_openai_provider(settings)
         except Exception as exc:
-            logger.warning("Configured OpenAI provider unavailable, trying fallbacks: %s", exc)
+            logger.warning("Primary OpenAI provider unavailable, trying fallbacks: %s", exc)
     if provider == "google" and _can_use_google(settings):
         try:
             return _build_google_provider(settings)
         except Exception as exc:
-            logger.warning("Configured Google provider unavailable, trying fallbacks: %s", exc)
+            logger.warning("Primary Google provider unavailable, trying fallbacks: %s", exc)
 
     # Fall back to any available provider.
     if settings.anthropic_api_key:
@@ -126,6 +138,6 @@ def get_llm_provider(settings) -> LLMProvider:
             logger.warning("Google fallback unavailable: %s", exc)
 
     raise LLMError(
-        "No LLM provider configured. "
+        "No LLM provider is available. "
         f"Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or {_google_setup_hint()} in .env"
     )

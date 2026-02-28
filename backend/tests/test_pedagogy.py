@@ -11,24 +11,6 @@ from app.ai.pedagogy_engine import (
 )
 
 
-class FakeEmbeddingService:
-    """Controllable embedding service for greeting/off-topic filter tests."""
-
-    def __init__(self) -> None:
-        self.greeting_result = False
-        self.off_topic_result = False
-        self.next_embedding = [0.1] * 256
-
-    async def embed_text(self, text: str):
-        return self.next_embedding
-
-    def check_greeting(self, embedding):
-        return self.greeting_result
-
-    def check_off_topic(self, embedding):
-        return self.off_topic_result
-
-
 class FakeLLM:
     """Minimal LLM mock for two-step recovery metadata classification."""
 
@@ -52,9 +34,9 @@ class FakeLLM:
         return max(1, len(text) // 4)
 
 
-def _make_engine(embedding_service=None, llm=None):
+def _make_engine(llm=None):
     llm = llm or FakeLLM()
-    return PedagogyEngine(embedding_service, llm)
+    return PedagogyEngine(llm)
 
 
 def _make_state(prog=3.0, maths=3.0):
@@ -66,44 +48,8 @@ def _make_state(prog=3.0, maths=3.0):
 
 
 @pytest.mark.asyncio
-async def test_prepare_fast_signals_returns_greeting_canned_response() -> None:
-    es = FakeEmbeddingService()
-    es.greeting_result = True
-    engine = _make_engine(es)
-    state = _make_state()
-
-    signals = await engine.prepare_fast_signals(
-        "hello",
-        state,
-        username="Alice",
-        enable_greeting_filter=True,
-    )
-
-    assert signals.filter_result == "greeting"
-    assert "Alice" in (signals.canned_response or "")
-
-
-@pytest.mark.asyncio
-async def test_prepare_fast_signals_returns_off_topic_canned_response() -> None:
-    es = FakeEmbeddingService()
-    es.off_topic_result = True
-    engine = _make_engine(es)
-    state = _make_state()
-
-    signals = await engine.prepare_fast_signals(
-        "what is the weather?",
-        state,
-        username="Bob",
-        enable_off_topic_filter=True,
-    )
-
-    assert signals.filter_result == "off_topic"
-    assert "programming" in (signals.canned_response or "")
-
-
-@pytest.mark.asyncio
-async def test_prepare_fast_signals_fail_open_without_embedding_service() -> None:
-    engine = _make_engine(embedding_service=None)
+async def test_prepare_fast_signals_returns_previous_exchange_context() -> None:
+    engine = _make_engine()
     state = _make_state()
     state.last_question_text = "Implement binary search"
     state.last_answer_text = "Start with low/high pointers."
@@ -111,11 +57,8 @@ async def test_prepare_fast_signals_fail_open_without_embedding_service() -> Non
     signals = await engine.prepare_fast_signals(
         "Can you explain step 2?",
         state,
-        enable_greeting_filter=True,
-        enable_off_topic_filter=True,
     )
 
-    assert signals.filter_result is None
     assert signals.has_previous_exchange is True
     assert signals.previous_question_text == state.last_question_text
     assert signals.previous_answer_text == state.last_answer_text

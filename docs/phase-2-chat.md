@@ -22,29 +22,11 @@ For the full algorithm reference (teaching philosophy, self-assessment levels, E
 
 ---
 
-## 2. Intelligent Pre-Filter Pipeline
+## 2. Fast Signals and Metadata Pipeline
 
-User messages are processed through a lightweight pre-processing pipeline before the main tutoring response is generated.
+User messages are processed through a lightweight local signal step before the main tutoring response is generated.
 
-### 2.1 Embedding Service
-
-Three embedding providers are supported: Cohere `embed-v4.0` (default), Vertex AI `multimodalembedding@001`, and Voyage AI `voyage-multimodal-3.5`. The provider is configured via `EMBEDDING_PROVIDER`. If the primary provider fails, the remaining configured providers are tried automatically.
-
-The service uses 256-dimensional vectors, an in-memory LRU cache (512 entries), a persistent `httpx.AsyncClient`, and NumPy vectorised similarity for efficient cosine distance checks.
-
-**Implementation:** `backend/app/ai/embedding_service.py`
-
-### 2.2 Greeting Detection (Optional, Disabled by Default)
-
-When `CHAT_ENABLE_GREETING_FILTER=true`, messages with high cosine similarity to 14 pre-embedded greeting anchors receive a personalised canned response instantly. No LLM call is made.
-
-### 2.3 Topic Relevance Gate (Optional, Disabled by Default)
-
-When `CHAT_ENABLE_OFF_TOPIC_FILTER=true`, 52 topic anchors and 20 off-topic anchors are compared using a relative rule (off-topic score strong and clearly above topic score) plus a low-topic fallback. Off-topic messages are rejected without an LLM call.
-
-See `docs/semantic-recognition-testing.md` for provider-specific threshold values and calibration data.
-
-### 2.4 Same-Problem, Elaboration, Difficulty, and Hint Metadata
+### 2.1 Same-Problem, Elaboration, Difficulty, and Hint Metadata
 
 The chat path uses a hidden metadata schema with four LLM-classified fields: `same_problem`, `is_elaboration`, `programming_difficulty`, `maths_difficulty`. The backend computes `programming_hint_level` and `maths_hint_level` deterministically using the gap formula (see [`docs/pedagogy-algorithm.md`](pedagogy-algorithm.md) Section 4).
 
@@ -57,34 +39,33 @@ The student state caches the previous Q+A text per chat session for metadata con
 
 **Implementation:** `backend/app/ai/pedagogy_engine.py`, `backend/app/ai/prompts.py`, `backend/app/services/stream_meta_parser.py`
 
-### 2.5 Single-Pass Header Route (Default Path)
+### 2.2 Single-Pass Header Route (Default Path)
 
 One streamed LLM call emits a hidden metadata header (`<<GC_META_V1>>...<<END_GC_META>>`) before the visible tutor answer. The backend provides hidden pedagogy context (previous Q+A text, effective levels, current hint/difficulty state). The LLM classifies `same_problem`, `is_elaboration`, `programming_difficulty`, and `maths_difficulty`. The backend validates difficulty fields and computes hint levels via the gap formula.
 
-### 2.6 Two-Step Recovery Route (Metadata + Reply)
+### 2.3 Two-Step Recovery Route (Metadata + Reply)
 
 Two LLM calls: one compact metadata-only JSON call (token-trimmed payload), then one streamed tutor reply. Used when the controller mode is `two_step_recovery_route`, or `auto` mode degrades after repeated header parse failures.
 
-### 2.7 Emergency Full-Hint Fallback (Local Last Resort)
+### 2.4 Emergency Full-Hint Fallback (Local Last Resort)
 
 If both routes fail, the backend builds local emergency metadata: `programming_hint_level = 5`, `maths_hint_level = 5`, difficulty set to rounded effective levels, and `skip_next_ema_update_once = true` to prevent distorting the effective level. A visible tutor reply is still generated.
 
-### 2.8 Problem Difficulty and Hint Selection
+### 2.5 Problem Difficulty and Hint Selection
 
 The LLM classifies difficulty; the backend computes hint levels deterministically. Elaboration requests increment each hint level by 1. New problems trigger an EMA update from the previous interaction before computing new hint levels. Emergency fallback turns do not contribute to the next EMA update.
 
 Each dimension is updated independently: programming EMA uses `programming_difficulty` and `programming_hint_level`; maths EMA uses `maths_difficulty` and `maths_hint_level`. See [`docs/pedagogy-algorithm.md`](pedagogy-algorithm.md) Section 3.
 
-### 2.9 Pre-Filter and Metadata Pipeline Summary
+### 2.6 Pipeline Summary
 
-1. Optionally embed and filter (greeting/off-topic, both disabled by default).
-2. Build fast pedagogy signals from previous Q+A text.
-3. Build prompt + context using full history or the hidden rolling summary cache plus recent raw turns.
-4. Single-Pass Header Route: one streamed LLM call with hidden metadata header.
-5. On header failure: discard and run the Two-Step Recovery Route.
-6. On recovery failure: use Emergency Full-Hint Fallback.
-7. Send `meta` event, stream visible tokens, apply pedagogy metadata, persist the assistant turn.
-8. Refresh the hidden rolling summary cache asynchronously.
+1. Build fast pedagogy signals from previous Q+A text.
+2. Build prompt + context using full history or the hidden rolling summary cache plus recent raw turns.
+3. Single-Pass Header Route: one streamed LLM call with hidden metadata header.
+4. On header failure: discard and run the Two-Step Recovery Route.
+5. On recovery failure: use Emergency Full-Hint Fallback.
+6. Send `meta` event, stream visible tokens, apply pedagogy metadata, persist the assistant turn.
+7. Refresh the hidden rolling summary cache asynchronously.
 
 ---
 
@@ -94,7 +75,6 @@ Each dimension is updated independently: programming EMA uses `programming_diffi
 
 - `chat_sessions` and `chat_messages` database tables.
 - Updated `users` table with hidden effective level fields.
-- An embedding service (Cohere by default, Vertex AI and Voyage AI supported) for optional greeting/off-topic filtering.
 - An LLM abstraction layer supporting three providers with automatic failover.
 - A pedagogy engine that manages hint levels, student adaptation, and dynamic levelling.
 - A WebSocket endpoint (`/ws/chat`) that streams AI responses.
@@ -148,7 +128,7 @@ Three provider implementations (`llm_google.py`, `llm_anthropic.py`, `llm_openai
 
 `StudentState` tracks: `effective_programming_level`, `effective_maths_level` (floats, 1.0 to 5.0), `current_programming_hint_level`, `current_maths_hint_level` (ints), `starting_programming_hint_level`, `starting_maths_hint_level` (ints, 1 to 4), `current_programming_difficulty`, `current_maths_difficulty`, `last_question_text`, `last_answer_text`, and `skip_next_ema_update_once`.
 
-Key methods: `prepare_fast_signals` (optional embedding filters + Q+A context), `compute_hint_levels` (deterministic gap formula), `coerce_stream_meta` (validate LLM metadata + compute hints), `apply_stream_meta` (update state and effective levels), `build_emergency_full_hint_fallback_meta` (local fallback with hints = 5).
+Key methods: `prepare_fast_signals` (local previous Q+A context), `compute_hint_levels` (deterministic gap formula), `coerce_stream_meta` (validate LLM metadata + compute hints), `apply_stream_meta` (update state and effective levels), `build_emergency_full_hint_fallback_meta` (local fallback with hints = 5).
 
 ### 4.6 Prompts
 
@@ -170,7 +150,7 @@ WebSocket `/ws/chat`: authenticates via JWT query parameter, initialises pedagog
 
 ### 4.9 Frontend: Chat Components
 
-- **`ws.ts`**: WebSocket helper forwarding `session`, `meta`, `token`, `done`, `canned`, `error` events.
+- **`ws.ts`**: WebSocket helper forwarding `session`, `meta`, `token`, `done`, `error` events.
 - **`useChatSocket.ts`**: Shared hook managing socket lifecycle, message list, streaming content, and `StreamingMeta` (separate `programmingHintLevel` and `mathsHintLevel`).
 - **`ChatPage.tsx`**: Full-page layout with collapsible sidebar, welcome greeting, streaming display, and disclaimer.
 - **`ChatSidebar.tsx`**: Session list (newest first), new chat button, delete with confirmation.
@@ -200,7 +180,7 @@ Migration `002` adds `effective_programming_level` and `effective_maths_level` t
 
 ### 5.2 Multimodal Processing
 
-Images are sent as base64 parts to the LLM. Documents have text extracted (PDF via `pypdf`, code files via text decoding, `.ipynb` by concatenating cell sources). Greeting/off-topic filters are skipped for attachment messages.
+Images are sent as base64 parts to the LLM. Documents have text extracted (PDF via `pypdf`, code files via text decoding, `.ipynb` by concatenating cell sources).
 
 ### 5.3 Updated Chat Interface
 
@@ -220,7 +200,6 @@ Images are sent as base64 parts to the LLM. Documents have text extracted (PDF v
 - [ ] Matched-level problems start at Socratic (hint 1); hard problems start at hint 3 or 4.
 - [ ] Follow-ups escalate hint by 1; new topics reset and recalculate.
 - [ ] Effective level updates in DB after topic change.
-- [ ] Greeting/off-topic filters work when enabled.
 - [ ] Block code shows syntax highlighting where relevant and supports one-click copy with keyboard-accessible controls.
 - [ ] Structured teaching layouts render as stable panels (layer flows, neuron rules, vector comparisons, confidence pointers) without space-based drift.
 - [ ] Markdown block panels are centred and size-consistent (`860px` desktop max width, responsive on mobile).
