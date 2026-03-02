@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from starlette.websockets import WebSocketDisconnect
 
 from app.ai.llm_base import LLMError, LLMProvider, LLMUsage
 from app.ai.llm_factory import LLMTarget
@@ -333,6 +334,13 @@ def _collect_until_terminal(ws, timeout: float = 30) -> list[dict]:
         if event.get("type") in {"done", "error"}:
             break
     return events
+
+
+def _assert_ws_disconnected(ws, expected_code: int = 1011) -> None:
+    """Assert that the server has closed the WebSocket."""
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        ws.receive_json()
+    assert exc_info.value.code == expected_code
 
 
 def test_ws_single_pass_emits_meta_before_token_and_strips_header(tmp_path, monkeypatch) -> None:
@@ -774,6 +782,7 @@ def test_ws_partial_visible_output_failure_does_not_retry_or_switch(
         with client.websocket_connect("/ws/chat?token=test") as ws:
             ws.send_text(json.dumps({"content": "hello"}))
             events = _collect_until_terminal(ws)
+            _assert_ws_disconnected(ws)
 
         assert any(e["type"] == "meta" for e in events)
         assert "".join(e["content"] for e in events if e["type"] == "token") == "Partial"
@@ -816,11 +825,97 @@ def test_ws_non_unavailable_error_does_not_trigger_auto_retry(tmp_path, monkeypa
         with client.websocket_connect("/ws/chat?token=test") as ws:
             ws.send_text(json.dumps({"content": "hello"}))
             events = _collect_until_terminal(ws)
+            _assert_ws_disconnected(ws)
 
         error_event = next(e for e in events if e["type"] == "error")
         assert error_event["message"] == "malformed prompt payload"
         assert not any(e["type"] == "status" for e in events)
         assert primary_llm.call_count == 1
+    finally:
+        client.close()
+        _run(engine.dispose())
+
+
+def test_ws_non_unavailable_error_closes_socket_without_fallback_switch(
+    tmp_path, monkeypatch
+) -> None:
+    """Non-retryable failures should close the socket without status or fallback calls."""
+
+    primary_llm = _PlainErrorLLM(
+        provider_id="openai",
+        model_id="gpt-5-mini",
+        message="malformed prompt payload",
+    )
+    fallback_build_calls = {"count": 0}
+    client, _session_factory, engine, _scheduled, _llm, _pedagogy = _setup_ws_test_env(
+        tmp_path,
+        monkeypatch,
+        llm_override=primary_llm,
+    )
+    monkeypatch.setattr(
+        "app.routers.chat.list_llm_fallback_targets",
+        lambda *_args, **_kwargs: [
+            LLMTarget(provider="anthropic", model_id="claude-3-5-haiku-latest")
+        ],
+    )
+
+    def _counting_build_target(_settings, _target):
+        fallback_build_calls["count"] += 1
+        return primary_llm
+
+    monkeypatch.setattr(
+        "app.routers.chat.build_llm_provider_for_target",
+        _counting_build_target,
+    )
+
+    try:
+        with client.websocket_connect("/ws/chat?token=test") as ws:
+            ws.send_text(json.dumps({"content": "hello"}))
+            events = _collect_until_terminal(ws)
+            _assert_ws_disconnected(ws)
+
+        assert not any(e["type"] == "status" for e in events)
+        assert next(e for e in events if e["type"] == "error")["message"] == "malformed prompt payload"
+        assert primary_llm.call_count == 1
+        assert fallback_build_calls["count"] == 0
+    finally:
+        client.close()
+        _run(engine.dispose())
+
+
+def test_ws_unavailable_without_fallback_closes_after_retries(
+    tmp_path, monkeypatch
+) -> None:
+    """Transient unavailability without fallback should error and close after retries."""
+
+    primary_llm = _AlwaysUnavailableLLM(provider_id="openai", model_id="gpt-5-mini")
+    client, _session_factory, engine, _scheduled, _llm, _pedagogy = _setup_ws_test_env(
+        tmp_path,
+        monkeypatch,
+        llm_override=primary_llm,
+    )
+    monkeypatch.setattr(
+        "app.routers.chat.list_llm_fallback_targets",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        "app.routers.chat.build_llm_provider_for_target",
+        lambda _settings, _target: primary_llm,
+    )
+
+    try:
+        with client.websocket_connect("/ws/chat?token=test") as ws:
+            ws.send_text(json.dumps({"content": "hello"}))
+            events = _collect_until_terminal(ws)
+            _assert_ws_disconnected(ws)
+
+        status_events = [e for e in events if e["type"] == "status"]
+        assert [e["attempt"] for e in status_events] == [1, 2, 3, 4, 5]
+        assert all(e["max_attempts"] == 5 for e in status_events)
+        assert not any(e.get("switched_model") for e in status_events)
+        error_event = next(e for e in events if e["type"] == "error")
+        assert error_event["message"] == "AI service temporarily unavailable. Please try again."
+        assert primary_llm.call_count == 6
     finally:
         client.close()
         _run(engine.dispose())

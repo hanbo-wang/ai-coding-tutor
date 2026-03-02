@@ -42,7 +42,7 @@ export function ChatPage() {
     sessionId,
     setSessionId,
     connected,
-    socketRef,
+    sendMessage,
   } = useChatSocket(handleSessionCreated);
 
   // Load sessions on mount
@@ -53,7 +53,7 @@ export function ChatPage() {
   }, []);
 
   const handleSend = async (content: string, files: File[]) => {
-    if (!socketRef.current || isStreaming) return;
+    if (isStreaming) return;
 
     const prepared = await prepareSendPayload(content, files).catch((err) => {
       const message =
@@ -77,10 +77,20 @@ export function ChatPage() {
     setStreamingMeta(null);
     setRetryStatus(null);
     setIsStreaming(true);
-    socketRef.current.send(prepared.cleanedContent, {
+    const accepted = sendMessage(prepared.cleanedContent, {
       sessionId,
       uploadIds: prepared.uploadIds,
     });
+    if (!accepted) {
+      setIsStreaming(false);
+      setMessages((msgs) => [
+        ...msgs,
+        {
+          role: "assistant",
+          content: "Error: Please wait for the current request to finish.",
+        },
+      ]);
+    }
   };
 
   const handleSelectSession = async (id: string) => {

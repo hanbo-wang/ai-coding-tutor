@@ -77,7 +77,7 @@ Optional start-up validation in `backend/app/config.py`:
 
 Runs on push to `main`. Two jobs:
 
-1. **Verify:** seeds `.env` from `env.dev.example`, runs backend tests with `PYTHONPATH` set, builds JupyterLite assets, and verifies the frontend production build.
+1. **Verify:** seeds `.env` from `env.dev.example`, runs backend tests with `PYTHONPATH` set (wrapped in a 20-minute shell timeout and log tail on failure), builds JupyterLite assets, and verifies the frontend production build.
 2. **Build and push:** builds backend and frontend production images and pushes to GHCR with tags `main` and `sha-<gitsha>`.
 
 ### 5.2 Manual Production Deploy (`deploy-prod.yml`)

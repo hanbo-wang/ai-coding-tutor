@@ -49,18 +49,34 @@ export interface ChatSendOptions {
   errorOutput?: string | null;
 }
 
+export interface ChatSendPayload extends ChatSendOptions {
+  content: string;
+}
+
+export interface ChatSocketCloseInfo {
+  closedByClient: boolean;
+  code: number;
+  reason: string;
+  wasClean: boolean;
+}
+
 export function createChatSocket(
   onEvent: (event: WsEvent) => void,
   onOpen?: () => void,
-  onClose?: () => void
+  onClose?: (info: ChatSocketCloseInfo) => void
 ): {
-  send: (content: string, options?: ChatSendOptions) => void;
+  send: (payload: ChatSendPayload) => boolean;
+  isOpen: () => boolean;
   close: () => void;
 } {
   const token = getAccessToken();
   if (!token) {
     onEvent({ type: "error", message: "Not authenticated" });
-    return { send: () => { }, close: () => { } };
+    return {
+      send: () => false,
+      isOpen: () => false,
+      close: () => {},
+    };
   }
 
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -83,37 +99,39 @@ export function createChatSocket(
     }
   };
 
-  ws.onclose = () => {
-    onClose?.();
+  ws.onclose = (event) => {
+    onClose?.({
+      closedByClient,
+      code: event.code,
+      reason: event.reason,
+      wasClean: event.wasClean,
+    });
   };
 
-  ws.onerror = () => {
-    // Only report errors if the socket wasn't intentionally closed
-    if (!closedByClient) {
-      onEvent({ type: "error", message: "WebSocket connection failed" });
-    }
-  };
-
-  const send = (content: string, options: ChatSendOptions = {}) => {
+  const send = (payload: ChatSendPayload): boolean => {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(
         JSON.stringify({
-          content,
-          session_id: options.sessionId ?? null,
-          upload_ids: options.uploadIds ?? [],
-          notebook_id: options.notebookId ?? null,
-          zone_notebook_id: options.zoneNotebookId ?? null,
-          cell_code: options.cellCode ?? null,
-          error_output: options.errorOutput ?? null,
+          content: payload.content,
+          session_id: payload.sessionId ?? null,
+          upload_ids: payload.uploadIds ?? [],
+          notebook_id: payload.notebookId ?? null,
+          zone_notebook_id: payload.zoneNotebookId ?? null,
+          cell_code: payload.cellCode ?? null,
+          error_output: payload.errorOutput ?? null,
         })
       );
+      return true;
     }
+    return false;
   };
+
+  const isOpen = () => ws.readyState === WebSocket.OPEN;
 
   const close = () => {
     closedByClient = true;
     ws.close();
   };
 
-  return { send, close };
+  return { send, isOpen, close };
 }

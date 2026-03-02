@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ChatMessage } from "../api/types";
-import { createChatSocket, WsEvent } from "../api/ws";
+import {
+  ChatSendOptions,
+  ChatSendPayload,
+  createChatSocket,
+  WsEvent,
+} from "../api/ws";
 
 export interface StreamingMeta {
   programmingDifficulty: number;
@@ -18,6 +23,20 @@ type StreamState = {
   meta: StreamingMeta | null;
   retryStatus: string | null;
 };
+
+type PendingRequestState = {
+  payload: ChatSendPayload;
+  terminalReceived: boolean;
+  sessionAcknowledged: boolean;
+  sentCount: number;
+  autoResendAttempts: number;
+  shouldResendOnReconnect: boolean;
+};
+
+const RECONNECT_BASE_DELAY_MS = 300;
+const RECONNECT_MAX_DELAY_MS = 3000;
+const MAX_AUTO_RESEND_ATTEMPTS = 1;
+const NON_RECONNECTABLE_CLOSE_CODES = new Set([4001, 4002]);
 
 /**
  * Shared WebSocket chat state and event handling.
@@ -36,6 +55,11 @@ export function useChatSocket(onSessionCreated?: (sessionId: string) => void) {
   const sessionIdRef = useRef<string | null>(null);
   const [connected, setConnected] = useState(false);
   const socketRef = useRef<ReturnType<typeof createChatSocket> | null>(null);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const reconnectAttemptRef = useRef(0);
+  const connectSocketRef = useRef<(() => void) | null>(null);
+  const closedByHookRef = useRef(false);
+  const pendingRequestRef = useRef<PendingRequestState | null>(null);
   const onSessionCreatedRef = useRef(onSessionCreated);
   const streamingMetaRef = useRef<StreamingMeta | null>(null);
   const backgroundStreamsRef = useRef<Record<string, StreamState>>({});
@@ -71,8 +95,62 @@ export function useChatSocket(onSessionCreated?: (sessionId: string) => void) {
     streamingMetaRef.current = streamingMeta;
   }, [streamingMeta]);
 
+  const appendSystemError = useCallback((message: string) => {
+    setMessages((items) => [
+      ...items,
+      { role: "assistant", content: `Error: ${message}` },
+    ]);
+  }, []);
+
+  const sendPendingNow = useCallback((pending: PendingRequestState): boolean => {
+    const socket = socketRef.current;
+    if (!socket || !socket.isOpen()) {
+      return false;
+    }
+    if (!socket.send(pending.payload)) {
+      return false;
+    }
+    pending.sentCount += 1;
+    return true;
+  }, []);
+
+  const clearReconnectTimer = useCallback(() => {
+    if (reconnectTimerRef.current !== null) {
+      window.clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleReconnect = useCallback(() => {
+    if (closedByHookRef.current || reconnectTimerRef.current !== null) {
+      return;
+    }
+    const attempt = reconnectAttemptRef.current;
+    const delay = Math.min(
+      RECONNECT_MAX_DELAY_MS,
+      RECONNECT_BASE_DELAY_MS * (2 ** attempt)
+    );
+    reconnectAttemptRef.current = attempt + 1;
+    reconnectTimerRef.current = window.setTimeout(() => {
+      reconnectTimerRef.current = null;
+      connectSocketRef.current?.();
+    }, delay);
+  }, []);
+
   const handleEvent = useCallback((event: WsEvent) => {
     const incomingSessionId = "session_id" in event ? event.session_id : undefined;
+    const pending = pendingRequestRef.current;
+
+    if (event.type === "session" && pending && !pending.terminalReceived) {
+      pending.sessionAcknowledged = true;
+      pending.shouldResendOnReconnect = false;
+      setRetryStatus(null);
+    }
+    if ((event.type === "done" || event.type === "error") && pending) {
+      pending.terminalReceived = true;
+      pending.shouldResendOnReconnect = false;
+      pendingRequestRef.current = null;
+    }
 
     // 1. Maintain a resilient background buffer for all active streams
     if (incomingSessionId) {
@@ -174,10 +252,7 @@ export function useChatSocket(onSessionCreated?: (sessionId: string) => void) {
           break;
         }
       case "error":
-        setMessages((items) => [
-          ...items,
-          { role: "assistant", content: `Error: ${event.message}` },
-        ]);
+        appendSystemError(event.message);
         setStreamingContent("");
         setStreamingMeta(null);
         setRetryStatus(null);
@@ -187,19 +262,138 @@ export function useChatSocket(onSessionCreated?: (sessionId: string) => void) {
         setRetryStatus(event.message);
         break;
     }
-  }, [setSessionId]);
+  }, [appendSystemError, setSessionId]);
 
-  useEffect(() => {
+  const connectSocket = useCallback(() => {
+    if (closedByHookRef.current) {
+      return;
+    }
     const socket = createChatSocket(
       handleEvent,
-      () => setConnected(true),
-      () => setConnected(false)
+      () => {
+        setConnected(true);
+        reconnectAttemptRef.current = 0;
+        const pending = pendingRequestRef.current;
+        if (!pending || pending.terminalReceived) {
+          return;
+        }
+
+        if (pending.sentCount === 0) {
+          if (sendPendingNow(pending)) {
+            setRetryStatus(null);
+          }
+          return;
+        }
+
+        if (
+          pending.shouldResendOnReconnect
+          && !pending.sessionAcknowledged
+          && pending.autoResendAttempts < MAX_AUTO_RESEND_ATTEMPTS
+        ) {
+          pending.shouldResendOnReconnect = false;
+          pending.autoResendAttempts += 1;
+          if (sendPendingNow(pending)) {
+            setRetryStatus("Connection restored. Retrying your last message.");
+            return;
+          }
+          pending.shouldResendOnReconnect = true;
+          scheduleReconnect();
+        }
+      },
+      (info) => {
+        setConnected(false);
+        if (info.closedByClient || closedByHookRef.current) {
+          return;
+        }
+
+        const pending = pendingRequestRef.current;
+        if (pending && !pending.terminalReceived) {
+          if (
+            !pending.sessionAcknowledged
+            && pending.autoResendAttempts < MAX_AUTO_RESEND_ATTEMPTS
+          ) {
+            pending.shouldResendOnReconnect = true;
+            setRetryStatus(
+              "Connection lost. Reconnecting and retrying your last message once."
+            );
+          } else if (pending.sessionAcknowledged) {
+            pendingRequestRef.current = null;
+            setStreamingContent("");
+            setStreamingMeta(null);
+            setRetryStatus(null);
+            setIsStreaming(false);
+            appendSystemError(
+              "The connection dropped after your request started. Please send the message again."
+            );
+          } else {
+            pendingRequestRef.current = null;
+            setStreamingContent("");
+            setStreamingMeta(null);
+            setRetryStatus(null);
+            setIsStreaming(false);
+            appendSystemError(
+              "The connection could not be restored automatically. Please send the message again."
+            );
+          }
+        }
+
+        if (NON_RECONNECTABLE_CLOSE_CODES.has(info.code)) {
+          return;
+        }
+        scheduleReconnect();
+      }
     );
     socketRef.current = socket;
+  }, [appendSystemError, handleEvent, scheduleReconnect, sendPendingNow]);
+
+  useEffect(() => {
+    connectSocketRef.current = connectSocket;
+  }, [connectSocket]);
+
+  useEffect(() => {
+    closedByHookRef.current = false;
+    connectSocket();
     return () => {
-      socket.close();
+      closedByHookRef.current = true;
+      clearReconnectTimer();
+      socketRef.current?.close();
     };
-  }, [handleEvent]);
+  }, [clearReconnectTimer, connectSocket]);
+
+  const sendMessage = useCallback((content: string, options: ChatSendOptions = {}): boolean => {
+    const existingPending = pendingRequestRef.current;
+    if (existingPending && !existingPending.terminalReceived) {
+      return false;
+    }
+
+    const pending: PendingRequestState = {
+      payload: {
+        content,
+        sessionId: options.sessionId ?? null,
+        uploadIds: options.uploadIds ?? [],
+        notebookId: options.notebookId,
+        zoneNotebookId: options.zoneNotebookId,
+        cellCode: options.cellCode ?? null,
+        errorOutput: options.errorOutput ?? null,
+      },
+      terminalReceived: false,
+      sessionAcknowledged: false,
+      sentCount: 0,
+      autoResendAttempts: 0,
+      shouldResendOnReconnect: false,
+    };
+    pendingRequestRef.current = pending;
+
+    if (sendPendingNow(pending)) {
+      setRetryStatus(null);
+      return true;
+    }
+
+    pending.shouldResendOnReconnect = true;
+    setRetryStatus("Connection lost. Reconnecting and retrying your last message once.");
+    scheduleReconnect();
+    return true;
+  }, [scheduleReconnect, sendPendingNow]);
 
   return {
     messages,
@@ -215,6 +409,6 @@ export function useChatSocket(onSessionCreated?: (sessionId: string) => void) {
     sessionId,
     setSessionId,
     connected,
-    socketRef,
+    sendMessage,
   };
 }

@@ -55,7 +55,7 @@ export function WorkspaceChatPanel({
     sessionId,
     setSessionId,
     connected,
-    socketRef,
+    sendMessage,
   } = useChatSocket(() => {
     void refreshScopedSessions();
   });
@@ -110,7 +110,7 @@ export function WorkspaceChatPanel({
   ]);
 
   const handleSend = async (content: string, files: File[]) => {
-    if (!socketRef.current || isStreaming || isLoadingScopedSession) return;
+    if (isStreaming || isLoadingScopedSession) return;
 
     const prepared = await prepareSendPayload(content, files).catch((err) => {
       const message =
@@ -136,7 +136,7 @@ export function WorkspaceChatPanel({
     setIsStreaming(true);
 
     const context = await getCellContext();
-    socketRef.current.send(prepared.cleanedContent, {
+    const accepted = sendMessage(prepared.cleanedContent, {
       sessionId,
       uploadIds: prepared.uploadIds,
       notebookId: sessionType === "notebook" ? moduleId : undefined,
@@ -144,6 +144,16 @@ export function WorkspaceChatPanel({
       cellCode: context.cellCode || null,
       errorOutput: context.errorOutput,
     });
+    if (!accepted) {
+      setIsStreaming(false);
+      setMessages((items) => [
+        ...items,
+        {
+          role: "assistant",
+          content: "Error: Please wait for the current request to finish.",
+        },
+      ]);
+    }
   };
 
   const handleNewChat = () => {

@@ -1309,7 +1309,9 @@ async def websocket_chat(
                     logger.error("LLM stage error: %s", exc)
                     await websocket.send_json({"type": "error", "session_id": str(session.id), "message": str(exc)})
                     await db.commit()
-                    continue
+                    # Stage failures are terminal for this socket lifecycle.
+                    await websocket.close(code=1011, reason="LLM stage error")
+                    return
 
                 assistant_text = "".join(full_response)
                 result = current_pedagogy_engine.apply_stream_meta(student_state, stream_meta)

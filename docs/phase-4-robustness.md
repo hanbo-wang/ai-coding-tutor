@@ -171,7 +171,7 @@ Every admin endpoint that modifies Learning Hub content automatically records an
 
 ### 7.1 Test Infrastructure
 
-`backend/tests/conftest.py` provides `MockLLMProvider` for deterministic streaming and token usage. The suite mixes `pytest` function-style tests, `pytest-asyncio` for async tests, and one `unittest.TestCase` module. `backend/pytest.ini` sets `asyncio_mode=auto`.
+`backend/tests/conftest.py` provides `MockLLMProvider` for deterministic streaming and token usage. The suite mixes `pytest` function-style tests, `pytest-asyncio` for async tests, and one `unittest.TestCase` module. `backend/pytest.ini` sets `asyncio_mode=auto` and a 60-second per-test timeout.
 
 The default offline run executes the full backend suite. External smoke tests marked `external_ai` are skipped unless explicitly enabled.
 
@@ -219,11 +219,11 @@ Run from `backend/`: `PYTHONPATH=. pytest tests/ -q -s`
 
 ### 8.1 Backend
 
-All route handlers catch exceptions and return structured error responses with `detail` and `code` fields. Standard error codes: `AUTH_INVALID`, `AUTH_FORBIDDEN`, `RATE_LIMITED`, `WEEKLY_LIMIT`, `LLM_UNAVAILABLE`, `NOT_FOUND`, `VALIDATION`. LLM failures after retry and fallback exhaustion send a WebSocket error message. Database connection failures return HTTP 503.
+All route handlers catch exceptions and return structured error responses with `detail` and `code` fields. Standard error codes: `AUTH_INVALID`, `AUTH_FORBIDDEN`, `RATE_LIMITED`, `WEEKLY_LIMIT`, `LLM_UNAVAILABLE`, `NOT_FOUND`, `VALIDATION`. Non-retryable WebSocket stage failures send a structured `error` event and then close the socket with code `1011`. Database connection failures return HTTP 503.
 
 ### 8.2 Frontend
 
-WebSocket disconnection shows a banner with exponential backoff reconnection (1, 2, 4, 8s, up to 3 retries). LLM errors display as styled system messages in the chat. REST call failures show a brief toast notification.
+WebSocket disconnection shows a reconnect status with exponential backoff (300 ms base delay, capped at 3 seconds). If the socket drops before a terminal event, the frontend retries one in-flight message automatically when safe; otherwise it prompts for manual resend. LLM errors display as styled system messages in the chat. REST call failures show a brief toast notification.
 
 ---
 
