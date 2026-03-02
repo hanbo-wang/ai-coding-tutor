@@ -27,7 +27,7 @@ The **pedagogy engine** controls every AI response:
 
 - **Streaming AI chat** over WebSocket with session management, chat history, and session-isolated hidden pedagogy state.
 - **Readable markdown teaching panels**: centred block panels with a consistent desktop width, structured rendering for space-sensitive learning diagrams, larger low-contrast in-panel text markers, text-based `Copy`/`Copied` controls for block code, KaTeX `copy-tex` behaviour so formulae copy as LaTeX in normal text selections, and defensive sanitisation for malformed OCR/AI math delimiters.
-- **Three LLM providers with failover**: Google Gemini (Google AI Studio or Vertex AI via explicit transport selection, default provider), Anthropic Claude, OpenAI GPT.
+- **Three LLM providers with failover**: Anthropic Claude (default), Google Gemini (AI Studio or Vertex AI), OpenAI GPT. The backend retries the same model up to 5 times, then falls back through alternate models and providers within the same session.
 - **File and image uploads**: drag-and-drop, file picker, or paste. Up to 3 images and 2 documents per message. PDFs, code files, and notebooks are parsed for context.
 - **Notebook workspace**: open `.ipynb` files in a split-pane layout with JupyterLite (browser-side Python via Pyodide) on the left and AI tutor chat on the right. Pre-loaded with NumPy, SciPy, Pandas, Matplotlib, and SymPy.
 - **Notebook-aware tutoring**: the tutor sees notebook content, the current cell code, and the latest error output.
@@ -42,7 +42,7 @@ The **pedagogy engine** controls every AI response:
 | ---------- | ------------------------------------------------------------------------- |
 | Frontend   | React 18, TypeScript (strict), Vite, Tailwind CSS v4                      |
 | Backend    | FastAPI, SQLAlchemy 2.0 (async), Alembic, Pydantic v2                     |
-| AI         | Google Gemini (AI Studio or Vertex AI), Anthropic Claude, OpenAI GPT (configurable with failover) |
+| AI         | Anthropic Claude (default), Google Gemini (AI Studio or Vertex AI), OpenAI GPT (configurable with failover) |
 | Database   | PostgreSQL 15, asyncpg                                                    |
 | DevOps     | Docker Compose, Nginx, GitHub Actions CI/CD                               |
 
@@ -65,7 +65,7 @@ Backend (FastAPI, async)
   ├── Zone API (browse, progress, runtime files)
   ├── Admin API (zone management, model switch, usage, audit log)
   └── AI subsystem
-       ├── LLM providers (3 providers, retry + fallback)
+       ├── LLM providers (Anthropic, Google, OpenAI; retry + fallback)
        ├── Pedagogy engine (graduated hints, difficulty, EMA levels)
        └── Context builder (system prompt, notebook context)
          │
@@ -93,8 +93,9 @@ cp .github/workflows/templates/env.dev.example .env
 2. **Edit `.env`** and set at minimum:
 
    - `JWT_SECRET_KEY`: at least 32 random characters.
-   - `GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH`: path to your Google service account JSON file.
-   - Optional: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` for fallback providers.
+   - `ANTHROPIC_API_KEY`: for the default Anthropic Claude provider.
+   - Optional: `GOOGLE_API_KEY` or Google service account credentials for Gemini fallback.
+   - Optional: `OPENAI_API_KEY` for OpenAI fallback.
    - Optional: `ADMIN_EMAIL` for admin dashboard access.
 
 3. **Build JupyterLite assets** (required once for notebook workspace):
@@ -127,7 +128,7 @@ Production runs on Docker Compose + Nginx reverse proxy + HTTPS, deployed via Gi
 - **Images**: pushed to GHCR on every `main` push, tagged `main` and `sha-<gitsha>`.
 - **Deploy**: run the manual `Deploy Production` workflow in GitHub Actions with an image tag.
 - **Rollback**: re-run the deploy workflow with an earlier image tag.
-- **Config**: create `.env` from `.github/workflows/templates/env.prod.example`. Pre-place the Google service account JSON on the server.
+- **Config**: create `.env` from `.github/workflows/templates/env.prod.example`. Set API keys for desired providers.
 - **Health**: `/health` (browser page showing the current running model and smoke-tested LLM availability; non-HTML probes still get liveness JSON), `/api/health/ai` for LLM provider verification, `/api/health/ai/models` for model-level smoke checks plus the current running model snapshot.
 
 ## Documentation

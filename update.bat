@@ -25,7 +25,7 @@ if not defined COMPOSE_CMD (
 )
 
 :: Update local code to latest commit on current branch.
-echo [1/5] Updating source code...
+echo [1/6] Updating source code...
 git rev-parse --is-inside-work-tree >nul 2>&1
 if errorlevel 1 (
     echo ERROR: This folder is not a Git repository.
@@ -46,7 +46,7 @@ if errorlevel 1 (
 )
 
 :: Rebuild database from scratch (destructive: clears DB volume).
-echo [2/5] Rebuilding database from scratch...
+echo [2/6] Rebuilding database from scratch...
 cmd /c "%COMPOSE_CMD% down -v"
 if errorlevel 1 (
     echo ERROR: Failed to stop and remove existing containers/volumes.
@@ -55,7 +55,7 @@ if errorlevel 1 (
 )
 
 :: Start fresh db + backend after rebuild.
-echo [3/5] Starting backend and database...
+echo [3/6] Starting backend and database...
 cmd /c "%COMPOSE_CMD% up -d --build db backend"
 if errorlevel 1 (
     echo ERROR: Failed to start rebuilt db/backend services.
@@ -64,7 +64,7 @@ if errorlevel 1 (
 )
 
 :: Install/update frontend dependencies.
-echo [4/5] Updating frontend dependencies...
+echo [4/6] Updating frontend dependencies...
 pushd "%~dp0frontend" >nul
 npm install
 if errorlevel 1 (
@@ -75,8 +75,17 @@ if errorlevel 1 (
 )
 popd >nul
 
+:: Build JupyterLite static assets.
+echo [5/6] Building JupyterLite static assets...
+bash scripts/build-jupyterlite.sh
+if errorlevel 1 (
+    echo ERROR: JupyterLite build failed.
+    pause
+    exit /b 1
+)
+
 :: Print quick status.
-echo [5/5] Current service status:
+echo [6/6] Current service status:
 cmd /c "%COMPOSE_CMD% ps"
 echo.
 echo Update completed successfully.

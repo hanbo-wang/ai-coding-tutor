@@ -61,7 +61,7 @@ export function MyNotebooksPage() {
 
   const handleDelete = async (id: string) => {
     const confirmed = window.confirm(
-      "Delete this notebook? This action cannot be undone."
+      "Delete this notebook and all related chat history? This action cannot be undone."
     );
     if (!confirmed) return;
 

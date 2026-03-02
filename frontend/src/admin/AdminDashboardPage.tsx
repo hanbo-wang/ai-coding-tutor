@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 
 import { apiFetch } from "../api/http";
 import {
+  AdminLlmError,
   AdminLlmModelOption,
   AdminLlmModelsResponse,
   AdminLlmSwitchResponse,
@@ -96,6 +97,8 @@ export function AdminDashboardPage() {
   const [auditEntries, setAuditEntries] = useState<AuditLogEntry[]>([]);
   const [auditPage, setAuditPage] = useState(1);
   const [auditTotalPages, setAuditTotalPages] = useState(1);
+  const [llmErrors, setLlmErrors] = useState<AdminLlmError[]>([]);
+  const [llmErrorsExpanded, setLlmErrorsExpanded] = useState(true);
 
   useEffect(() => {
     if (user && !user.is_admin) {
@@ -196,13 +199,32 @@ export function AdminDashboardPage() {
     }
   };
 
+  const loadLlmErrors = async () => {
+    try {
+      const data = await apiFetch<{ errors: AdminLlmError[] }>(
+        "/api/admin/llm-errors"
+      );
+      setLlmErrors(data.errors);
+    } catch {
+      // LLM error fetch is non-critical.
+    }
+  };
+
   useEffect(() => {
     if (user?.is_admin) {
       void loadZones();
       void loadUsage();
       void loadLlmModels();
       void loadAuditLog(1);
+      void loadLlmErrors();
     }
+  }, [user?.is_admin]);
+
+  // Poll LLM errors every 30 seconds.
+  useEffect(() => {
+    if (!user?.is_admin) return;
+    const interval = setInterval(() => void loadLlmErrors(), 30_000);
+    return () => clearInterval(interval);
   }, [user?.is_admin]);
 
   const selectedModelOption: AdminLlmModelOption | null =
@@ -215,6 +237,7 @@ export function AdminDashboardPage() {
       return;
     }
     void loadUsageByModel(selectedModelOption.provider, selectedModelOption.model);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.is_admin, selectedModelOption?.provider, selectedModelOption?.model]);
 
   if (!user?.is_admin) {
@@ -373,7 +396,7 @@ export function AdminDashboardPage() {
 
   const handleDeleteNotebook = async (notebookId: string) => {
     const confirmed = window.confirm(
-      "Delete this notebook? All student progress for this notebook will be removed."
+      "Delete this notebook? All student progress and related chat history will be removed. This action cannot be undone."
     );
     if (!confirmed || !expandedZoneId) return;
 
@@ -602,6 +625,65 @@ export function AdminDashboardPage() {
           </div>
         )}
 
+        {llmErrors.length > 0 && (
+          <section className="mb-6 rounded-lg border border-red-200 bg-white shadow-sm">
+            <button
+              type="button"
+              onClick={() => setLlmErrorsExpanded((v) => !v)}
+              className="flex w-full items-center justify-between border-b border-red-100 px-4 py-3 text-left"
+            >
+              <h2 className="text-sm font-semibold text-red-700">
+                LLM Error Alerts ({llmErrors.length})
+              </h2>
+              <span className="text-xs text-gray-500">
+                {llmErrorsExpanded ? "▲ Collapse" : "▼ Expand"}
+              </span>
+            </button>
+            {llmErrorsExpanded && (
+              <div className="max-h-64 overflow-y-auto px-4 py-3">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-gray-200 text-gray-500">
+                      <th className="pb-2 pr-3 font-medium">Time</th>
+                      <th className="pb-2 pr-3 font-medium">Type</th>
+                      <th className="pb-2 pr-3 font-medium">Provider</th>
+                      <th className="pb-2 font-medium">Detail</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {llmErrors.map((err, idx) => (
+                      <tr
+                        key={`${err.timestamp}-${idx}`}
+                        className="border-b border-gray-100 last:border-0"
+                      >
+                        <td className="whitespace-nowrap py-1.5 pr-3 text-gray-500">
+                          {new Date(err.timestamp).toLocaleTimeString()}
+                        </td>
+                        <td className="py-1.5 pr-3">
+                          <span
+                            className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${err.error_type === "fatal"
+                              ? "bg-red-100 text-red-700"
+                              : "bg-amber-100 text-amber-700"
+                              }`}
+                          >
+                            {err.error_type}
+                          </span>
+                        </td>
+                        <td className="py-1.5 pr-3 text-gray-700">
+                          {err.provider}
+                        </td>
+                        <td className="max-w-xs truncate py-1.5 text-gray-600">
+                          {err.detail}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )}
+
         {llmModels && (
           <section className="mb-6 rounded-lg border border-gray-200 bg-white shadow-sm">
             <div className="border-b border-gray-100 px-4 py-3">
@@ -822,13 +904,12 @@ export function AdminDashboardPage() {
                       <td className="px-4 py-2 text-gray-700">{entry.admin_email}</td>
                       <td className="px-4 py-2">
                         <span
-                          className={`inline-block rounded px-1.5 py-0.5 text-xs font-medium ${
-                            entry.action === "create"
-                              ? "bg-green-50 text-green-700"
-                              : entry.action === "delete"
-                                ? "bg-red-50 text-red-700"
-                                : "bg-blue-50 text-blue-700"
-                          }`}
+                          className={`inline-block rounded px-1.5 py-0.5 text-xs font-medium ${entry.action === "create"
+                            ? "bg-green-50 text-green-700"
+                            : entry.action === "delete"
+                              ? "bg-red-50 text-red-700"
+                              : "bg-blue-50 text-blue-700"
+                            }`}
                         >
                           {entry.action}
                         </span>{" "}

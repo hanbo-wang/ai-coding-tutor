@@ -35,7 +35,7 @@ if not defined COMPOSE_CMD (
 )
 
 :: Fail fast when Docker engine is unreachable.
-echo  [0/5] Checking Docker engine...
+echo  [0/6] Checking Docker engine...
 set "DOCKER_ATTEMPTS=0"
 :docker_check_loop
 docker info >nul 2>&1
@@ -64,7 +64,7 @@ echo  ============================================
 echo.
 
 :: Start database and backend detached, then stream logs in a separate window.
-echo  [1/5] Starting database and backend...
+echo  [1/6] Starting database and backend...
 cmd /c "%COMPOSE_CMD% up --build -d db backend"
 if errorlevel 1 (
     echo.
@@ -82,7 +82,7 @@ if errorlevel 1 (
 start "Guided Cursor - Backend Logs" cmd /k "%COMPOSE_CMD% logs -f backend db"
 
 :: Wait for backend health endpoint.
-echo  [2/5] Waiting for backend to be ready...
+echo  [2/6] Waiting for backend to be ready...
 set ATTEMPTS=0
 
 :health_loop
@@ -113,7 +113,7 @@ echo  Backend is ready!
 echo.
 
 :: Verify provider connectivity through the backend health API.
-echo  [3/5] Verifying LLM APIs...
+echo  [3/6] Verifying LLM APIs...
 set "VERIFY_ATTEMPT=0"
 :verify_loop
 set /a VERIFY_ATTEMPT+=1
@@ -145,13 +145,28 @@ exit /b 1
 :verify_ok
 echo  API verification passed.
 echo.
+:: Check and build JupyterLite static assets.
+echo  [4/6] Checking JupyterLite assets...
+if not exist "frontend\public\jupyterlite\jupyter-lite.json" (
+    echo  Building JupyterLite assets for the first time...
+    bash scripts/build-jupyterlite.sh
+    if !errorlevel! neq 0 (
+        echo.
+        echo  ERROR: Failed to build JupyterLite static assets.
+        pause
+        exit /b 1
+    )
+) else (
+    echo  JupyterLite assets found, skipping build.
+)
+echo.
 
 :: Start frontend dev server.
-echo  [4/5] Starting frontend...
+echo  [5/6] Starting frontend...
 start "Guided Cursor - Frontend" /d "%~dp0frontend" cmd /c "npm install && npm run dev"
 
 :: Wait for Vite to serve HTTP 200.
-echo  [5/5] Waiting for frontend to start...
+echo  [6/6] Waiting for frontend to start...
 set FATTEMPTS=0
 
 :frontend_loop

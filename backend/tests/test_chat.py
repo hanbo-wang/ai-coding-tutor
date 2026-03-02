@@ -6,6 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 from app.routers.chat import (
+    FATAL_LLM_ERROR_MESSAGE,
+    GENERIC_LLM_UNAVAILABLE_ERROR,
     GOOGLE_AI_STUDIO_PROVIDER,
     GOOGLE_VERTEX_PROVIDER,
     _build_enriched_message,
@@ -166,30 +168,38 @@ def test_build_notebook_context_block_includes_cell_and_error() -> None:
     assert "Traceback line" in block
 
 
-def test_runtime_usage_provider_id_maps_google_by_transport(monkeypatch) -> None:
-    monkeypatch.setattr("app.routers.chat.settings.google_gemini_transport", "aistudio")
-    assert _runtime_usage_provider_id("google") == GOOGLE_AI_STUDIO_PROVIDER
-
-    monkeypatch.setattr("app.routers.chat.settings.google_gemini_transport", "vertex")
-    assert _runtime_usage_provider_id("google") == GOOGLE_VERTEX_PROVIDER
+def test_runtime_usage_provider_id_maps_google_by_transport() -> None:
+    assert _runtime_usage_provider_id("google", "aistudio") == GOOGLE_AI_STUDIO_PROVIDER
+    assert _runtime_usage_provider_id("google", "vertex") == GOOGLE_VERTEX_PROVIDER
 
 
 def test_runtime_usage_provider_id_keeps_non_google_provider() -> None:
     assert _runtime_usage_provider_id("openai") == "openai"
 
 
-def test_user_facing_llm_error_message_for_vertex_location_issue(monkeypatch) -> None:
-    monkeypatch.setattr("app.routers.chat.settings.google_gemini_transport", "vertex")
+def test_user_facing_llm_error_message_fatal_for_vertex_location_issue() -> None:
+    """Vertex location/404 errors contain fatal keywords and are non-retryable."""
     message = _user_facing_llm_error_message(
         Exception("Gemini API error 404: model not found in location"),
         "google",
+        "vertex",
     )
-    assert "GOOGLE_VERTEX_GEMINI_LOCATION to 'global'" in message
+    assert message == FATAL_LLM_ERROR_MESSAGE
 
 
-def test_user_facing_llm_error_message_falls_back_to_generic() -> None:
+def test_user_facing_llm_error_message_fatal_for_auth_error() -> None:
+    """Authentication errors are fatal and non-retryable."""
+    message = _user_facing_llm_error_message(
+        Exception("Error 401: Unauthorized - invalid API key"),
+        "openai",
+    )
+    assert message == FATAL_LLM_ERROR_MESSAGE
+
+
+def test_user_facing_llm_error_message_transient_for_timeout() -> None:
+    """Timeout errors are transient and retryable."""
     message = _user_facing_llm_error_message(Exception("timeout"), "openai")
-    assert message == "AI service temporarily unavailable. Please try again."
+    assert message == GENERIC_LLM_UNAVAILABLE_ERROR
 
 
 @pytest.mark.asyncio

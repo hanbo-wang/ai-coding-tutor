@@ -32,12 +32,16 @@ htmlcov/
 # Node and frontend
 node_modules/
 node_modules.*/
+node_modules_old*/
+frontend/node_modules_old*/
 node_modules_pre_ci_backup_*/
 dist/
 .vite/
 *.tsbuildinfo
 playwright-report/
 test-results/
+frontend/playwright-report/
+frontend/test-results/
 
 # JupyterLite build output
 frontend/public/jupyterlite/

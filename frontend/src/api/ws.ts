@@ -3,30 +3,42 @@ import { getAccessToken } from "./http";
 export type WsEvent =
   | { type: "session"; session_id: string }
   | {
-      type: "meta";
-      programming_difficulty: number;
-      maths_difficulty: number;
-      programming_hint_level: number;
-      maths_hint_level: number;
-      same_problem: boolean;
-      is_elaboration: boolean;
-      source:
-        | "single_pass_header_route"
-        | "two_step_recovery_route"
-        | "emergency_full_hint_fallback"
-        | string;
-    }
-  | { type: "token"; content: string }
+    type: "meta";
+    session_id?: string;
+    programming_difficulty: number;
+    maths_difficulty: number;
+    programming_hint_level: number;
+    maths_hint_level: number;
+    same_problem: boolean;
+    is_elaboration: boolean;
+    source:
+    | "single_pass_header_route"
+    | "two_step_recovery_route"
+    | "emergency_full_hint_fallback"
+    | string;
+  }
+  | { type: "token"; session_id?: string; content: string }
   | {
-      type: "done";
-      programming_difficulty: number;
-      maths_difficulty: number;
-      programming_hint_level: number;
-      maths_hint_level: number;
-      input_tokens: number;
-      output_tokens: number;
-    }
-  | { type: "error"; message: string };
+    type: "status";
+    session_id?: string;
+    status: "reconnecting" | string;
+    stage: string;
+    attempt: number;
+    max_attempts: number;
+    switched_model?: boolean;
+    message: string;
+  }
+  | {
+    type: "done";
+    session_id?: string;
+    programming_difficulty: number;
+    maths_difficulty: number;
+    programming_hint_level: number;
+    maths_hint_level: number;
+    input_tokens: number;
+    output_tokens: number;
+  }
+  | { type: "error"; session_id?: string; message: string };
 
 export interface ChatSendOptions {
   sessionId?: string | null;
@@ -48,7 +60,7 @@ export function createChatSocket(
   const token = getAccessToken();
   if (!token) {
     onEvent({ type: "error", message: "Not authenticated" });
-    return { send: () => {}, close: () => {} };
+    return { send: () => { }, close: () => { } };
   }
 
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";

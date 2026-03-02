@@ -2,6 +2,12 @@ const COMMAND_TIMEOUT_MS = 10000;
 const LOAD_NOTEBOOK_TIMEOUT_MS = 45000;
 const BRIDGE_READY_TIMEOUT_MS = 20000;
 const BRIDGE_READY_POLL_MS = 500;
+export type LayoutRefreshPhase = "drag" | "settle";
+export type LayoutRefreshReason =
+  | "split-drag"
+  | "split-settle"
+  | "window-resize"
+  | "observer-settle";
 
 interface BridgeEnvelope {
   command: string;
@@ -13,6 +19,12 @@ interface BridgeEnvelope {
   notebook_title?: string;
   code?: string;
   cell_index?: number;
+  phase?: LayoutRefreshPhase;
+  reason?: LayoutRefreshReason;
+  final_pass?: boolean;
+  pane_width?: number;
+  pane_height?: number;
+  request_ts?: number;
   error?: string | null;
   ok?: boolean;
 }
@@ -164,6 +176,35 @@ export async function getErrorOutput(
 ): Promise<string | null> {
   const response = await postCommand<BridgeEnvelope>(iframe, "get-error-output");
   return response.error ?? null;
+}
+
+export async function refreshNotebookLayout(
+  iframe: HTMLIFrameElement,
+  options: {
+    phase?: LayoutRefreshPhase;
+    reason?: LayoutRefreshReason;
+    paneWidth?: number;
+    paneHeight?: number;
+    requestTs?: number;
+    timeoutMs?: number;
+    finalPass?: boolean;
+  } = {}
+): Promise<void> {
+  const phase: LayoutRefreshPhase =
+    options.phase ?? (options.finalPass ? "settle" : "drag");
+  await postCommand<BridgeEnvelope>(
+    iframe,
+    "refresh-layout",
+    {
+      phase,
+      reason: options.reason ?? null,
+      final_pass: phase === "settle",
+      pane_width: options.paneWidth ?? null,
+      pane_height: options.paneHeight ?? null,
+      request_ts: options.requestTs ?? Date.now(),
+    },
+    options.timeoutMs ?? 2500
+  );
 }
 
 export async function subscribeNotebookDirty(

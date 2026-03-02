@@ -22,6 +22,11 @@ import {
 } from "./notebookBridge";
 
 export type NotebookSaveStatus = "saved" | "saving" | "unsaved" | "error";
+export type WorkspaceLayoutRefreshPhase = "drag" | "settle";
+export interface WorkspaceLayoutRefreshOptions {
+  reason?: string;
+  force?: boolean;
+}
 
 export interface NotebookCellContext {
   cellCode: string;
@@ -30,6 +35,8 @@ export interface NotebookCellContext {
 
 export interface NotebookPanelHandle {
   getCellContext: () => Promise<NotebookCellContext>;
+  // requestLayoutRefresh is kept for backwards compatibility but is a no-op
+  requestLayoutRefresh: () => void;
 }
 
 interface NotebookPanelProps {
@@ -79,12 +86,12 @@ function describeNotebookBridgeFailure(
   try {
     const iframeWindow = iframe.contentWindow as
       | (Window & {
-          jupyterapp?: { hasPlugin?: (id: string) => boolean };
-          __guidedCursorNotebookBridge?: {
-            ready?: boolean;
-            startupWarnings?: string[];
-          };
-        })
+        jupyterapp?: { hasPlugin?: (id: string) => boolean };
+        __guidedCursorNotebookBridge?: {
+          ready?: boolean;
+          startupWarnings?: string[];
+        };
+      })
       | null;
     const iframeDocument = iframe.contentDocument;
     if (!iframeWindow || !iframeDocument) {
@@ -121,15 +128,15 @@ function withWorkspaceKernel(
 ): Record<string, unknown> {
   const metadata =
     notebookJson.metadata &&
-    typeof notebookJson.metadata === "object" &&
-    !Array.isArray(notebookJson.metadata)
+      typeof notebookJson.metadata === "object" &&
+      !Array.isArray(notebookJson.metadata)
       ? (notebookJson.metadata as Record<string, unknown>)
       : {};
 
   const kernelspec =
     metadata.kernelspec &&
-    typeof metadata.kernelspec === "object" &&
-    !Array.isArray(metadata.kernelspec)
+      typeof metadata.kernelspec === "object" &&
+      !Array.isArray(metadata.kernelspec)
       ? (metadata.kernelspec as Record<string, unknown>)
       : {};
 
@@ -182,6 +189,7 @@ export const NotebookPanel = forwardRef<NotebookPanelHandle, NotebookPanelProps>
     },
     ref
   ) {
+    const layoutContainerRef = useRef<HTMLDivElement | null>(null);
     const iframeRef = useRef<HTMLIFrameElement | null>(null);
     const dirtyRef = useRef(false);
     const savingRef = useRef(false);
@@ -228,18 +236,31 @@ export const NotebookPanel = forwardRef<NotebookPanelHandle, NotebookPanelProps>
       [onSaveStatusChange]
     );
 
+    const requestLayoutRefresh = useCallback(() => {
+      // No-Op: Layout is handled naturally by flex/CSS
+    }, []);
+
     const performSave = useCallback(
       async (useKeepalive: boolean) => {
         const iframe = iframeRef.current;
         if (!iframe) return;
         if (!dirtyRef.current || savingRef.current) return;
         if (!savePath) return;
+        // Never save before the notebook has been fully loaded — avoids overwriting
+        // valid content with an empty notebook during page transitions.
+        if (!loadedSignatureRef.current) return;
 
         savingRef.current = true;
         setStatus("saving");
 
         try {
           const notebookState = await getNotebookState(iframe);
+          // Guard against saving an empty notebook (e.g. bridge returning stale state).
+          const cells = (notebookState as { cells?: unknown }).cells;
+          if (!Array.isArray(cells) || cells.length === 0) {
+            savingRef.current = false;
+            return;
+          }
           const payload =
             mode === "zone"
               ? { notebook_state: notebookState }
@@ -272,7 +293,6 @@ export const NotebookPanel = forwardRef<NotebookPanelHandle, NotebookPanelProps>
       dirtyRef.current = false;
       savingRef.current = false;
       setStatus("saved");
-      loadedSignatureRef.current = null;
       bridgeRecoverySignatureRef.current = null;
       if (dirtyUnsubscribeRef.current) {
         dirtyUnsubscribeRef.current();
@@ -282,7 +302,14 @@ export const NotebookPanel = forwardRef<NotebookPanelHandle, NotebookPanelProps>
         saveRequestUnsubscribeRef.current();
         saveRequestUnsubscribeRef.current = null;
       }
-    }, [notebookId, mode, zoneId, reloadKey, setStatus, workspaceKey]);
+    }, [
+      notebookId,
+      mode,
+      zoneId,
+      reloadKey,
+      setStatus,
+      workspaceKey,
+    ]);
 
     useEffect(() => {
       return () => {
@@ -296,6 +323,8 @@ export const NotebookPanel = forwardRef<NotebookPanelHandle, NotebookPanelProps>
         }
       };
     }, []);
+
+
 
     useEffect(() => {
       const onMessage = (event: MessageEvent<{ command?: string }>) => {
@@ -326,6 +355,7 @@ export const NotebookPanel = forwardRef<NotebookPanelHandle, NotebookPanelProps>
 
       const signature = `${mode}:${zoneId ?? ""}:${notebookId}:${reloadKey}:${workspaceKey ?? ""}`;
       if (loadedSignatureRef.current === signature) {
+        setIsLoading(false);
         return;
       }
 
@@ -504,17 +534,23 @@ export const NotebookPanel = forwardRef<NotebookPanelHandle, NotebookPanelProps>
             return { cellCode: "", errorOutput: null };
           }
         },
+        requestLayoutRefresh() {
+          requestLayoutRefresh();
+        },
       }),
-      [isIframeReady]
+      [isIframeReady, requestLayoutRefresh]
     );
 
     return (
-      <div className="relative h-full bg-white border-r border-gray-200">
+      <div
+        ref={layoutContainerRef}
+        className="relative h-full min-h-0 min-w-0 overflow-hidden bg-white border-r border-gray-200"
+      >
         <iframe
           ref={iframeRef}
           src={iframeSrc}
           title="Notebook workspace"
-          className="h-full w-full"
+          className="block h-full w-full bg-white"
           onLoad={() => setIsIframeLoaded(true)}
         />
 

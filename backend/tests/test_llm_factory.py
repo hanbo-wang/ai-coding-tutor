@@ -7,7 +7,11 @@ from types import SimpleNamespace
 import pytest
 
 from app.ai.llm_base import LLMError
-from app.ai.llm_factory import get_llm_provider
+from app.ai.llm_factory import (
+    LLMTarget,
+    get_llm_provider,
+    list_llm_fallback_targets,
+)
 
 
 class _FakeProvider:
@@ -94,6 +98,10 @@ def test_factory_uses_google_ai_studio_when_transport_selected(monkeypatch) -> N
 
 
 def test_factory_falls_back_to_openai_when_google_missing(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.ai.llm_factory.GoogleServiceAccountTokenProvider",
+        lambda _path: (_ for _ in ()).throw(LLMError("vertex credentials unavailable")),
+    )
     monkeypatch.setattr("app.ai.llm_factory.OpenAIProvider", _FakeProvider)
 
     provider = get_llm_provider(
@@ -109,6 +117,85 @@ def test_factory_falls_back_to_openai_when_google_missing(monkeypatch) -> None:
     assert provider.kwargs["model_id"] == "gpt-5-mini"
 
 
-def test_factory_raises_when_nothing_configured() -> None:
+def test_factory_raises_when_nothing_configured(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.ai.llm_factory.GoogleServiceAccountTokenProvider",
+        lambda _path: (_ for _ in ()).throw(LLMError("vertex credentials unavailable")),
+    )
     with pytest.raises(LLMError):
         get_llm_provider(_settings())
+
+
+def test_fallback_targets_prioritise_same_provider_small_model() -> None:
+    targets = list_llm_fallback_targets(
+        _settings(
+            llm_provider="openai",
+            llm_model_openai="gpt-5.2",
+            openai_api_key="sk-test",
+            anthropic_api_key="ak-test",
+            google_api_key="AIza-test",
+            google_application_credentials="/tmp/sa.json",
+            google_gemini_transport="aistudio",
+        ),
+        current_provider="openai",
+        current_model="gpt-5.2",
+    )
+    assert targets[0] == LLMTarget(provider="openai", model_id="gpt-5-mini")
+
+
+def test_fallback_targets_follow_cross_provider_ring_order() -> None:
+    targets = list_llm_fallback_targets(
+        _settings(
+            llm_provider="openai",
+            llm_model_openai="gpt-5.2",
+            openai_api_key="sk-test",
+            anthropic_api_key="ak-test",
+            google_api_key="AIza-test",
+            google_application_credentials="/tmp/sa.json",
+            google_gemini_transport="vertex",
+        ),
+        current_provider="openai",
+        current_model="gpt-5.2",
+    )
+    providers = [target.provider for target in targets]
+    first_google_index = providers.index("google")
+    first_anthropic_index = providers.index("anthropic")
+    assert first_google_index < first_anthropic_index
+
+
+def test_fallback_targets_for_google_keep_current_transport_first() -> None:
+    targets = list_llm_fallback_targets(
+        _settings(
+            llm_provider="google",
+            llm_model_google="gemini-3-flash-preview",
+            google_gemini_transport="aistudio",
+            google_api_key="AIza-test",
+            google_application_credentials="/tmp/sa.json",
+        ),
+        current_provider="google",
+        current_model="gemini-3-flash-preview",
+        current_google_transport="aistudio",
+    )
+    google_targets = [target for target in targets if target.provider == "google"]
+    assert google_targets
+    assert google_targets[0].google_transport == "aistudio"
+
+
+def test_fallback_targets_skip_uncredentialled_google_backup_transport() -> None:
+    targets = list_llm_fallback_targets(
+        _settings(
+            llm_provider="google",
+            llm_model_google="gemini-3-flash-preview",
+            google_gemini_transport="aistudio",
+            google_api_key="AIza-test",
+            google_application_credentials="",
+            google_application_credentials_host_path="",
+        ),
+        current_provider="google",
+        current_model="gemini-3-flash-preview",
+        current_google_transport="aistudio",
+    )
+    assert not any(
+        target.provider == "google" and target.google_transport == "vertex"
+        for target in targets
+    )

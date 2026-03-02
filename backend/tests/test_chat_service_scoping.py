@@ -100,7 +100,7 @@ async def test_get_or_create_session_ignores_general_session_id_for_notebook_sco
 async def test_get_or_create_session_resolves_current_scope_after_mismatched_scoped_id(
     chat_service_db,
 ) -> None:
-    """A mismatched scoped session ID should fall back to the requested scoped session."""
+    """A mismatched scoped session ID should create a fresh scoped session."""
     user = await _create_user(chat_service_db)
     notebook_a = uuid.uuid4()
     notebook_b = uuid.uuid4()
@@ -126,7 +126,8 @@ async def test_get_or_create_session_resolves_current_scope_after_mismatched_sco
             module_id=notebook_b,
         )
 
-    assert resolved.id == session_b.id
+    assert resolved.id != session_a.id
+    assert resolved.id != session_b.id
     assert resolved.module_id == notebook_b
 
 
@@ -181,3 +182,29 @@ async def test_get_or_create_session_reuses_matching_session_id(chat_service_db)
     assert resolved.id == scoped.id
     assert resolved.session_type == "zone"
     assert resolved.module_id == zone_notebook_id
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_session_creates_new_scoped_session_without_session_id(
+    chat_service_db,
+) -> None:
+    """Scoped requests without a session ID should always start a new session."""
+    user = await _create_user(chat_service_db)
+    notebook_id = uuid.uuid4()
+    first = await _create_session(
+        chat_service_db,
+        user_id=user.id,
+        session_type="notebook",
+        module_id=notebook_id,
+    )
+
+    async with chat_service_db() as db:
+        second = await chat_service.get_or_create_session(
+            db,
+            user.id,
+            session_type="notebook",
+            module_id=notebook_id,
+        )
+
+    assert second.id != first.id
+    assert second.module_id == notebook_id

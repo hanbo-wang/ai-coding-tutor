@@ -5,6 +5,7 @@ import Split from "react-split";
 import { useAuth } from "../auth/useAuth";
 import { NotebookPanel, NotebookPanelHandle } from "./NotebookPanel";
 import { WorkspaceChatPanel } from "./WorkspaceChatPanel";
+import { useWorkspaceSplitRefresh } from "./useWorkspaceSplitRefresh";
 
 export function NotebookWorkspacePage() {
   const { user } = useAuth();
@@ -18,6 +19,8 @@ export function NotebookWorkspacePage() {
     return panelRef.current.getCellContext();
   }, []);
 
+  const { onDrag, onDragEnd } = useWorkspaceSplitRefresh();
+
   if (!notebookId) {
     return (
       <div className="h-full flex items-center justify-center text-gray-600">
@@ -29,14 +32,17 @@ export function NotebookWorkspacePage() {
   const workspaceKey = `${user?.id ?? "anonymous"}:personal:${notebookId}`;
 
   return (
-    <div className="h-full bg-gray-100">
+    <div className="h-full min-h-0 overflow-hidden bg-gray-100">
       <Split
         sizes={[60, 40]}
-        minSize={300}
+        minSize={[650, 360]}
         gutterSize={10}
-        className="split-root h-full flex"
+        dragInterval={12}
+        onDrag={onDrag}
+        onDragEnd={onDragEnd}
+        className="split-root h-full min-h-0 overflow-hidden flex"
       >
-        <div className="min-w-0 h-full">
+        <div className="min-w-0 min-h-0 h-full overflow-hidden">
           <NotebookPanel
             key={workspaceKey}
             ref={panelRef}
@@ -45,7 +51,7 @@ export function NotebookWorkspacePage() {
             workspaceKey={workspaceKey}
           />
         </div>
-        <div className="min-w-0 h-full">
+        <div className="min-w-0 min-h-0 h-full overflow-hidden">
           <WorkspaceChatPanel
             key={`workspace-chat:notebook:${notebookId}`}
             sessionType="notebook"

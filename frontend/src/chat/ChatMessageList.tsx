@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { ChatMessage } from "../api/types";
 import { ChatBubble } from "./ChatBubble";
 import type { StreamingMeta } from "./useChatSocket";
@@ -9,16 +9,17 @@ interface ChatMessageListProps {
   messages: ChatMessage[];
   streamingContent: string;
   streamingMeta?: StreamingMeta | null;
+  retryStatus?: string | null;
 }
 
 export function ChatMessageList({
   messages,
   streamingContent,
   streamingMeta,
+  retryStatus,
 }: ChatMessageListProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
-  const [containerWidth, setContainerWidth] = useState(0);
 
   function isNearBottom(el: HTMLDivElement): boolean {
     const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
@@ -37,56 +38,30 @@ export function ChatMessageList({
 
   useEffect(() => {
     const el = containerRef.current;
-    if (!el) {
-      return;
-    }
-
-    let frameId = 0;
-    const syncWidth = () => {
-      const nextWidth = Math.round(el.clientWidth);
-      setContainerWidth((prev) => (prev === nextWidth ? prev : nextWidth));
-    };
-
-    syncWidth();
-
-    if (typeof ResizeObserver === "undefined") {
-      return;
-    }
-
-    const observer = new ResizeObserver(() => {
-      if (frameId) {
-        cancelAnimationFrame(frameId);
-      }
-      frameId = requestAnimationFrame(syncWidth);
-    });
-
-    observer.observe(el);
-
-    return () => {
-      if (frameId) {
-        cancelAnimationFrame(frameId);
-      }
-      observer.disconnect();
-    };
-  }, []);
-
-  useEffect(() => {
-    const el = containerRef.current;
     if (el && shouldStickToBottomRef.current) {
       el.scrollTop = el.scrollHeight;
       shouldStickToBottomRef.current = true;
     }
-  }, [messages, streamingContent, streamingMeta, containerWidth]);
+  }, [messages, streamingContent, streamingMeta]);
 
   return (
     <div
       ref={containerRef}
       onScroll={handleScroll}
       className="h-full overflow-y-auto px-4 py-4"
+      style={{ overflowAnchor: "none" }}
     >
       {messages.map((msg, index) => (
         <ChatBubble key={msg.id ?? index} message={msg} />
       ))}
+
+      {retryStatus && (
+        <div className="mb-3 flex justify-end">
+          <div className="w-full max-w-[88%] rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 md:max-w-[78%]">
+            {retryStatus}
+          </div>
+        </div>
+      )}
 
       {(streamingContent || streamingMeta) && (
         <ChatBubble

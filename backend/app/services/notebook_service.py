@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.notebook import UserNotebook
+import app.services.chat_service as chat_service
 from app.services.notebook_utils import (
     normalise_extension,
     parse_ipynb_bytes,
@@ -233,6 +234,12 @@ async def delete_notebook(
     if notebook is None:
         return False
 
+    await chat_service.delete_sessions_for_user_scope(
+        db,
+        user_id,
+        session_type="notebook",
+        module_id=notebook_id,
+    )
     safe_delete_file(notebook.storage_path)
     await db.delete(notebook)
     await db.flush()

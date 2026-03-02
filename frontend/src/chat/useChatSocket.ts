@@ -13,6 +13,12 @@ export interface StreamingMeta {
   source?: string;
 }
 
+type StreamState = {
+  content: string;
+  meta: StreamingMeta | null;
+  retryStatus: string | null;
+};
+
 /**
  * Shared WebSocket chat state and event handling.
  *
@@ -25,11 +31,37 @@ export function useChatSocket(onSessionCreated?: (sessionId: string) => void) {
   const [streamingContent, setStreamingContent] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingMeta, setStreamingMeta] = useState<StreamingMeta | null>(null);
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [retryStatus, setRetryStatus] = useState<string | null>(null);
+  const [sessionId, setSessionIdState] = useState<string | null>(null);
+  const sessionIdRef = useRef<string | null>(null);
   const [connected, setConnected] = useState(false);
   const socketRef = useRef<ReturnType<typeof createChatSocket> | null>(null);
   const onSessionCreatedRef = useRef(onSessionCreated);
   const streamingMetaRef = useRef<StreamingMeta | null>(null);
+  const backgroundStreamsRef = useRef<Record<string, StreamState>>({});
+
+  const setSessionId = useCallback((id: string | null | ((prev: string | null) => string | null)) => {
+    setSessionIdState((prev) => {
+      const nextId = typeof id === "function" ? id(prev) : id;
+      sessionIdRef.current = nextId;
+
+      // Swap to the background stream buffer seamlessly
+      if (nextId && backgroundStreamsRef.current[nextId]) {
+        const stream = backgroundStreamsRef.current[nextId];
+        setStreamingContent(stream.content);
+        setStreamingMeta(stream.meta);
+        setRetryStatus(stream.retryStatus);
+        setIsStreaming(true);
+      } else {
+        setStreamingContent("");
+        setStreamingMeta(null);
+        setRetryStatus(null);
+        setIsStreaming(false);
+      }
+
+      return nextId;
+    });
+  }, []);
 
   useEffect(() => {
     onSessionCreatedRef.current = onSessionCreated;
@@ -40,6 +72,45 @@ export function useChatSocket(onSessionCreated?: (sessionId: string) => void) {
   }, [streamingMeta]);
 
   const handleEvent = useCallback((event: WsEvent) => {
+    const incomingSessionId = "session_id" in event ? event.session_id : undefined;
+
+    // 1. Maintain a resilient background buffer for all active streams
+    if (incomingSessionId) {
+      if (!backgroundStreamsRef.current[incomingSessionId]) {
+        backgroundStreamsRef.current[incomingSessionId] = { content: "", meta: null, retryStatus: null };
+      }
+      const stream = backgroundStreamsRef.current[incomingSessionId];
+
+      if (event.type === "token") {
+        stream.content += event.content;
+      } else if (event.type === "meta") {
+        stream.meta = {
+          programmingDifficulty: event.programming_difficulty,
+          mathsDifficulty: event.maths_difficulty,
+          programmingHintLevel: event.programming_hint_level,
+          mathsHintLevel: event.maths_hint_level,
+          sameProblem: event.same_problem,
+          isElaboration: event.is_elaboration,
+          source: event.source,
+        };
+      } else if (event.type === "status") {
+        stream.retryStatus = event.message;
+      } else if (event.type === "done" || event.type === "error") {
+        // Safe to clear: loading next from history will fetch completely from DB
+        delete backgroundStreamsRef.current[incomingSessionId];
+      }
+    }
+
+    // 2. Safely prevent active UI state blocks from mixing
+    if (
+      event.type !== "session" &&
+      incomingSessionId &&
+      incomingSessionId !== sessionIdRef.current
+    ) {
+      // Do nothing to the foreground UI if it's not the active session.
+      return;
+    }
+
     switch (event.type) {
       case "session":
         setSessionId((prev) => {
@@ -50,9 +121,11 @@ export function useChatSocket(onSessionCreated?: (sessionId: string) => void) {
         });
         break;
       case "token":
+        setRetryStatus(null);
         setStreamingContent((prev) => prev + event.content);
         break;
       case "meta":
+        setRetryStatus(null);
         setStreamingMeta({
           programmingDifficulty: event.programming_difficulty,
           mathsDifficulty: event.maths_difficulty,
@@ -96,6 +169,7 @@ export function useChatSocket(onSessionCreated?: (sessionId: string) => void) {
             return "";
           });
           setStreamingMeta(null);
+          setRetryStatus(null);
           setIsStreaming(false);
           break;
         }
@@ -106,10 +180,14 @@ export function useChatSocket(onSessionCreated?: (sessionId: string) => void) {
         ]);
         setStreamingContent("");
         setStreamingMeta(null);
+        setRetryStatus(null);
         setIsStreaming(false);
         break;
+      case "status":
+        setRetryStatus(event.message);
+        break;
     }
-  }, []);
+  }, [setSessionId]);
 
   useEffect(() => {
     const socket = createChatSocket(
@@ -130,6 +208,8 @@ export function useChatSocket(onSessionCreated?: (sessionId: string) => void) {
     setStreamingContent,
     streamingMeta,
     setStreamingMeta,
+    retryStatus,
+    setRetryStatus,
     isStreaming,
     setIsStreaming,
     sessionId,

@@ -48,11 +48,11 @@ class ChatSession(Base):
     __table_args__ = (
         Index("ix_chat_sessions_user_type", "user_id", "session_type"),
         Index(
-            "uq_chat_sessions_scoped",
+            "ix_chat_sessions_scoped",
             "user_id",
             "session_type",
             "module_id",
-            unique=True,
+            unique=False,
             postgresql_where=text(
                 "module_id IS NOT NULL AND session_type IN ('notebook', 'zone')"
             ),

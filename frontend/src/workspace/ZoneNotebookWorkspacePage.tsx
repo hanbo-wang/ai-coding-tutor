@@ -6,6 +6,7 @@ import { apiFetch } from "../api/http";
 import { useAuth } from "../auth/useAuth";
 import { NotebookPanel, NotebookPanelHandle } from "./NotebookPanel";
 import { WorkspaceChatPanel } from "./WorkspaceChatPanel";
+import { useWorkspaceSplitRefresh } from "./useWorkspaceSplitRefresh";
 
 export function ZoneNotebookWorkspacePage() {
   const { user } = useAuth();
@@ -25,6 +26,8 @@ export function ZoneNotebookWorkspacePage() {
     return panelRef.current.getCellContext();
   }, []);
 
+  const { onDrag, onDragEnd } = useWorkspaceSplitRefresh();
+
   const handleReset = async () => {
     if (!zoneId || !notebookId) return;
     const confirmed = window.confirm(
@@ -36,17 +39,18 @@ export function ZoneNotebookWorkspacePage() {
       await apiFetch(`/api/zones/${zoneId}/notebooks/${notebookId}/progress`, {
         method: "DELETE",
       });
-      setReloadKey((value) => value + 1);
-      setError("");
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to reset notebook.";
-      if (message.toLowerCase().includes("progress not found")) {
-        setReloadKey((value) => value + 1);
-        setError("");
+      // A 404 simply means no edits were ever made, which is an acceptable success state.
+      if (!message.toLowerCase().includes("progress not found")) {
+        setError(message);
         return;
       }
-      setError(message);
     }
+
+    // Always reset the workspace state when a reset successfully occurred (or there was no progress to begin with).
+    setReloadKey((value) => value + 1);
+    setError("");
   };
 
   if (!zoneId || !notebookId) {
@@ -60,39 +64,46 @@ export function ZoneNotebookWorkspacePage() {
   const workspaceKey = `${user?.id ?? "anonymous"}:zone:${zoneId}:${notebookId}`;
 
   return (
-    <div className="h-full bg-gray-100 flex flex-col">
+    <div className="h-full min-h-0 overflow-hidden bg-gray-100 flex flex-col">
       {error && (
         <div className="border-b border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
           {error}
         </div>
       )}
 
-      <div className="relative min-h-0 flex-1">
+      <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
         <Split
           sizes={[60, 40]}
-          minSize={300}
+          minSize={[650, 360]}
           gutterSize={10}
-          className="split-root h-full flex"
+          dragInterval={12}
+          onDrag={onDrag}
+          onDragEnd={onDragEnd}
+          className="split-root h-full min-h-0 overflow-hidden flex"
         >
-          <div className="relative min-w-0 h-full">
-            <button
-              type="button"
-              onClick={() => void handleReset()}
-              className="absolute right-3 top-3 z-20 rounded-md border border-gray-300 bg-white/95 px-2.5 py-1 text-xs text-gray-700 shadow-sm hover:bg-white"
-            >
-              Reset to Original
-            </button>
-            <NotebookPanel
-              key={`${workspaceKey}-${reloadKey}`}
-              ref={panelRef}
-              notebookId={notebookId}
-              mode="zone"
-              zoneId={zoneId}
-              reloadKey={reloadKey}
-              workspaceKey={workspaceKey}
-            />
+          <div className="min-w-0 min-h-0 h-full overflow-hidden flex flex-col relative">
+            <div className="absolute top-[2px] right-2 z-10 flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => void handleReset()}
+                className="rounded-md border border-gray-300 bg-white px-2.5 py-1 text-xs text-gray-700 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-1"
+              >
+                Reset to Original
+              </button>
+            </div>
+            <div className="relative min-h-0 flex-1 overflow-hidden">
+              <NotebookPanel
+                key={`${workspaceKey}-${reloadKey}`}
+                ref={panelRef}
+                notebookId={notebookId}
+                mode="zone"
+                zoneId={zoneId}
+                reloadKey={reloadKey}
+                workspaceKey={workspaceKey}
+              />
+            </div>
           </div>
-          <div className="min-w-0 h-full">
+          <div className="min-w-0 min-h-0 h-full overflow-hidden">
             <WorkspaceChatPanel
               key={`workspace-chat:zone:${zoneId}:${notebookId}`}
               sessionType="zone"

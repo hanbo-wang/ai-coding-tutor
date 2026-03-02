@@ -16,7 +16,7 @@ export function ChatBubble({ message }: ChatBubbleProps) {
   const [imageUrls, setImageUrls] = useState<Record<string, string>>({});
   const bubbleContainerClass = isUser ? "justify-end" : "justify-start";
   const bubbleSizeClass = isUser
-    ? "max-w-[88%] md:max-w-[78%]"
+    ? "w-fit max-w-[88%] md:max-w-[78%]"
     : "w-full max-w-[88%] md:max-w-[78%]";
   const bubbleCardClass = isUser
     ? "bg-brand text-white ring-1 ring-inset ring-white/10 shadow-sm rounded-2xl rounded-br-md"
@@ -96,12 +96,12 @@ export function ChatBubble({ message }: ChatBubbleProps) {
   };
 
   return (
-    <div className={`mb-4 flex ${bubbleContainerClass}`}>
+    <div className={`mb-4 flex min-w-0 ${bubbleContainerClass}`}>
       <div
-        className={`${bubbleSizeClass} px-4 py-3 ${bubbleCardClass}`}
+        className={`${bubbleSizeClass} min-w-0 px-4 py-3 ${bubbleCardClass}`}
       >
         {isUser ? (
-          <div className="space-y-2.5">
+          <div className="inline-flex max-w-full flex-col gap-2.5">
             {message.content && (
               <p className="whitespace-pre-wrap text-[0.95rem] leading-relaxed tracking-[0.01em]">
                 {message.content}
@@ -109,36 +109,38 @@ export function ChatBubble({ message }: ChatBubbleProps) {
             )}
 
             {imageAttachments.length > 0 && (
-              <div className="grid gap-2 sm:grid-cols-2">
-                {imageAttachments.map((attachment) => {
-                  const src = imageUrls[attachment.id];
-                  return src ? (
-                    <img
-                      key={attachment.id}
-                      src={src}
-                      alt={attachment.filename}
-                      className="max-h-56 w-full rounded-md object-contain bg-black/5"
-                    />
-                  ) : (
-                    <div
-                      key={attachment.id}
-                      className="flex h-24 items-center justify-center rounded-md bg-black/10 text-xs"
-                    >
-                      Image unavailable
-                    </div>
-                  );
-                })}
+              <div className="max-w-full overflow-x-auto overflow-y-hidden pb-1">
+                <div className="inline-flex min-w-max flex-nowrap items-start gap-2">
+                  {imageAttachments.map((attachment) => {
+                    const src = imageUrls[attachment.id];
+                    return src ? (
+                      <img
+                        key={attachment.id}
+                        src={src}
+                        alt={attachment.filename}
+                        className="block h-auto max-h-64 w-auto max-w-[min(62vw,22rem)] flex-none rounded-md bg-black/5 object-contain"
+                      />
+                    ) : (
+                      <div
+                        key={attachment.id}
+                        className="flex h-24 min-w-32 items-center justify-center rounded-md bg-black/10 px-3 text-xs"
+                      >
+                        Image unavailable
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
 
             {documentAttachments.length > 0 && (
-              <div className="space-y-1">
+              <div className="flex max-w-full flex-wrap gap-1.5">
                 {documentAttachments.map((attachment) => (
                   <button
                     key={attachment.id}
                     type="button"
                     onClick={() => void handleDocumentDownload(attachment)}
-                    className="block w-full rounded border border-white/40 px-2 py-1 text-left text-sm underline hover:bg-white/10"
+                    className="max-w-full rounded border border-white/40 px-2 py-1 text-left text-sm underline hover:bg-white/10"
                   >
                     {attachment.filename}
                   </button>

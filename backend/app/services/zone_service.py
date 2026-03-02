@@ -15,6 +15,7 @@ from app.models.zone import (
     ZoneNotebookProgress,
     ZoneSharedFile,
 )
+import app.services.chat_service as chat_service
 from app.services.notebook_service import (
     ensure_zone_notebook_storage_dir,
     notebook_size_limit_bytes,
@@ -310,6 +311,11 @@ async def delete_zone(
         return False
 
     notebooks = await list_zone_notebooks(db, zone_id)
+    await chat_service.delete_sessions_for_modules(
+        db,
+        session_type="zone",
+        module_ids=[item.id for item in notebooks],
+    )
     for notebook in notebooks:
         safe_delete_file(notebook.storage_path)
 
@@ -622,6 +628,11 @@ async def delete_zone_notebook(
     if notebook is None:
         return False
 
+    await chat_service.delete_sessions_for_scope(
+        db,
+        session_type="zone",
+        module_id=notebook_id,
+    )
     safe_delete_file(notebook.storage_path)
     await db.delete(notebook)
     await db.flush()

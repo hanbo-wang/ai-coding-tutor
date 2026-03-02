@@ -408,36 +408,42 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
       }`}
     >
       {attachments.length > 0 && (
-        <div className="mb-3 flex flex-wrap gap-2">
-          {attachments.map((attachment) => {
-            const isImage = attachment.previewUrl !== null;
-            return (
-              <div
-                key={attachment.id}
-                className="relative rounded-md border border-gray-200 bg-gray-50 p-2 pr-7"
-              >
-                {isImage ? (
-                  <img
-                    src={attachment.previewUrl ?? ""}
-                    alt={attachment.file.name}
-                    className="h-16 w-20 rounded object-cover"
-                  />
-                ) : (
-                  <p className="text-xs text-gray-700 max-w-[180px] truncate">
-                    {attachment.file.name}
-                  </p>
-                )}
-                <button
-                  type="button"
-                  onClick={() => removeAttachment(attachment.id)}
-                  className="absolute right-1 top-1 text-gray-400 hover:text-gray-700"
-                  aria-label="Remove attachment"
+        <div className="mb-3 overflow-x-auto overflow-y-hidden pb-1">
+          <div className="flex w-max min-w-full flex-nowrap items-end gap-2">
+            {attachments.map((attachment) => {
+              const isImage = attachment.previewUrl !== null;
+              return (
+                <div
+                  key={attachment.id}
+                  className={isImage ? "relative flex-none" : "relative flex-none rounded-md border border-gray-200 bg-gray-50 px-2 py-1 pr-7"}
                 >
-                  ×
-                </button>
-              </div>
-            );
-          })}
+                  {isImage ? (
+                    <img
+                      src={attachment.previewUrl ?? ""}
+                      alt={attachment.file.name}
+                      className="block h-auto max-h-28 w-auto max-w-[min(60vw,20rem)] rounded object-contain"
+                    />
+                  ) : (
+                    <p className="max-w-[220px] truncate text-xs text-gray-700">
+                      {attachment.file.name}
+                    </p>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => removeAttachment(attachment.id)}
+                    className={`absolute right-1 top-1 rounded-full px-1 text-xs leading-none ${
+                      isImage
+                        ? "bg-black/50 text-white hover:bg-black/65"
+                        : "text-gray-400 hover:text-gray-700"
+                    }`}
+                    aria-label="Remove attachment"
+                  >
+                    ×
+                  </button>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 

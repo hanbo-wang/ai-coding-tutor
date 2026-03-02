@@ -25,7 +25,7 @@ export function ChatPage() {
   const handleSessionCreated = useCallback(() => {
     apiFetch<ChatSession[]>("/api/chat/sessions")
       .then(setSessions)
-      .catch(() => {});
+      .catch(() => { });
   }, []);
 
   const {
@@ -35,6 +35,8 @@ export function ChatPage() {
     setStreamingContent,
     streamingMeta,
     setStreamingMeta,
+    retryStatus,
+    setRetryStatus,
     isStreaming,
     setIsStreaming,
     sessionId,
@@ -47,7 +49,7 @@ export function ChatPage() {
   useEffect(() => {
     apiFetch<ChatSession[]>("/api/chat/sessions")
       .then(setSessions)
-      .catch(() => {});
+      .catch(() => { });
   }, []);
 
   const handleSend = async (content: string, files: File[]) => {
@@ -73,6 +75,7 @@ export function ChatPage() {
     ]);
     setStreamingContent("");
     setStreamingMeta(null);
+    setRetryStatus(null);
     setIsStreaming(true);
     socketRef.current.send(prepared.cleanedContent, {
       sessionId,
@@ -88,8 +91,6 @@ export function ChatPage() {
       );
       setMessages(msgs);
       setSessionId(id);
-      setStreamingContent("");
-      setStreamingMeta(null);
     } catch {
       // Session may have been deleted
     }
@@ -98,8 +99,6 @@ export function ChatPage() {
   const handleNewChat = () => {
     setSessionId(null);
     setMessages([]);
-    setStreamingContent("");
-    setStreamingMeta(null);
   };
 
   const handleDeleteSession = async (id: string) => {
@@ -109,8 +108,6 @@ export function ChatPage() {
       if (id === sessionId) {
         setSessionId(null);
         setMessages([]);
-        setStreamingContent("");
-        setStreamingMeta(null);
       }
     } catch {
       // Ignore errors
@@ -152,6 +149,7 @@ export function ChatPage() {
               messages={messages}
               streamingContent={streamingContent}
               streamingMeta={streamingMeta}
+              retryStatus={retryStatus}
             />
           )}
         </div>

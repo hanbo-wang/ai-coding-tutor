@@ -9,6 +9,12 @@ interface BridgeMessage {
   notebook_key?: string;
   notebook_name?: string;
   notebook_title?: string;
+  phase?: "drag" | "settle";
+  reason?: "split-drag" | "split-settle" | "window-resize" | "observer-settle";
+  final_pass?: boolean;
+  pane_width?: number;
+  pane_height?: number;
+  request_ts?: number;
 }
 
 interface WorkspaceFilePayload {
@@ -20,6 +26,33 @@ interface WorkspaceFilePayload {
 interface KernelRuntimeFile {
   path: string;
   contentBase64: string;
+}
+
+interface LayoutRefreshTarget {
+  update?: () => void;
+  fit?: () => void;
+  node?: Element | null;
+}
+
+type LayoutRefreshPhase = "drag" | "settle";
+type LayoutRefreshReason =
+  | "split-drag"
+  | "split-settle"
+  | "window-resize"
+  | "observer-settle";
+type WorkspacePaneMode = "wide" | "compact";
+
+interface LayoutRefreshRequest {
+  phase: LayoutRefreshPhase;
+  reason: LayoutRefreshReason;
+  paneWidth: number;
+  paneHeight: number;
+  requestTs: number;
+}
+
+interface ScrollHostCandidate {
+  label: string;
+  node: HTMLElement | null;
 }
 
 const DEFAULT_NOTEBOOK_PATH = "workspace.ipynb";
@@ -38,6 +71,8 @@ let isolationQueue: Promise<void> = Promise.resolve();
 let restoreTimerId: number | null = null;
 const WORKSPACE_STYLE_ID = "guided-cursor-workspace-style";
 const WORKSPACE_NOTEBOOK_SCOPE_CLASS = "gc-workspace-notebook";
+const WORKSPACE_NOTEBOOK_COMPACT_CLASS = "gc-workspace-compact";
+const WORKSPACE_SCROLL_HOST_CLASS = "gc-workspace-scroll-host";
 const CLEAR_RECENTS_COMMAND = "docmanager:clear-recents";
 const SAVE_TIMEOUT_MS = 15000;
 const LOCAL_AUTOSAVE_DELAY_MS = 5000;
@@ -67,7 +102,7 @@ function markBridgeRuntime(partial: Record<string, unknown>): void {
   const runtimeWindow = window as unknown as Record<string, unknown>;
   const existing =
     runtimeWindow.__guidedCursorNotebookBridge &&
-    typeof runtimeWindow.__guidedCursorNotebookBridge === "object"
+      typeof runtimeWindow.__guidedCursorNotebookBridge === "object"
       ? (runtimeWindow.__guidedCursorNotebookBridge as Record<string, unknown>)
       : {};
   runtimeWindow.__guidedCursorNotebookBridge = {
@@ -484,7 +519,7 @@ function findPreferredKernelSpec(
       : id;
   const displayName =
     typeof resolvedSpec.display_name === "string" &&
-    resolvedSpec.display_name.trim()
+      resolvedSpec.display_name.trim()
       ? resolvedSpec.display_name.trim()
       : name;
   return { name, displayName };
@@ -871,25 +906,90 @@ function ensureWorkspaceNotebookScopeClass(): void {
   document.body.classList.add(WORKSPACE_NOTEBOOK_SCOPE_CLASS);
 }
 
-function buildWorkspaceNotebookCss(): string {
-  const scope = `body.${WORKSPACE_NOTEBOOK_SCOPE_CLASS}`;
+function buildWorkspaceBaseLayoutCss(scope: string): string {
   return `
     ${scope} {
+      --gc-workspace-bg: #ffffff;
       --jp-notebook-max-width: 100%;
       --jp-notebook-padding-offset: 0px;
       --jp-private-sidebar-tab-width: 0px;
-      --gc-notebook-right-gutter-mobile: 16px;
+      --gc-notebook-readable-min-width: 580px;
       --gc-notebook-right-gutter: clamp(
         0px,
         calc(var(--jp-cell-prompt-width, 64px) + 8px),
         96px
       );
+      height: 100% !important;
+      background: var(--gc-workspace-bg) !important;
     }
-    @media (max-width: 960px) {
-      ${scope} {
-        --gc-notebook-right-gutter: var(--gc-notebook-right-gutter-mobile);
-      }
+
+    /* Shell layout override: allow Lumino to work normally but use flex for the shell.
+       We remove absolute positioning overrides to stop fighting Lumino and let it calculate. */
+    ${scope} .jp-LabShell {
+      display: flex !important;
+      flex-direction: column !important;
+      width: 100% !important;
+      height: 100% !important;
     }
+
+    /* Menu bar: visible, natural height */
+    ${scope} #jp-top-panel {
+      order: 1 !important;
+      display: flex !important;
+      visibility: visible !important;
+      flex-shrink: 0 !important;
+      position: relative !important;
+      top: auto !important;
+      left: auto !important;
+      width: 100% !important;
+      height: auto !important;
+      background: var(--gc-workspace-bg) !important;
+    }
+    
+    ${scope} #jp-menu-panel {
+      order: 2 !important;
+      display: flex !important;
+      visibility: visible !important;
+      flex-shrink: 0 !important;
+      position: relative !important;
+      top: auto !important;
+      left: auto !important;
+      width: 100% !important;
+      height: auto !important;
+      background: var(--gc-workspace-bg) !important;
+    }
+
+    /* Main content: fills remaining vertical space. */
+    ${scope} #jp-main-content-panel {
+      order: 3 !important;
+      display: flex !important;
+      flex-direction: column !important;
+      flex: 1 1 0 !important;
+      position: relative !important;
+      top: auto !important;
+      left: auto !important;
+      width: 100% !important;
+      height: 100% !important;
+      min-width: 0 !important;
+      min-height: 0 !important;
+      overflow: hidden !important;
+      background: var(--gc-workspace-bg) !important;
+    }
+
+    /* Panels below main-content fill their parent */
+    ${scope} .jp-NotebookPanel {
+      display: flex !important;
+      flex-direction: column !important;
+      position: relative !important;
+      top: auto !important;
+      left: auto !important;
+      width: 100% !important;
+      height: 100% !important;
+      min-width: 0 !important;
+      min-height: 0 !important;
+      background: var(--gc-workspace-bg) !important;
+    }
+    
     ${scope} .jp-StatusBar,
     ${scope} .jp-StatusBar-Widget,
     ${scope} [class*="jp-StatusBar-"] {
@@ -910,86 +1010,113 @@ function buildWorkspaceNotebookCss(): string {
       overflow: hidden !important;
       visibility: hidden !important;
     }
-    /* Lumino keeps absolute split widths; force the centre notebook pane to own full width. */
     ${scope} #jp-main-content-panel > .jp-SideBar.jp-mod-left,
     ${scope} #jp-main-content-panel > .jp-SideBar.jp-mod-right {
       display: none !important;
-      left: 0 !important;
-      right: auto !important;
       width: 0 !important;
       min-width: 0 !important;
       max-width: 0 !important;
       visibility: hidden !important;
     }
-    ${scope} #jp-main-content-panel > #jp-main-vsplit-panel {
-      left: 0 !important;
-      right: 0 !important;
+
+    /* Lumino split panels: fill parent entirely via Flexbox, ignoring absolute sizing. */
+    ${scope} #jp-main-vsplit-panel,
+    ${scope} #jp-main-split-panel,
+    ${scope} #jp-main-dock-panel {
+      display: flex !important;
+      flex-direction: column !important;
+      flex: 1 1 0 !important;
+      position: relative !important;
+      top: auto !important;
+      left: auto !important;
       width: 100% !important;
+      height: 100% !important;
+      min-height: 0 !important;
       min-width: 0 !important;
       max-width: none !important;
+      background: var(--gc-workspace-bg) !important;
     }
-    ${scope} #jp-main-vsplit-panel > #jp-main-split-panel,
-    ${scope} #jp-main-split-panel > #jp-main-dock-panel {
-      left: 0 !important;
-      right: 0 !important;
-      width: 100% !important;
-      min-width: 0 !important;
-      max-width: none !important;
-    }
-    ${scope} #jp-main-content-panel > .lm-SplitPanel-handle {
+    ${scope} .lm-SplitPanel-handle {
       display: none !important;
       width: 0 !important;
       height: 0 !important;
       min-width: 0 !important;
       max-width: 0 !important;
       border: none !important;
-    }
-    ${scope} #jp-main-vsplit-panel > .lm-SplitPanel-handle,
-    ${scope} #jp-main-split-panel > .lm-SplitPanel-handle {
-      display: none !important;
-      width: 0 !important;
-      height: 0 !important;
-      min-width: 0 !important;
-      max-width: 0 !important;
-      border: none !important;
+      pointer-events: none !important;
     }
     ${scope} #jp-main-dock-panel {
       padding: 0 !important;
     }
-    ${scope} #jp-menu-panel {
-      padding-left: 0 !important;
+    
+    /* DockPanel internals override to flex */
+    ${scope} .lm-DockPanel-tabBar {
+      position: relative !important;
+      top: auto !important;
+      left: auto !important;
+      width: 100% !important;
+      flex: 0 0 auto !important;
+      height: auto !important;
+      min-height: 0 !important;
+      min-width: 0 !important;
     }
-    /* Force notebook canvas edge-to-edge in workspace mode to avoid centred grey gutters. */
+    ${scope} .lm-DockPanel-widget {
+      position: relative !important;
+      top: auto !important;
+      left: auto !important;
+      width: 100% !important;
+      flex: 1 1 0 !important;
+      height: auto !important;
+      min-height: 0 !important;
+      min-width: 0 !important;
+    }
+
+    /* Notebook canvas edge-to-edge. */
     ${scope} .jp-NotebookPanel .jp-NotebookPanel-toolbar {
+      flex: 0 0 auto !important;
+      width: 100% !important;
+      min-width: 0 !important;
       padding-left: 0 !important;
       padding-right: var(--gc-notebook-right-gutter) !important;
-      background: var(--jp-layout-color0) !important;
+      background: var(--gc-workspace-bg) !important;
+      overflow: visible !important;
+      flex-wrap: wrap !important;
     }
     ${scope} .jp-NotebookPanel .jp-WindowedPanel-outer {
+      flex: 1 1 0 !important;
       width: 100% !important;
+      min-width: 0 !important;
+      max-width: none !important;
+      height: 100% !important;
+      min-height: 0 !important;
       padding-left: 0 !important;
       padding-right: 0 !important;
-      background: var(--jp-layout-color0) !important;
+      overflow: auto !important; /* Allow generic scrolling */
+      background: var(--gc-workspace-bg) !important;
     }
     ${scope} .jp-NotebookPanel .jp-WindowedPanel-inner,
-    ${scope} .jp-NotebookPanel .jp-WindowedPanel-outer > * {
-      box-sizing: border-box !important;
-      padding-left: 0 !important;
-      padding-right: var(--gc-notebook-right-gutter) !important;
-      background: var(--jp-layout-color0) !important;
-    }
-    ${scope} .jp-NotebookPanel .jp-WindowedPanel-viewport {
-      left: 0 !important;
-      right: 0 !important;
-      background: var(--jp-layout-color0) !important;
-      box-shadow: none !important;
-    }
+    ${scope} .jp-NotebookPanel .jp-WindowedPanel-outer > *,
     ${scope} .jp-NotebookPanel .jp-Notebook {
       width: 100% !important;
+      min-width: var(--gc-notebook-readable-min-width) !important; /* Maintain minimum readable width, triggering horizontal scroll when smaller */
       max-width: none !important;
-      background: var(--jp-layout-color0) !important;
+      box-sizing: border-box !important;
+      padding-left: 0 !important;
+      margin: 0 !important;
+      background: var(--gc-workspace-bg) !important;
     }
-    /* Keep plain-text outputs faithful so ASCII tables stay aligned. */
+    ${scope} .jp-NotebookPanel .jp-Cell,
+    ${scope} .jp-NotebookPanel .jp-Cell-inputWrapper,
+    ${scope} .jp-NotebookPanel .jp-OutputArea,
+    ${scope} .jp-NotebookPanel .jp-OutputArea-child {
+      width: 100% !important;
+      min-width: 0 !important;
+      max-width: none !important;
+    }
+    ${scope} .jp-NotebookPanel .jp-OutputArea-output {
+      max-width: 100% !important;
+    }
+    /* Plain-text outputs keep whitespace so ASCII tables stay aligned. */
     ${scope} .jp-NotebookPanel .jp-OutputArea-output pre,
     ${scope} .jp-NotebookPanel .jp-ThemedContainer .jp-RenderedText pre {
       white-space: pre !important;
@@ -1000,16 +1127,30 @@ function buildWorkspaceNotebookCss(): string {
   `;
 }
 
+function buildWorkspaceNotebookCss(): string {
+  const scope = `body.${WORKSPACE_NOTEBOOK_SCOPE_CLASS}`;
+  return buildWorkspaceBaseLayoutCss(scope);
+}
+
+let injectedWorkspaceCssSignature = "";
+
 function injectWorkspaceChromeStyles(): void {
   ensureWorkspaceNotebookScopeClass();
+  const css = buildWorkspaceNotebookCss();
+  // Skip re-injection if content is unchanged. Re-setting textContent causes
+  // the browser to re-parse the entire stylesheet, briefly removing CSS
+  // overrides and exposing Lumino's inline styles for one frame.
+  if (css === injectedWorkspaceCssSignature) {
+    return;
+  }
   let style = document.getElementById(WORKSPACE_STYLE_ID) as HTMLStyleElement | null;
   if (!style) {
     style = document.createElement("style");
     style.id = WORKSPACE_STYLE_ID;
+    document.head.appendChild(style);
   }
-  style.textContent = buildWorkspaceNotebookCss();
-  // Keep this style as the last sheet so notebook-theme rules do not override it.
-  document.head.appendChild(style);
+  style.textContent = css;
+  injectedWorkspaceCssSignature = css;
 }
 
 function enforceWorkspaceShellMode(app: JupyterFrontEnd): void {
@@ -1137,12 +1278,7 @@ function applyNotebookPresentation(
 ): void {
   const title = normaliseNotebookTitle(notebookTitle);
   injectWorkspaceChromeStyles();
-  // Re-apply after panel mount so late notebook styles cannot pull layout back.
-  window.requestAnimationFrame(() => {
-    if (!panel.isDisposed) {
-      injectWorkspaceChromeStyles();
-    }
-  });
+
   // Keep the notebook in full-width mode for consistent edge alignment.
   panel.addClass("jp-mod-fullwidth");
   disableNotebookTitleAutoRename(panel);
@@ -1161,6 +1297,87 @@ function getWorkspaceNotebookPanel(app: JupyterFrontEnd): NotebookPanel | null {
     return activePanel;
   }
   return null;
+}
+
+function refreshLayoutTarget(
+  candidate: unknown,
+  options: { forceMeasure?: boolean } = {}
+): void {
+  if (!candidate || typeof candidate !== "object") {
+    return;
+  }
+  const target = candidate as LayoutRefreshTarget;
+  target.fit?.();
+  target.update?.();
+  if (options.forceMeasure && target.node instanceof HTMLElement) {
+    // Force one synchronous measurement so browser layout catches split width changes.
+    void target.node.getBoundingClientRect();
+  }
+}
+
+const NOTEBOOK_READABLE_MIN_WIDTH_PX = 680;
+const NOTEBOOK_ANOMALY_RECOVERY_COOLDOWN_MS = 150;
+const NOTEBOOK_FORCED_SETTLE_COOLDOWN_MS = 200;
+
+function toFinitePositiveNumber(value: unknown): number {
+  if (typeof value !== "number") {
+    return 0;
+  }
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return value > 0 ? value : 0;
+}
+
+function alignWorkspaceBackground(panel: NotebookPanel | null): void {
+  const workspaceBackground = "var(--gc-workspace-bg, #ffffff)";
+  const fillNodes: Array<Element | null> = [
+    document.getElementById("jp-main-content-panel"),
+    document.getElementById("jp-main-vsplit-panel"),
+    document.getElementById("jp-main-split-panel"),
+    document.getElementById("jp-main-dock-panel"),
+    panel?.node ?? null,
+    (panel?.content as { node?: Element | null } | undefined)?.node ?? null,
+  ];
+
+  for (const node of fillNodes) {
+    if (!(node instanceof HTMLElement)) {
+      continue;
+    }
+    if (node.style.background !== workspaceBackground) {
+      node.style.background = workspaceBackground;
+    }
+  }
+}
+
+// Obsolete: layout anomalies, manual measurement and JS anomaly recovery loops are removed.
+// We let Lumino and native CSS Handle Flex and Resize natively.
+
+function parseLayoutRefreshReason(
+  reason: unknown,
+  phase: LayoutRefreshPhase
+): LayoutRefreshReason {
+  if (
+    reason === "split-drag" ||
+    reason === "split-settle" ||
+    reason === "window-resize" ||
+    reason === "observer-settle"
+  ) {
+    return reason;
+  }
+  return phase === "drag" ? "split-drag" : "split-settle";
+}
+
+function parseLayoutRefreshRequest(message: BridgeMessage): LayoutRefreshRequest {
+  const phase: LayoutRefreshPhase =
+    message.phase === "settle" || message.final_pass === true ? "settle" : "drag";
+  return {
+    phase,
+    reason: parseLayoutRefreshReason(message.reason, phase),
+    paneWidth: Math.round(toFinitePositiveNumber(message.pane_width)),
+    paneHeight: Math.round(toFinitePositiveNumber(message.pane_height)),
+    requestTs: Math.round(toFinitePositiveNumber(message.request_ts)) || Date.now(),
+  };
 }
 
 async function downloadWorkspaceNotebookWithTitle(app: JupyterFrontEnd): Promise<void> {
@@ -1501,6 +1718,12 @@ const plugin: JupyterFrontEndPlugin<void> = {
           return;
         }
 
+        if (message.command === "refresh-layout") {
+          // No-Op. Layout is now entirely handled naturally by CSS flexbox and native window resize.
+          reply(message, { ok: true });
+          return;
+        }
+
         if (message.command === "get-current-cell") {
           const code = activePanel ? readCurrentCellCode(activePanel) : "";
           const cellIndex = activePanel
@@ -1540,6 +1763,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
     runStartupStep("installDownloadCommandOverride", () => {
       installDownloadCommandOverride(app);
     });
+    // Obsolete steps eliminated
 
     void app.started.then(async () => {
       await clearRecentDocuments(app);

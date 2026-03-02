@@ -1,4 +1,4 @@
-"""Add unique index for scoped chat sessions
+"""Add scoped chat session lookup index.
 
 Revision ID: 006
 Revises: 005
@@ -18,10 +18,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     op.create_index(
-        "uq_chat_sessions_scoped",
+        "ix_chat_sessions_scoped",
         "chat_sessions",
         ["user_id", "session_type", "module_id"],
-        unique=True,
+        unique=False,
         postgresql_where=sa.text(
             "module_id IS NOT NULL AND session_type IN ('notebook', 'zone')"
         ),
@@ -29,4 +29,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("uq_chat_sessions_scoped", table_name="chat_sessions")
+    op.drop_index("ix_chat_sessions_scoped", table_name="chat_sessions")

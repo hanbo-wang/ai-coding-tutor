@@ -110,8 +110,8 @@ Start the renewal service profile: `docker compose -f docker-compose.prod.yml --
 
 1. Prepare a Linux server with Docker and Docker Compose.
 2. Create a deploy directory (e.g. `/opt/ai-coding-tutor`).
-3. Create the production `.env` file from `.github/workflows/templates/env.prod.example`. Fill in `GHCR_OWNER`, `SERVER_NAME`, TLS paths, PostgreSQL credentials, `DATABASE_URL`, `JWT_SECRET_KEY`, `CORS_ORIGINS`, Google service account paths, and optional fallback provider keys.
-4. Pre-place the Google service account JSON file on the server at the configured host path. Set permissions to 600.
+3. Create the production `.env` file from `.github/workflows/templates/env.prod.example`. Fill in `GHCR_OWNER`, `SERVER_NAME`, TLS paths, PostgreSQL credentials, `DATABASE_URL`, `JWT_SECRET_KEY`, `CORS_ORIGINS`, `ANTHROPIC_API_KEY`, and optional fallback provider keys (Google, OpenAI).
+4. If using Google Vertex AI, pre-place the Google service account JSON file on the server at the configured host path. Set permissions to 600.
 5. Configure GitHub Actions repository secrets for SSH and GHCR access.
 6. Prepare the first HTTPS certificate (Section 6).
 7. Push to `main` to trigger the image build workflow.

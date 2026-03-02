@@ -32,6 +32,8 @@ class LLMProvider(ABC):
         self.last_usage: LLMUsage = LLMUsage()
         self.provider_id: str = "unknown"
         self.model_id: str = "unknown"
+        # Optional runtime transport marker used by provider-specific backends.
+        self.runtime_transport: str | None = None
 
     @abstractmethod
     async def generate_stream(

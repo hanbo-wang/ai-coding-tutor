@@ -185,6 +185,7 @@ class GoogleGeminiVertexProvider(_GoogleGeminiBaseProvider):
         model_id: str,
     ) -> None:
         super().__init__(model_id=model_id)
+        self.runtime_transport = "vertex"
         self._token_provider = token_provider
         self._project_id = project_id
         self._location = normalise_google_vertex_location(location, model_id)
@@ -223,6 +224,7 @@ class GoogleGeminiAIStudioProvider(_GoogleGeminiBaseProvider):
 
     def __init__(self, api_key: str, model_id: str) -> None:
         super().__init__(model_id=model_id)
+        self.runtime_transport = "aistudio"
         self._api_key = api_key
 
     def _build_stream_url(self) -> str:

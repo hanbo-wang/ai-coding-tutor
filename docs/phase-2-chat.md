@@ -114,12 +114,12 @@ Each dimension is updated independently: programming EMA uses `programming_diffi
 
 Three provider implementations (`llm_google.py`, `llm_anthropic.py`, `llm_openai.py`), each with streaming, retry on 429/5xx (3 attempts, exponential backoff), and `LLMError` on failure. Google supports AI Studio and Vertex AI transports, selected via `GOOGLE_GEMINI_TRANSPORT`.
 
-**`backend/app/ai/llm_factory.py`:** Returns the configured provider (`LLM_PROVIDER`, default `google`), falling back to any provider with a valid API key.
+**`backend/app/ai/llm_factory.py`:** Returns the configured provider (`LLM_PROVIDER`, default `anthropic` in the recommended `.env`), with session-level failover. The factory tries alternate models within the same provider first, then crosses to other providers in a ring (anthropic → openai → google).
 
 | Provider | Models | Implementation |
 | -------- | ------ | -------------- |
+| Anthropic (default) | Claude Sonnet 4.6 / Claude Haiku 4.5 | `llm_anthropic.py` |
 | Google (AI Studio / Vertex AI) | Gemini 3 Flash Preview / Gemini 3.1 Pro Preview | `llm_google.py` |
-| Anthropic | Claude Sonnet 4.6 / Claude Haiku 4.5 | `llm_anthropic.py` |
 | OpenAI | GPT-5.2 / GPT-5 mini | `llm_openai.py` |
 
 ### 4.5 Pedagogy Engine

@@ -228,6 +228,15 @@ export interface AuditLogResponse {
   total_pages: number;
 }
 
+export interface AdminLlmError {
+  timestamp: string;
+  provider: string;
+  model: string;
+  error_type: "fatal" | "transient";
+  detail: string;
+  stage: string;
+}
+
 export interface HealthModelProviderStatus {
   ready: boolean;
   reason?: string;

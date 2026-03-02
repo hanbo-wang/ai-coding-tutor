@@ -14,7 +14,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.ai.llm_base import LLMProvider, LLMUsage
+from app.ai.llm_base import LLMError, LLMProvider, LLMUsage
+from app.ai.llm_factory import LLMTarget
 from app.ai.pedagogy_engine import PedagogyFastSignals, ProcessResult, StreamPedagogyMeta
 from app.models.chat import ChatMessage
 from app.models.user import Base, User
@@ -36,8 +37,10 @@ class _FakeStreamLLM(LLMProvider):
             self._calls = [list(chunks)]  # type: ignore[arg-type]
         self.call_count = 0
         self.system_prompts: list[str] = []
-        self.provider_id = "test"
-        self.model_id = "single-pass-test"
+        # Keep these aligned with supported ids so factory-derived fallback logic
+        # still treats the fake provider as a valid active target.
+        self.provider_id = "openai"
+        self.model_id = "gpt-5-mini"
 
     async def generate_stream(self, system_prompt, messages, max_tokens=2048):
         self.call_count += 1
@@ -46,6 +49,68 @@ class _FakeStreamLLM(LLMProvider):
         call_index = min(self.call_count - 1, len(self._calls) - 1)
         for chunk in self._calls[call_index]:
             yield chunk
+
+    def count_tokens(self, text: str) -> int:
+        return max(1, len(text.split()))
+
+
+class _AlwaysUnavailableLLM(LLMProvider):
+    """LLM stub that always fails with a transient unavailable error."""
+
+    def __init__(self, *, provider_id: str, model_id: str) -> None:
+        super().__init__()
+        self.provider_id = provider_id
+        self.model_id = model_id
+        self.call_count = 0
+
+    async def generate_stream(self, system_prompt, messages, max_tokens=2048):
+        self.call_count += 1
+        self.last_usage = LLMUsage(input_tokens=13, output_tokens=0)
+        raise LLMError("upstream temporarily unavailable")
+        yield  # pragma: no cover
+
+    def count_tokens(self, text: str) -> int:
+        return max(1, len(text.split()))
+
+
+class _HeaderThenFailLLM(LLMProvider):
+    """LLM stub that emits visible output and then fails."""
+
+    def __init__(self, *, provider_id: str, model_id: str) -> None:
+        super().__init__()
+        self.provider_id = provider_id
+        self.model_id = model_id
+        self.call_count = 0
+
+    async def generate_stream(self, system_prompt, messages, max_tokens=2048):
+        self.call_count += 1
+        self.last_usage = LLMUsage(input_tokens=21, output_tokens=5)
+        yield "<<GC_META_V1>>"
+        yield '{"same_problem":false,"is_elaboration":false,'
+        yield '"programming_difficulty":3,"maths_difficulty":2}'
+        yield "<<END_GC_META>>"
+        yield "Partial"
+        raise LLMError("upstream temporarily unavailable")
+
+    def count_tokens(self, text: str) -> int:
+        return max(1, len(text.split()))
+
+
+class _PlainErrorLLM(LLMProvider):
+    """LLM stub that raises a non-transient plain exception."""
+
+    def __init__(self, *, provider_id: str, model_id: str, message: str) -> None:
+        super().__init__()
+        self.provider_id = provider_id
+        self.model_id = model_id
+        self.message = message
+        self.call_count = 0
+
+    async def generate_stream(self, system_prompt, messages, max_tokens=2048):
+        self.call_count += 1
+        self.last_usage = LLMUsage(input_tokens=9, output_tokens=0)
+        raise RuntimeError(self.message)
+        yield  # pragma: no cover
 
     def count_tokens(self, text: str) -> int:
         return max(1, len(text.split()))
@@ -171,9 +236,10 @@ def _make_ws_app() -> FastAPI:
 def _setup_ws_test_env(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
-    chunks: list[str] | list[list[str]],
+    chunks: list[str] | list[list[str]] | None = None,
     *,
     pedagogy: _FakePedagogyEngine | None = None,
+    llm_override: LLMProvider | None = None,
 ):
     db_path = tmp_path / "ws_chat.sqlite3"
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
@@ -181,7 +247,10 @@ def _setup_ws_test_env(
     _run(_create_tables(engine))
     user = _run(_create_user(session_factory))
 
-    llm = _FakeStreamLLM(chunks)
+    if llm_override is not None:
+        llm = llm_override
+    else:
+        llm = _FakeStreamLLM(chunks or [])
     pedagogy = pedagogy or _FakePedagogyEngine()
     scheduled: list[str] = []
 
@@ -204,6 +273,10 @@ def _setup_ws_test_env(
     monkeypatch.setattr("app.routers.chat.AsyncSessionLocal", session_factory)
     monkeypatch.setattr("app.routers.chat._authenticate_ws", _fake_authenticate_ws)
     monkeypatch.setattr("app.routers.chat.get_llm_provider", lambda _settings: llm)
+    monkeypatch.setattr(
+        "app.routers.chat.build_llm_provider_for_target",
+        lambda _settings, _target: llm,
+    )
     monkeypatch.setattr("app.routers.chat.get_ai_services", _fake_get_ai_services)
     monkeypatch.setattr("app.routers.chat.estimate_llm_cost_usd", lambda *a, **k: 0.0)
     monkeypatch.setattr("app.routers.chat.chat_service.check_weekly_limit", _fake_check_weekly_limit)
@@ -233,6 +306,16 @@ def _collect_until_done(ws) -> list[dict]:
         event = ws.receive_json()
         events.append(event)
         if event.get("type") == "done":
+            break
+    return events
+
+
+def _collect_until_terminal(ws) -> list[dict]:
+    events: list[dict] = []
+    while True:
+        event = ws.receive_json()
+        events.append(event)
+        if event.get("type") in {"done", "error"}:
             break
     return events
 
@@ -308,10 +391,15 @@ def test_ws_single_pass_missing_header_discards_output_and_regenerates(tmp_path,
         token_events = [e for e in events if e["type"] == "token"]
         assert [e["content"] for e in token_events] == ["Recovered", " ", "reply"]
 
+        status_events = [e for e in events if e["type"] == "status"]
+        assert [e["attempt"] for e in status_events] == [1, 2, 3]
+        assert all(e["max_attempts"] == 3 for e in status_events)
+        assert all(e["stage"] == "single_pass_header_meta" for e in status_events)
+
         session_event = next(e for e in events if e["type"] == "session")
         stored_messages = _run(_list_messages(session_factory, session_event["session_id"]))
         assert stored_messages[1].content == "Recovered reply"
-        assert _llm.call_count == 2
+        assert _llm.call_count == 5
         assert len(scheduled) == 1
     finally:
         client.close()
@@ -329,6 +417,9 @@ def test_ws_auto_mode_degrades_to_two_step_recovery_after_header_failures(
     )
     llm_calls = [
         ["No", " header"],  # First turn: failed single-pass attempt (discarded)
+        ["Still", " no header"],  # First turn: single-pass parse retry 1 (discarded)
+        ["Again", " no header"],  # First turn: single-pass parse retry 2 (discarded)
+        ["Yet", " no header"],  # First turn: single-pass parse retry 3 (discarded)
         ["Recovered", " reply"],  # First turn: regenerated reply
         ["Second", " turn"],  # Second turn: recovery-route visible reply
     ]
@@ -350,7 +441,7 @@ def test_ws_auto_mode_degrades_to_two_step_recovery_after_header_failures(
         assert "".join(e["content"] for e in events1 if e["type"] == "token") == "Recovered reply"
         assert "".join(e["content"] for e in events2 if e["type"] == "token") == "Second turn"
         assert pedagogy.two_step_recovery_calls == 2
-        assert llm.call_count == 3
+        assert llm.call_count == 6
         assert len(scheduled) == 2
     finally:
         client.close()
@@ -371,6 +462,9 @@ def test_ws_auto_mode_retries_single_pass_after_stable_two_step_recovery_turns(
     )
     llm_calls = [
         ["No", " header"],  # First turn: failed single-pass attempt (discarded)
+        ["Still", " no header"],  # First turn: single-pass parse retry 1 (discarded)
+        ["Again", " no header"],  # First turn: single-pass parse retry 2 (discarded)
+        ["Yet", " no header"],  # First turn: single-pass parse retry 3 (discarded)
         ["Recovered", " first"],  # First turn: regenerated reply, triggers degradation
         ["Two-step", " ok"],  # Second turn: recovery-route visible reply
         [  # Third turn: auto retries single-pass and receives a valid hidden header
@@ -403,7 +497,7 @@ def test_ws_auto_mode_retries_single_pass_after_stable_two_step_recovery_turns(
         assert meta3["source"] == "single_pass_header_route"
         assert "".join(e["content"] for e in events3 if e["type"] == "token") == "Back again"
         assert pedagogy.two_step_recovery_calls == 2
-        assert llm.call_count == 4
+        assert llm.call_count == 7
         assert len(scheduled) == 3
     finally:
         client.close()
@@ -424,6 +518,9 @@ def test_ws_auto_mode_does_not_retry_single_pass_after_emergency_recovery_meta(
     )
     llm_calls = [
         ["No", " header"],  # First turn: failed single-pass attempt (discarded)
+        ["Still", " no header"],  # First turn: single-pass parse retry 1 (discarded)
+        ["Again", " no header"],  # First turn: single-pass parse retry 2 (discarded)
+        ["Yet", " no header"],  # First turn: single-pass parse retry 3 (discarded)
         ["Recovered", " first"],  # First turn: regenerated reply, triggers degradation
         ["Emergency", " second"],  # Second turn: recovery-route visible reply
         ["Still", " recovery"],  # Third turn should remain recovery route
@@ -463,7 +560,7 @@ def test_ws_auto_mode_does_not_retry_single_pass_after_emergency_recovery_meta(
         assert meta2["source"] == "emergency_full_hint_fallback"
         assert meta3["source"] == "emergency_full_hint_fallback"
         assert pedagogy.two_step_recovery_calls == 3
-        assert llm.call_count == 4
+        assert llm.call_count == 7
         assert "".join(e["content"] for e in events3 if e["type"] == "token") == "Still recovery"
         assert len(scheduled) == 3
     finally:
@@ -517,8 +614,12 @@ def test_ws_auto_mode_header_failure_degrade_is_isolated_per_session(
         "app.routers.chat.settings.chat_single_pass_header_failures_before_two_step_recovery", 1
     )
     llm_calls = [
-        ["No", " header"],
-        [
+        ["No", " header"],  # First session: initial single-pass fail
+        ["Still", " no header"],  # First session: parse retry 1
+        ["Again", " no header"],  # First session: parse retry 2
+        ["Yet", " no header"],  # First session: parse retry 3
+        ["Recovered", " first"],  # First session: two-step recovery visible reply
+        [  # Second session: single-pass success remains isolated
             "<<GC_META_V1>>",
             '{"same_problem":false,"is_elaboration":false,'
             '"programming_difficulty":3,"maths_difficulty":2}',
@@ -549,8 +650,162 @@ def test_ws_auto_mode_header_failure_degrade_is_isolated_per_session(
         assert meta2["source"] == "single_pass_header_route"
         assert "".join(e["content"] for e in events2 if e["type"] == "token") == "Fresh session"
         assert pedagogy.two_step_recovery_calls == 1
-        assert llm.call_count == 3
+        assert llm.call_count == 6
         assert len(scheduled) == 2
+    finally:
+        client.close()
+        _run(engine.dispose())
+
+
+def test_ws_temporarily_unavailable_retries_same_model_then_switches_candidate(
+    tmp_path, monkeypatch
+) -> None:
+    """Transient unavailable errors should retry five times before model switching."""
+
+    primary_llm = _AlwaysUnavailableLLM(provider_id="openai", model_id="gpt-5-mini")
+    fallback_llm = _FakeStreamLLM(
+        [
+            "<<GC_META_V1>>",
+            '{"same_problem":false,"is_elaboration":false,',
+            '"programming_difficulty":3,"maths_difficulty":2}',
+            "<<END_GC_META>>",
+            "Recovered",
+            " response",
+        ]
+    )
+    client, _session_factory, engine, _scheduled, _llm, _pedagogy = _setup_ws_test_env(
+        tmp_path,
+        monkeypatch,
+        llm_override=primary_llm,
+    )
+    monkeypatch.setattr(
+        "app.routers.chat.list_llm_fallback_targets",
+        lambda *_args, **_kwargs: [
+            LLMTarget(provider="anthropic", model_id="claude-3-5-haiku-latest")
+        ],
+    )
+
+    def _build_target(_settings, target):
+        if target.provider == "anthropic":
+            return fallback_llm
+        return primary_llm
+
+    monkeypatch.setattr("app.routers.chat.build_llm_provider_for_target", _build_target)
+
+    try:
+        with client.websocket_connect("/ws/chat?token=test") as ws:
+            ws.send_text(json.dumps({"content": "hello"}))
+            events = _collect_until_done(ws)
+
+        status_events = [e for e in events if e["type"] == "status"]
+        same_model_attempts = [
+            e["attempt"]
+            for e in status_events
+            if e["stage"] == "single_pass_header_route" and not e["switched_model"]
+        ]
+        switched_events = [
+            e
+            for e in status_events
+            if e["stage"] == "single_pass_header_route" and e["switched_model"]
+        ]
+        assert same_model_attempts == [1, 2, 3, 4, 5]
+        assert all(e["max_attempts"] == 5 for e in status_events)
+        assert len(switched_events) == 1
+        assert switched_events[0]["attempt"] == 5
+        assert "".join(e["content"] for e in events if e["type"] == "token") == "Recovered response"
+        assert primary_llm.call_count == 6
+        assert fallback_llm.call_count == 1
+    finally:
+        client.close()
+        _run(engine.dispose())
+
+
+def test_ws_partial_visible_output_failure_does_not_retry_or_switch(
+    tmp_path, monkeypatch
+) -> None:
+    """Failures after visible tokens should stop immediately with a standard error."""
+
+    primary_llm = _HeaderThenFailLLM(provider_id="openai", model_id="gpt-5-mini")
+    fallback_llm = _FakeStreamLLM(
+        [
+            "<<GC_META_V1>>",
+            '{"same_problem":false,"is_elaboration":false,',
+            '"programming_difficulty":3,"maths_difficulty":2}',
+            "<<END_GC_META>>",
+            "Should",
+            " not-run",
+        ]
+    )
+    client, _session_factory, engine, _scheduled, _llm, _pedagogy = _setup_ws_test_env(
+        tmp_path,
+        monkeypatch,
+        llm_override=primary_llm,
+    )
+    monkeypatch.setattr(
+        "app.routers.chat.list_llm_fallback_targets",
+        lambda *_args, **_kwargs: [
+            LLMTarget(provider="anthropic", model_id="claude-3-5-haiku-latest")
+        ],
+    )
+
+    def _build_target(_settings, target):
+        if target.provider == "anthropic":
+            return fallback_llm
+        return primary_llm
+
+    monkeypatch.setattr("app.routers.chat.build_llm_provider_for_target", _build_target)
+
+    try:
+        with client.websocket_connect("/ws/chat?token=test") as ws:
+            ws.send_text(json.dumps({"content": "hello"}))
+            events = _collect_until_terminal(ws)
+
+        assert any(e["type"] == "meta" for e in events)
+        assert "".join(e["content"] for e in events if e["type"] == "token") == "Partial"
+        error_event = next(e for e in events if e["type"] == "error")
+        assert error_event["message"] == "AI service temporarily unavailable. Please try again."
+        assert not any(e["type"] == "status" for e in events)
+        assert primary_llm.call_count == 1
+        assert fallback_llm.call_count == 0
+        assert not any(e["type"] == "done" for e in events)
+    finally:
+        client.close()
+        _run(engine.dispose())
+
+
+def test_ws_non_unavailable_error_does_not_trigger_auto_retry(tmp_path, monkeypatch) -> None:
+    """Non-unavailable errors should keep previous no-retry behaviour."""
+
+    primary_llm = _PlainErrorLLM(
+        provider_id="openai",
+        model_id="gpt-5-mini",
+        message="malformed prompt payload",
+    )
+    client, _session_factory, engine, _scheduled, _llm, _pedagogy = _setup_ws_test_env(
+        tmp_path,
+        monkeypatch,
+        llm_override=primary_llm,
+    )
+    monkeypatch.setattr(
+        "app.routers.chat.list_llm_fallback_targets",
+        lambda *_args, **_kwargs: [
+            LLMTarget(provider="anthropic", model_id="claude-3-5-haiku-latest")
+        ],
+    )
+    monkeypatch.setattr(
+        "app.routers.chat.build_llm_provider_for_target",
+        lambda _settings, _target: primary_llm,
+    )
+
+    try:
+        with client.websocket_connect("/ws/chat?token=test") as ws:
+            ws.send_text(json.dumps({"content": "hello"}))
+            events = _collect_until_terminal(ws)
+
+        error_event = next(e for e in events if e["type"] == "error")
+        assert error_event["message"] == "malformed prompt payload"
+        assert not any(e["type"] == "status" for e in events)
+        assert primary_llm.call_count == 1
     finally:
         client.close()
         _run(engine.dispose())

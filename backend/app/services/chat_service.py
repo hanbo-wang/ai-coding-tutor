@@ -8,7 +8,6 @@ from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import and_, delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.exc import IntegrityError
 
 from app.models.chat import ChatSession, ChatMessage, DailyTokenUsage, UploadedFile
 from app.config import settings
@@ -76,29 +75,6 @@ async def get_or_create_session(
             module_id=module_id,
         ):
             return session
-
-    if module_id is not None and session_type in {"notebook", "zone"}:
-        existing = await get_session_by_scope(db, user_id, session_type, module_id)
-        if existing:
-            return existing
-
-        try:
-            async with db.begin_nested():
-                session = ChatSession(
-                    user_id=user_id,
-                    session_type=session_type,
-                    module_id=module_id,
-                )
-                db.add(session)
-                await db.flush()
-                return session
-        except IntegrityError:
-            existing_after_conflict = await get_session_by_scope(
-                db, user_id, session_type, module_id
-            )
-            if existing_after_conflict:
-                return existing_after_conflict
-            raise
 
     session = ChatSession(user_id=user_id, session_type=session_type, module_id=module_id)
     db.add(session)
@@ -276,9 +252,16 @@ async def get_session_messages(
 
 
 async def get_user_sessions(
-    db: AsyncSession, user_id: uuid.UUID
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    *,
+    session_type: str = "general",
+    module_id: uuid.UUID | None = None,
 ) -> list[dict]:
-    """Return all sessions for a user, newest first, with preview text."""
+    """Return user sessions for one scope, newest first, with preview text."""
+    if session_type in {"notebook", "zone"} and module_id is None:
+        return []
+
     first_user_message = (
         select(
             ChatMessage.session_id.label("session_id"),
@@ -294,7 +277,7 @@ async def get_user_sessions(
         .subquery()
     )
 
-    result = await db.execute(
+    query = (
         select(ChatSession, first_user_message.c.content)
         .outerjoin(
             first_user_message,
@@ -305,10 +288,16 @@ async def get_user_sessions(
         )
         .where(
             ChatSession.user_id == user_id,
-            ChatSession.session_type == "general",
+            ChatSession.session_type == session_type,
         )
         .order_by(ChatSession.created_at.desc())
     )
+    if session_type in {"notebook", "zone"}:
+        query = query.where(ChatSession.module_id == module_id)
+    else:
+        query = query.where(ChatSession.module_id.is_(None))
+
+    result = await db.execute(query)
 
     session_list = []
     for session, first_msg in result.all():
@@ -342,6 +331,79 @@ async def delete_session(
     await db.delete(session)
     await db.flush()
     return True
+
+
+async def delete_sessions_for_user_scope(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    *,
+    session_type: str,
+    module_id: uuid.UUID,
+) -> int:
+    """Delete every owned scoped session for one notebook/module."""
+    result = await db.execute(
+        select(ChatSession.id).where(
+            ChatSession.user_id == user_id,
+            ChatSession.session_type == session_type,
+            ChatSession.module_id == module_id,
+        )
+    )
+    session_ids = [row[0] for row in result.all()]
+    if not session_ids:
+        return 0
+
+    await db.execute(delete(ChatMessage).where(ChatMessage.session_id.in_(session_ids)))
+    await db.execute(delete(ChatSession).where(ChatSession.id.in_(session_ids)))
+    await db.flush()
+    return len(session_ids)
+
+
+async def delete_sessions_for_scope(
+    db: AsyncSession,
+    *,
+    session_type: str,
+    module_id: uuid.UUID,
+) -> int:
+    """Delete scoped sessions for one module across all users."""
+    result = await db.execute(
+        select(ChatSession.id).where(
+            ChatSession.session_type == session_type,
+            ChatSession.module_id == module_id,
+        )
+    )
+    session_ids = [row[0] for row in result.all()]
+    if not session_ids:
+        return 0
+
+    await db.execute(delete(ChatMessage).where(ChatMessage.session_id.in_(session_ids)))
+    await db.execute(delete(ChatSession).where(ChatSession.id.in_(session_ids)))
+    await db.flush()
+    return len(session_ids)
+
+
+async def delete_sessions_for_modules(
+    db: AsyncSession,
+    *,
+    session_type: str,
+    module_ids: list[uuid.UUID],
+) -> int:
+    """Delete scoped sessions for many modules across all users."""
+    if not module_ids:
+        return 0
+    result = await db.execute(
+        select(ChatSession.id).where(
+            ChatSession.session_type == session_type,
+            ChatSession.module_id.in_(module_ids),
+        )
+    )
+    session_ids = [row[0] for row in result.all()]
+    if not session_ids:
+        return 0
+
+    await db.execute(delete(ChatMessage).where(ChatMessage.session_id.in_(session_ids)))
+    await db.execute(delete(ChatSession).where(ChatSession.id.in_(session_ids)))
+    await db.flush()
+    return len(session_ids)
 
 
 async def get_daily_usage(db: AsyncSession, user_id: uuid.UUID) -> DailyTokenUsage:

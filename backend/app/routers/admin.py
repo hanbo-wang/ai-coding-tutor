@@ -834,3 +834,17 @@ async def reorder_admin_zone_notebooks(
 
     await db.commit()
     return {"message": "Notebook order updated"}
+
+
+# ── LLM error visibility ───────────────────────────────────────────
+
+
+@router.get("/llm-errors")
+async def get_llm_errors(
+    _: Annotated[User, Depends(get_admin_user)],
+):
+    """Return recent LLM errors from the in-memory ring buffer, newest first."""
+    from app.routers.chat import get_recent_llm_errors
+
+    return {"errors": get_recent_llm_errors()}
+

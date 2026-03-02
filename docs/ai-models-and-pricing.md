@@ -2,27 +2,27 @@
 
 This project uses a multi-provider AI layer with a low-cost default path:
 
-- **LLM default:** Google Gemini `gemini-3-flash-preview`
+- **LLM default:** Anthropic `claude-haiku-4-5`
 - **Google transport and auth:** `GOOGLE_GEMINI_TRANSPORT` selects `aistudio` (`GOOGLE_API_KEY`) or `vertex` (Google Cloud service account JSON file, with code-managed Bearer token refresh)
 - **Vertex location:** for current Gemini 3 preview models, use `GOOGLE_VERTEX_GEMINI_LOCATION=global`
 
-The backend also supports Anthropic and OpenAI LLMs as fallbacks or operator-selected providers.
+The backend also supports Google Gemini and OpenAI LLMs as fallbacks or operator-selected providers.
 
-## Why Gemini 3 Flash (Default)
+## Why Claude Haiku 4.5 (Default)
 
-- **Low cost:** Gemini 3 Flash preview pricing is materially lower than the higher-capability models for routine tutoring turns.
-- **Good latency/performance balance:** it is fast enough for streaming chat and strong enough for tutoring workflows when paired with the pedagogy engine and context controls.
-- **Flexible operations:** Gemini can run through Google AI Studio or Vertex AI, selected explicitly with `GOOGLE_GEMINI_TRANSPORT`.
-- **Clean failover story:** Anthropic and OpenAI remain available without changing the app architecture.
+- **Fast response speed:** Claude Haiku 4.5 provides low latency, making the streaming tutoring experience fluid.
+- **Good reasoning quality:** strong enough for tutoring workflows when paired with the pedagogy engine and context controls.
+- **Cost-effective:** a good balance of affordability and reasoning capability for high-frequency tutoring interactions.
+- **Clean failover story:** Google Gemini and OpenAI remain available without changing the app architecture.
 
 ## Supported LLM Models
 
 | Provider | Model (API ID) | Authentication | Notes |
 | --- | --- | --- | --- |
-| Google Gemini (AI Studio / Vertex AI) | `gemini-3-flash-preview` | `GOOGLE_GEMINI_TRANSPORT=aistudio` + `GOOGLE_API_KEY`, or `GOOGLE_GEMINI_TRANSPORT=vertex` + Google service account -> Bearer token | Default LLM provider path; both Google transports support text and image turns |
+| Google Gemini (AI Studio / Vertex AI) | `gemini-3-flash-preview` | `GOOGLE_GEMINI_TRANSPORT=aistudio` + `GOOGLE_API_KEY`, or `GOOGLE_GEMINI_TRANSPORT=vertex` + Google service account -> Bearer token | Both Google transports support text and image turns |
 | Google Gemini (AI Studio / Vertex AI) | `gemini-3.1-pro-preview` | `GOOGLE_GEMINI_TRANSPORT=aistudio` + `GOOGLE_API_KEY`, or `GOOGLE_GEMINI_TRANSPORT=vertex` + Google service account -> Bearer token | Higher-cost, higher-capability option with the same transport support |
 | Anthropic | `claude-sonnet-4-6` | `ANTHROPIC_API_KEY` | Strong general reasoning |
-| Anthropic | `claude-haiku-4-5` | `ANTHROPIC_API_KEY` | Lower-cost Anthropic option |
+| Anthropic | `claude-haiku-4-5` | `ANTHROPIC_API_KEY` | Default LLM provider path |
 | OpenAI | `gpt-5.2` | `OPENAI_API_KEY` | Higher-capability OpenAI option |
 | OpenAI | `gpt-5-mini` | `OPENAI_API_KEY` | Lower-cost OpenAI option |
 
