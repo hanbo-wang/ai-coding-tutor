@@ -152,19 +152,19 @@ async def test_schedule_refresh_requeues_once_when_marked_dirty() -> None:
         call_count += 1
         if call_count == 1:
             started.set()
-            await release.wait()
+            await asyncio.wait_for(release.wait(), timeout=10)
 
     service._refresh_once = _fake_refresh_once  # type: ignore[method-assign]
 
     service.schedule_refresh(session_id)
     first_task = service._tasks[str(session_id)]
-    await started.wait()
+    await asyncio.wait_for(started.wait(), timeout=10)
     service.schedule_refresh(session_id)
     second_task = service._tasks[str(session_id)]
     assert first_task is second_task
 
     release.set()
-    await second_task
+    await asyncio.wait_for(second_task, timeout=10)
 
     assert call_count == 2
     assert str(session_id) not in service._tasks

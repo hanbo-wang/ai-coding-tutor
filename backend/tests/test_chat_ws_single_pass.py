@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
 from types import SimpleNamespace
 
@@ -300,19 +301,33 @@ async def _create_tables(engine) -> None:
         await conn.run_sync(Base.metadata.create_all)
 
 
-def _collect_until_done(ws) -> list[dict]:
+def _collect_until_done(ws, timeout: float = 30) -> list[dict]:
     events: list[dict] = []
+    deadline = time.monotonic() + timeout
     while True:
+        if time.monotonic() > deadline:
+            raise TimeoutError(
+                f"_collect_until_done timed out after {timeout}s. "
+                f"Collected {len(events)} events: {events}"
+            )
         event = ws.receive_json()
         events.append(event)
         if event.get("type") == "done":
             break
+        if event.get("type") == "error":
+            raise RuntimeError(f"Unexpected error event from WS: {event}")
     return events
 
 
-def _collect_until_terminal(ws) -> list[dict]:
+def _collect_until_terminal(ws, timeout: float = 30) -> list[dict]:
     events: list[dict] = []
+    deadline = time.monotonic() + timeout
     while True:
+        if time.monotonic() > deadline:
+            raise TimeoutError(
+                f"_collect_until_terminal timed out after {timeout}s. "
+                f"Collected {len(events)} events: {events}"
+            )
         event = ws.receive_json()
         events.append(event)
         if event.get("type") in {"done", "error"}:
