@@ -43,6 +43,18 @@ def _parse_admin_email_set(raw: str) -> set[str]:
     return normalised
 
 
+def _normalise_website_domain(raw: str) -> str:
+    """Normalise website domain input from env variables."""
+    value = str(raw).strip()
+    if not value:
+        raise ValueError("WEBSITE_DOMAIN must not be empty.")
+    value = re.sub(r"^https?://", "", value, flags=re.IGNORECASE)
+    value = value.rstrip("/")
+    if not value:
+        raise ValueError("WEBSITE_DOMAIN must not be empty.")
+    return value
+
+
 class Settings(BaseSettings):
     # Database
     database_url: str
@@ -55,11 +67,23 @@ class Settings(BaseSettings):
     auth_cookie_secure: bool
     auth_cookie_samesite: Literal["lax", "strict", "none"]
 
-    # CORS
-    cors_origins: list[str]
+    # Website domain and CORS
+    website_domain: str
+    cors_origins: list[str] | None = None
 
     # Backend
     backend_reload: bool
+
+    # Email delivery and verification
+    email_provider: Literal["brevo", "noop"] = "noop"
+    brevo_api_key: str = ""
+    brevo_api_base_url: str = "https://api.brevo.com/v3"
+    brevo_sender_email: str = ""
+    brevo_sender_name: str = "AI Coding Tutor"
+    email_code_ttl_seconds: int = 600
+    email_code_resend_cooldown_seconds: int = 60
+    email_code_max_attempts: int = 5
+    email_code_hmac_secret: str = ""
 
     # LLM providers
     # Provider/model choices are supplied via environment variables (.env / deploy env).
@@ -150,6 +174,25 @@ class Settings(BaseSettings):
     def _normalise_metadata_route_mode(cls, value: str) -> str:
         return str(value).strip().lower()
 
+    @field_validator("email_provider", mode="before")
+    @classmethod
+    def _normalise_email_provider(cls, value: str) -> str:
+        return str(value).strip().lower()
+
+    @field_validator("website_domain", mode="before")
+    @classmethod
+    def _normalise_website_domain_value(cls, value: str) -> str:
+        return _normalise_website_domain(value)
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def _normalise_cors_origins_value(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     @field_validator(
         "llm_model_google",
         "llm_model_anthropic",
@@ -159,6 +202,11 @@ class Settings(BaseSettings):
     @classmethod
     def _normalise_model_aliases(cls, value: str) -> str:
         return normalise_model_alias(str(value))
+
+    def model_post_init(self, __context) -> None:
+        # Keep one source of truth: derive CORS from WEBSITE_DOMAIN when not set explicitly.
+        if not self.cors_origins:
+            self.cors_origins = [f"https://{self.website_domain}"]
 
     model_config = ConfigDict(
         env_file=(str(REPO_ROOT / ".env"), str(BACKEND_DIR / ".env")),

@@ -34,10 +34,7 @@ export function Navbar() {
       );
     }
     if (path === "/profile") {
-      return (
-        location.pathname === "/profile" ||
-        location.pathname === "/change-password"
-      );
+      return location.pathname === "/profile";
     }
     return location.pathname === path;
   };

@@ -117,13 +117,20 @@ jobs:
               printf '%s' "$1" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//'
             }
 
-            GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH="$(get_env_value GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH || true)"
-            GOOGLE_APPLICATION_CREDENTIALS_PATH_IN_CONTAINER="$(get_env_value GOOGLE_APPLICATION_CREDENTIALS || true)"
-            SERVER_NAME_VALUE="$(get_env_value SERVER_NAME || true)"
-            TLS_CERT_PATH_VALUE="$(get_env_value TLS_CERT_PATH || true)"
-            TLS_KEY_PATH_VALUE="$(get_env_value TLS_KEY_PATH || true)"
+            WEBSITE_DOMAIN_VALUE="$(get_env_value WEBSITE_DOMAIN || true)"
             CERTBOT_EMAIL_VALUE="$(get_env_value CERTBOT_EMAIL || true)"
             ADMIN_EMAIL_VALUE="$(get_env_value ADMIN_EMAIL || true)"
+
+            WEBSITE_DOMAIN_VALUE="$(trim_env_value "${WEBSITE_DOMAIN_VALUE:-}")"
+            if [ -z "${WEBSITE_DOMAIN_VALUE:-}" ]; then
+              echo "Missing WEBSITE_DOMAIN in $DEPLOY_PATH/.env"
+              echo "Use .github/workflows/templates/env.prod.example as the template."
+              exit 1
+            fi
+
+            SERVER_NAME_VALUE="$WEBSITE_DOMAIN_VALUE"
+            TLS_CERT_PATH_VALUE="/etc/letsencrypt/live/${WEBSITE_DOMAIN_VALUE}/fullchain.pem"
+            TLS_KEY_PATH_VALUE="/etc/letsencrypt/live/${WEBSITE_DOMAIN_VALUE}/privkey.pem"
 
             if [ -z "${CERTBOT_EMAIL_VALUE:-}" ] && [ -n "${ADMIN_EMAIL_VALUE:-}" ]; then
               CERTBOT_EMAIL_VALUE="${ADMIN_EMAIL_VALUE%%,*}"
@@ -131,12 +138,6 @@ jobs:
             CERTBOT_EMAIL_VALUE="$(trim_env_value "${CERTBOT_EMAIL_VALUE:-}")"
 
             ensure_tls_certificate() {
-              if [ -z "${SERVER_NAME_VALUE:-}" ] || [ -z "${TLS_CERT_PATH_VALUE:-}" ] || [ -z "${TLS_KEY_PATH_VALUE:-}" ]; then
-                echo "Missing SERVER_NAME/TLS_CERT_PATH/TLS_KEY_PATH in $DEPLOY_PATH/.env"
-                echo "Cannot verify or issue TLS certificates without these values."
-                exit 1
-              fi
-
               if docker compose -f docker-compose.prod.yml --profile ops run --rm --no-deps --entrypoint sh certbot -lc \
                 "test -f \"$TLS_CERT_PATH_VALUE\" && test -f \"$TLS_KEY_PATH_VALUE\""; then
                 echo "TLS certificate files already exist: $TLS_CERT_PATH_VALUE and $TLS_KEY_PATH_VALUE"
@@ -164,43 +165,6 @@ jobs:
 
               echo "TLS certificate issued successfully for ${SERVER_NAME_VALUE}"
             }
-
-            if [ -z "${GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH:-}" ]; then
-              echo "Missing GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH in $DEPLOY_PATH/.env"
-              echo "Use .github/workflows/templates/env.prod.example as the template."
-              exit 1
-            fi
-
-            case "$GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH" in
-              /*)
-                ;;
-              *)
-                echo "GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH must be an absolute server path in production .env."
-                echo "Current value: $GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH"
-                echo "Example: /opt/ai-coding-tutor/secrets/ai-coding-tutor-service-account.json"
-                exit 1
-                ;;
-            esac
-
-            if [ -z "${GOOGLE_APPLICATION_CREDENTIALS_PATH_IN_CONTAINER:-}" ]; then
-              echo "Missing GOOGLE_APPLICATION_CREDENTIALS in $DEPLOY_PATH/.env"
-              echo "Use .github/workflows/templates/env.prod.example as the template."
-              exit 1
-            fi
-
-            if [ ! -f "$GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH" ]; then
-              echo "Google service account JSON file not found: $GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH"
-              echo "Place the JSON file on the server first and keep the path in .env in sync."
-              exit 1
-            fi
-
-            if [ ! -r "$GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH" ]; then
-              echo "Google service account JSON file is not readable: $GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH"
-              exit 1
-            fi
-
-            echo "Verified Google service account JSON file: $GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH"
-            echo "Container mount path: $GOOGLE_APPLICATION_CREDENTIALS_PATH_IN_CONTAINER"
 
             if [ -n "${GHCR_TOKEN:-}" ] && [ -n "${GHCR_USERNAME:-}" ]; then
               echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
@@ -251,8 +215,8 @@ jobs:
             ai_health = fetch("http://127.0.0.1:8000/api/health/ai?force=true")
             print({"ai_health": ai_health})
 
-            if not ai_health.get("google"):
-                sys.exit("Vertex Gemini health check failed (google=false)")
+            if not (ai_health.get("anthropic") or ai_health.get("openai") or ai_health.get("google")):
+                sys.exit("Post-deploy health check failed: no configured LLM provider is currently reachable")
             PY
             then
               echo "Post-deploy health check failed. Printing recent backend logs..."

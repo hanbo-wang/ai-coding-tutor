@@ -5,11 +5,12 @@ import {
   ReactNode,
 } from "react";
 import {
+  ChangePasswordData,
   User,
   LoginCredentials,
   RegisterData,
+  PasswordResetConfirmData,
   ProfileUpdateData,
-  ChangePasswordData,
 } from "../api/types";
 import { apiFetch, setAccessToken } from "../api/http";
 
@@ -17,10 +18,13 @@ interface AuthContextType {
   user: User | null;
   isLoading: boolean;
   login: (credentials: LoginCredentials) => Promise<void>;
+  sendRegisterCode: (email: string) => Promise<void>;
   register: (data: RegisterData) => Promise<void>;
   logout: () => Promise<void>;
   updateProfile: (data: ProfileUpdateData) => Promise<void>;
   changePassword: (data: ChangePasswordData) => Promise<void>;
+  sendPasswordResetCode: (email: string) => Promise<void>;
+  resetPassword: (data: PasswordResetConfirmData) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -63,6 +67,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(userProfile);
   };
 
+  const sendRegisterCode = async (email: string) => {
+    await apiFetch<{ message: string }>("/api/auth/register/send-code", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    });
+  };
+
   const register = async (registerData: RegisterData) => {
     const data = await apiFetch<{ access_token: string }>("/api/auth/register", {
       method: "POST",
@@ -94,9 +105,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
   };
 
+  const sendPasswordResetCode = async (email: string) => {
+    await apiFetch<{ message: string }>("/api/auth/password-reset/send-code", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    });
+  };
+
+  const resetPassword = async (data: PasswordResetConfirmData) => {
+    await apiFetch<{ message: string }>("/api/auth/password-reset/confirm", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  };
+
   return (
     <AuthContext.Provider
-      value={{ user, isLoading, login, register, logout, updateProfile, changePassword }}
+      value={{
+        user,
+        isLoading,
+        login,
+        sendRegisterCode,
+        register,
+        logout,
+        updateProfile,
+        changePassword,
+        sendPasswordResetCode,
+        resetPassword,
+      }}
     >
       {children}
     </AuthContext.Provider>

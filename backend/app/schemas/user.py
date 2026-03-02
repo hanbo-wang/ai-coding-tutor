@@ -12,9 +12,23 @@ class UserCreate(BaseModel):
     maths_level: int = Field(default=3, ge=1, le=5)
 
 
+class RegisterWithCode(UserCreate):
+    verification_code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+
+
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+
+
+class SendCodeRequest(BaseModel):
+    email: EmailStr
+
+
+class PasswordResetConfirmRequest(BaseModel):
+    email: EmailStr
+    verification_code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+    new_password: str = Field(min_length=8)
 
 
 class UserProfile(BaseModel):
@@ -33,6 +47,8 @@ class UserProfileUpdate(BaseModel):
     username: str | None = Field(default=None, min_length=3, max_length=50)
     programming_level: int | None = Field(default=None, ge=1, le=5)
     maths_level: int | None = Field(default=None, ge=1, le=5)
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class ChangePassword(BaseModel):

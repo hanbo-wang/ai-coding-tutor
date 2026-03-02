@@ -14,6 +14,8 @@ function isAuthEndpoint(path: string): boolean {
   return (
     path.startsWith("/api/auth/login") ||
     path.startsWith("/api/auth/register") ||
+    path.startsWith("/api/auth/password-reset/send-code") ||
+    path.startsWith("/api/auth/password-reset/confirm") ||
     path.startsWith("/api/auth/refresh")
   );
 }
@@ -49,6 +51,15 @@ async function parseApiError(response: Response): Promise<string> {
     const error = await response.json().catch(() => ({ detail: "Unknown error" }));
     if (error && typeof error.detail === "string") {
       return error.detail;
+    }
+    if (error && Array.isArray(error.detail) && error.detail.length > 0) {
+      const first = error.detail[0];
+      if (first && typeof first.msg === "string") {
+        if (first.msg.toLowerCase().includes("email")) {
+          return "Please enter a valid email address.";
+        }
+        return first.msg;
+      }
     }
   }
 

@@ -3,27 +3,37 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Response, Request, status
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.dependencies import get_db, get_current_user
+from app.dependencies import get_current_user, get_db
 from app.models.user import User
 from app.schemas.user import (
-    UserCreate,
+    ChangePassword,
+    PasswordResetConfirmRequest,
+    RegisterWithCode,
+    SendCodeRequest,
+    TokenResponse,
     UserLogin,
     UserProfile,
     UserProfileUpdate,
-    ChangePassword,
-    TokenResponse,
 )
 from app.services.auth_service import (
-    hash_password,
-    verify_password,
     create_access_token,
     create_refresh_token,
     decode_token,
+    hash_password,
+    verify_password,
+)
+from app.services.email_service import EmailDeliveryError
+from app.services.email_verification_service import (
+    REGISTER_PURPOSE,
+    RESET_PASSWORD_PURPOSE,
+    ResendCooldownError,
+    issue_email_verification_code,
+    verify_email_verification_code,
 )
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -43,14 +53,48 @@ def set_refresh_cookie(response: Response, refresh_token: str) -> None:
     )
 
 
+@router.post("/register/send-code")
+async def send_register_code(
+    payload: SendCodeRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Send a registration verification code by email."""
+    normalised_email = payload.email.lower()
+    result = await db.execute(select(User).where(User.email == normalised_email))
+    if result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered",
+        )
+
+    try:
+        await issue_email_verification_code(
+            db,
+            email=normalised_email,
+            purpose=REGISTER_PURPOSE,
+        )
+    except ResendCooldownError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Please wait {exc.retry_after_seconds}s before requesting another code.",
+            headers={"Retry-After": str(exc.retry_after_seconds)},
+        )
+    except EmailDeliveryError:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to send verification email. Please try again.",
+        )
+
+    return {"message": "Verification code sent."}
+
+
 @router.post("/register", response_model=TokenResponse)
 async def register(
-    user_data: UserCreate,
+    user_data: RegisterWithCode,
     response: Response,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """Register a new user and return tokens."""
-    # Check if email already exists
+    """Register a new user after verifying the email code."""
     normalised_email = user_data.email.lower()
     result = await db.execute(select(User).where(User.email == normalised_email))
     if result.scalar_one_or_none():
@@ -59,7 +103,18 @@ async def register(
             detail="Email already registered",
         )
 
-    # Create user
+    verified = await verify_email_verification_code(
+        db,
+        email=normalised_email,
+        purpose=REGISTER_PURPOSE,
+        code=user_data.verification_code,
+    )
+    if not verified:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired verification code",
+        )
+
     user = User(
         email=normalised_email,
         username=user_data.username,
@@ -72,13 +127,9 @@ async def register(
     await db.commit()
     await db.refresh(user)
 
-    # Generate tokens
     access_token = create_access_token(str(user.id))
     refresh_token = create_refresh_token(str(user.id))
-
-    # Set refresh token cookie
     set_refresh_cookie(response, refresh_token)
-
     return TokenResponse(access_token=access_token)
 
 
@@ -157,6 +208,74 @@ async def logout(response: Response):
     return {"message": "Logged out successfully"}
 
 
+@router.post("/password-reset/send-code")
+async def send_password_reset_code(
+    payload: SendCodeRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Send a password reset verification code for a registered email."""
+    normalised_email = payload.email.lower()
+    result = await db.execute(select(User).where(User.email == normalised_email))
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Email is not registered.",
+        )
+
+    try:
+        await issue_email_verification_code(
+            db,
+            email=normalised_email,
+            purpose=RESET_PASSWORD_PURPOSE,
+        )
+    except ResendCooldownError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Please wait {exc.retry_after_seconds}s before requesting another code.",
+            headers={"Retry-After": str(exc.retry_after_seconds)},
+        )
+    except EmailDeliveryError:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to send verification email. Please try again.",
+        )
+
+    return {"message": "Verification code sent."}
+
+
+@router.post("/password-reset/confirm")
+async def confirm_password_reset(
+    payload: PasswordResetConfirmRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Reset a password using a verified email code."""
+    normalised_email = payload.email.lower()
+    result = await db.execute(select(User).where(User.email == normalised_email))
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Email is not registered.",
+        )
+
+    verified = await verify_email_verification_code(
+        db,
+        email=normalised_email,
+        purpose=RESET_PASSWORD_PURPOSE,
+        code=payload.verification_code,
+    )
+    if not verified:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired verification code",
+        )
+
+    user.password_hash = hash_password(payload.new_password)
+    await db.commit()
+    return {"message": "Password reset successfully."}
+
+
 @router.get("/me", response_model=UserProfile)
 async def get_me(current_user: Annotated[User, Depends(get_current_user)]):
     """Get the current user's profile."""
@@ -187,17 +306,17 @@ async def update_me(
 
 @router.put("/me/password")
 async def change_password(
-    password_data: ChangePassword,
+    payload: ChangePassword,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """Change the current user's password."""
-    if not verify_password(password_data.current_password, current_user.password_hash):
+    """Reset password for the signed-in user after checking current password."""
+    if not verify_password(payload.current_password, current_user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Current password is incorrect",
+            detail="Current password is incorrect.",
         )
 
-    current_user.password_hash = hash_password(password_data.new_password)
+    current_user.password_hash = hash_password(payload.new_password)
     await db.commit()
-    return {"message": "Password updated successfully"}
+    return {"message": "Password reset successfully."}

@@ -82,16 +82,16 @@ export function ProfilePage() {
             <span className="text-sm font-medium text-gray-700">Email:</span>
             <p className="text-gray-900">{user.email}</p>
           </div>
-          <div className="flex items-center justify-between">
-            <div>
-              <span className="text-sm font-medium text-gray-700">Password:</span>
-              <p className="text-gray-900">********</p>
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-gray-900">
+              <span className="text-sm font-medium text-gray-700">Password:</span>{" "}
+              <span>********</span>
             </div>
             <Link
-              to="/change-password"
-              className="text-sm text-accent-dark hover:underline"
+              to="/profile/reset-password/password"
+              className="inline-flex rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-light focus:outline-none focus:ring-2 focus:ring-accent"
             >
-              Change Password
+              Reset Password
             </Link>
           </div>
           <div>

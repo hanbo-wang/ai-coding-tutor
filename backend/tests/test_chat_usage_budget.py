@@ -5,9 +5,9 @@ from datetime import date
 from app.services.chat_service import calculate_weighted_token_usage, get_week_bounds
 
 
-def test_calculate_weighted_token_usage_uses_input_divided_by_six() -> None:
+def test_calculate_weighted_token_usage_uses_input_divided_by_five() -> None:
     weighted = calculate_weighted_token_usage(600, 900)
-    assert weighted == 1000.0
+    assert weighted == 1020.0
 
 
 def test_get_week_bounds_returns_monday_to_sunday() -> None:

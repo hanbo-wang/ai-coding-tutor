@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 import app.models  # noqa: F401
+from app.config import settings
 from app.dependencies import get_db
 from app.models.user import Base, User
 from app.routers.auth import router as auth_router
@@ -27,13 +28,18 @@ async def _register_user(
     programming_level: int = 3,
     maths_level: int = 3,
     password: str = "StrongPass123",
+    verification_code: str = "123456",
 ) -> dict:
+    send_code = await client.post("/api/auth/register/send-code", json={"email": email})
+    assert send_code.status_code == 200
+
     response = await client.post(
         "/api/auth/register",
         json={
             "email": email,
             "username": username,
             "password": password,
+            "verification_code": verification_code,
             "programming_level": programming_level,
             "maths_level": maths_level,
         },
@@ -51,11 +57,17 @@ async def _get_user_by_email(
 
 
 @pytest_asyncio.fixture
-async def auth_profile_client(tmp_path):
+async def auth_profile_client(tmp_path, monkeypatch: pytest.MonkeyPatch):
     """Create an isolated app and SQLite DB for auth profile update tests."""
     db_path = tmp_path / "auth_profile.sqlite3"
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    monkeypatch.setattr(settings, "email_provider", "noop")
+    monkeypatch.setattr(
+        "app.services.email_verification_service._generate_code",
+        lambda: "123456",
+    )
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

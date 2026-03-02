@@ -50,7 +50,7 @@ The **pedagogy engine** controls every AI response:
 
 ```
 Frontend (React + Vite + Tailwind)
-  ├── Auth (login, register, profile)
+  ├── Auth (email verification, login, register, password reset, profile)
   ├── Chat (WebSocket streaming, session sidebar)
   ├── Notebook workspace (JupyterLite + scoped chat)
   ├── Learning Hub (zone browse + zone workspace)
@@ -93,9 +93,11 @@ cp .github/workflows/templates/env.dev.example .env
 2. **Edit `.env`** and set at minimum:
 
    - `JWT_SECRET_KEY`: at least 32 random characters.
-   - `ANTHROPIC_API_KEY`: for the default Anthropic Claude provider.
-   - Optional: `GOOGLE_API_KEY` or Google service account credentials for Gemini fallback.
-   - Optional: `OPENAI_API_KEY` for OpenAI fallback.
+   - At least one LLM provider key:
+     - `ANTHROPIC_API_KEY`, or
+     - `OPENAI_API_KEY`, or
+     - `GOOGLE_API_KEY` (AI Studio) / Vertex credentials.
+   - Optional: additional provider keys for failover.
    - Optional: `ADMIN_EMAIL` for admin dashboard access.
 
 3. **Build JupyterLite assets** (required once for notebook workspace):

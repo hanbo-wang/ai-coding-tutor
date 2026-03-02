@@ -1,9 +1,11 @@
 import { Routes, Route, Navigate } from "react-router-dom";
 import { LoginPage } from "./auth/LoginPage";
 import { RegisterPage } from "./auth/RegisterPage";
+import { ForgotPasswordPage } from "./auth/ForgotPasswordPage";
 import { ProtectedRoute } from "./auth/ProtectedRoute";
 import { ProfilePage } from "./profile/ProfilePage";
-import { ChangePasswordPage } from "./profile/ChangePasswordPage";
+import { ResetPasswordByPasswordPage } from "./profile/ResetPasswordByPasswordPage";
+import { ResetPasswordByEmailPage } from "./profile/ResetPasswordByEmailPage";
 import { ChatPage } from "./chat/ChatPage";
 import { Navbar } from "./components/Navbar";
 import { MyNotebooksPage } from "./notebook/MyNotebooksPage";
@@ -22,6 +24,7 @@ export default function App() {
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
           <Route
             path="/chat"
             element={
@@ -39,10 +42,18 @@ export default function App() {
             }
           />
           <Route
-            path="/change-password"
+            path="/profile/reset-password/password"
             element={
               <ProtectedRoute>
-                <ChangePasswordPage />
+                <ResetPasswordByPasswordPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/profile/reset-password/email"
+            element={
+              <ProtectedRoute>
+                <ResetPasswordByEmailPage />
               </ProtectedRoute>
             }
           />

@@ -42,10 +42,10 @@ def get_week_bounds(day: date) -> tuple[date, date]:
 
 
 def calculate_weighted_token_usage(input_tokens: int, output_tokens: int) -> float:
-    """Return weighted usage for budgeting: input/6 + output."""
+    """Return weighted usage for budgeting: input/5 + output."""
     safe_input = max(0, int(input_tokens or 0))
     safe_output = max(0, int(output_tokens or 0))
-    return (safe_input / 6.0) + float(safe_output)
+    return (safe_input / 5.0) + float(safe_output)
 
 
 async def get_or_create_session(

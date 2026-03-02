@@ -1,4 +1,7 @@
 from app.schemas.user import (
+    PasswordResetConfirmRequest,
+    RegisterWithCode,
+    SendCodeRequest,
     UserCreate,
     UserLogin,
     UserProfile,
@@ -32,7 +35,10 @@ from app.schemas.zone import (
 
 __all__ = [
     "UserCreate",
+    "RegisterWithCode",
     "UserLogin",
+    "SendCodeRequest",
+    "PasswordResetConfirmRequest",
     "UserProfile",
     "UserProfileUpdate",
     "ChangePassword",

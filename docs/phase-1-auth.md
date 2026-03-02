@@ -1,16 +1,18 @@
 # Phase 1: Project Scaffolding and User Authentication
 
-**Visible result:** User can register with an email, username, and password, then log in, log out, and view their profile in the browser. Email is the unique login identifier. Username is a display name that can be changed later.
+**Visible result:** A user can register with email verification, log in, reset a password either by current password (signed-in) or by email code, and manage profile details. Email is the unique login identifier and is not editable from profile updates. Username is a separate display field and can be changed.
 
 ---
 
 ## What This Phase Delivers
 
-- Docker Compose running FastAPI + PostgreSQL.
-- A `users` table with email, username, hashed password, and self-assessment fields.
-- REST endpoints for register, login, token refresh, get current user, update profile, and change password.
-- A React frontend with login, registration ("Tell us about you" onboarding), and profile pages.
-- JWT-based auth that survives page refreshes via refresh tokens stored in httpOnly cookies.
+- Docker Compose stack with FastAPI + PostgreSQL.
+- User authentication with access tokens and refresh cookies.
+- Email verification for registration and password reset code flows.
+- Two reset-password modes:
+  - Signed-in reset using current password.
+  - Email-code reset flow.
+- React pages for login, registration, forgot-password, and profile password reset actions.
 
 ---
 
@@ -18,73 +20,109 @@
 
 ### 1. Project Skeleton
 
-`backend/Dockerfile`: Python 3.11-slim, system deps, pip install, Uvicorn.
+`backend/Dockerfile`: Python 3.11-slim runtime image with app dependencies.  
 `backend/requirements.txt`: FastAPI, uvicorn, SQLAlchemy[asyncio], asyncpg, alembic, python-jose, bcrypt, pydantic, pydantic-settings, httpx.
 
 ### 2. Configuration
 
-**`backend/app/config.py`:** Pydantic `BaseSettings` loading from `.env`. Core fields: `database_url`, `jwt_secret_key`, `jwt_access_token_expire_minutes`, `jwt_refresh_token_expire_days`, `cors_origins`, plus AI and upload settings. A single global `settings` instance is imported everywhere.
+**`backend/app/config.py`** loads settings from environment files.  
+Auth and verification-related settings include JWT keys and expiry, email provider settings (`EMAIL_PROVIDER`, `BREVO_*`), and verification code controls (`EMAIL_CODE_*`).
 
 ### 3. Database Setup
 
-**`backend/app/db/session.py`:** Async SQLAlchemy engine and session factory (`expire_on_commit=False`).
-**`backend/app/db/init_db.py`:** Runs `alembic upgrade head` on startup.
+**`backend/app/db/session.py`**: async SQLAlchemy engine and session factory (`expire_on_commit=False`).  
+**`backend/app/db/init_db.py`**: applies migrations with `alembic upgrade head` on startup.
 
-### 4. User Model
+### 4. Data Models
 
-**`backend/app/models/user.py`:** SQLAlchemy 2.0 declarative model.
+**`backend/app/models/user.py`** stores account identity and profile values:
 
 | Column | Type | Notes |
 |--------|------|-------|
 | `id` | UUID | Primary key |
-| `email` | VARCHAR(255) | Unique, indexed |
-| `username` | VARCHAR(50) | Unique, indexed |
-| `password_hash` | VARCHAR(255) | Bcrypt |
+| `email` | VARCHAR(255) | Unique login identifier |
+| `username` | VARCHAR(50) | Display name |
+| `password_hash` | VARCHAR(255) | Bcrypt hash |
 | `programming_level` | INTEGER | 1-5, default 3 |
 | `maths_level` | INTEGER | 1-5, default 3 |
 | `created_at` | TIMESTAMP | Server default |
 
-### 5. User Schemas
+**`backend/app/models/email_verification.py`** stores verification token state for registration and password reset:
 
-**`backend/app/schemas/user.py`:** `UserCreate` (email, username, password, optional levels), `UserLogin` (email, password), `UserProfile` (read model with `from_attributes`), `UserProfileUpdate` (optional username and levels; updating a skill slider rebases the corresponding hidden effective level), `ChangePassword`, `TokenResponse`.
+| Column | Notes |
+|--------|-------|
+| `email` | Lower-case email key |
+| `purpose` | `register` or `reset_password` |
+| `code_hash` | HMAC hash (no plain code stored) |
+| `expires_at` | Hard expiry |
+| `failed_attempts` | Invalid entry counter |
+| `resend_available_at` | Cooldown gate |
+| `consumed_at` | Single-use marker |
+
+### 5. Schemas
+
+**`backend/app/schemas/user.py`** includes:
+
+- `RegisterWithCode` for registration with `verification_code`.
+- `SendCodeRequest` and `PasswordResetConfirmRequest` for email-code reset.
+- `ChangePassword` for signed-in reset with current password.
+- `UserProfileUpdate` with `extra="forbid"` so unsupported fields (for example `email`) are rejected.
 
 ### 6. Auth Service
 
-**`backend/app/services/auth_service.py`:** `hash_password`, `verify_password` (bcrypt), `create_access_token` (30 min, HS256), `create_refresh_token` (7 days), `decode_token`.
+**`backend/app/services/auth_service.py`** provides:
 
-### 7. Dependencies
+- password hashing and verification (`bcrypt`),
+- access and refresh token creation,
+- token decoding and validation.
 
-**`backend/app/dependencies.py`:** `get_db()` (async session generator), `get_current_user` (extracts Bearer token, validates access type, loads user or raises 401).
+### 7. Email Verification and Delivery
+
+**`backend/app/services/email_verification_service.py`**:
+
+- generates 6-digit codes,
+- stores HMAC hashes,
+- applies cooldown, expiry, max-attempt, and single-use rules,
+- builds transactional HTML emails with a full `<html>` document and Outlook-friendly table layout.
+
+**`backend/app/services/email_service.py`**:
+
+- sends via Brevo `POST /v3/smtp/email`,
+- retries transient failures,
+- validates that `htmlContent` includes an `<html>` tag before dispatch.
 
 ### 8. Auth Router
 
 **`backend/app/routers/auth.py`** (prefix `/api/auth`):
 
-| Endpoint | Method | What it does |
-|----------|--------|-------------|
-| `/api/auth/register` | POST | Create user, return access token, set refresh cookie |
-| `/api/auth/login` | POST | Validate credentials, return tokens |
-| `/api/auth/refresh` | POST | Read cookie, rotate refresh token, return new access token |
-| `/api/auth/logout` | POST | Delete refresh cookie |
+| Endpoint | Method | Behaviour |
+|----------|--------|-----------|
+| `/api/auth/register/send-code` | POST | Send registration code; rejects already-registered email |
+| `/api/auth/register` | POST | Verify code, create user, return token, set refresh cookie |
+| `/api/auth/login` | POST | Validate credentials and return token |
+| `/api/auth/refresh` | POST | Rotate refresh token and return new access token |
+| `/api/auth/logout` | POST | Clear refresh cookie |
+| `/api/auth/password-reset/send-code` | POST | Send reset code for registered email; returns `404` if email is not registered |
+| `/api/auth/password-reset/confirm` | POST | Verify reset code and update password; returns `404` if email is not registered |
 | `/api/auth/me` | GET | Return current user profile |
 | `/api/auth/me` | PUT | Update username and skill levels |
-| `/api/auth/me/password` | PUT | Change password (requires current password) |
-
-Refresh cookie: httpOnly, secure (production), samesite lax, path `/api/auth`, 7 day max age.
+| `/api/auth/me/password` | PUT | Signed-in password reset using current password |
 
 ### 9. FastAPI App
 
-**`backend/app/main.py`:** Lifespan context manager calls `init_db()` on startup and `engine.dispose()` on shutdown. CORS middleware with `allow_credentials=True`. `GET /health` returns a browser-facing health page or JSON for probes.
+**`backend/app/main.py`** configures:
 
-### 10. Alembic Migration
+- application lifespan startup/shutdown,
+- CORS middleware with credentials enabled,
+- `/health` endpoint for browser and probe checks.
 
-First migration creates the `users` table. `init_db()` runs `alembic upgrade head` at startup so containers apply pending revisions automatically.
+### 10. Migrations
 
-### 11. Docker Compose
+Alembic revisions create and maintain auth-related tables (`users`, `email_verification_tokens`) and are applied automatically on startup.
 
-`db`: PostgreSQL 15 with named volume and health check. `backend`: depends on db (healthy), loads `.env`, mounts source for live reload, port 8000.
+### 11. Local Runtime
 
-**`start.bat`**: Windows one-click startup. Checks Docker, starts services, waits for health, verifies AI provider connectivity, then launches the frontend.
+`docker-compose.yml` runs `db` + `backend` with health checks and live-reload behaviour for local development.
 
 ---
 
@@ -92,57 +130,69 @@ First migration creates the `users` table. `init_db()` runs `alembic upgrade hea
 
 ### 12. Project Skeleton
 
-Vite + React + TypeScript + Tailwind CSS v4 (via `@tailwindcss/vite` plugin). API proxy and WebSocket proxy configured in `vite.config.ts`.
+Vite + React + TypeScript + Tailwind CSS, with API and WebSocket proxy settings in `vite.config.ts`.
 
 ### 13. API Layer
 
-**`frontend/src/api/http.ts`:** Fetch wrapper with in-memory access token, automatic Bearer header, `credentials: "include"`, 401 retry via `/api/auth/refresh`, and `getAccessToken()` export for WebSocket use.
+**`frontend/src/api/http.ts`**:
 
-**`frontend/src/api/types.ts`:** TypeScript interfaces matching backend schemas.
+- adds bearer token automatically,
+- sends requests with `credentials: "include"`,
+- retries once after `/api/auth/refresh` on `401` for non-auth endpoints.
 
 ### 14. Auth Context
 
-**`frontend/src/auth/AuthContext.tsx`:** Provides `user`, `login`, `register`, `logout`, `updateProfile`, `changePassword`, `isLoading`. Restores session on mount via `/api/auth/refresh`.
+**`frontend/src/auth/AuthContext.tsx`** provides:
+
+- `login`, `register`, `logout`,
+- `sendRegisterCode`,
+- `sendPasswordResetCode`, `resetPassword`,
+- `changePassword` (signed-in mode),
+- `updateProfile`,
+- session restore on app load.
 
 ### 15. Auth Pages
 
-**`LoginPage.tsx`**: Email + password form, redirects to `/chat` on success.
-**`RegisterPage.tsx`**: "Tell us about you" onboarding with email, username, password, confirm password, and two skill sliders (1-5).
-**`ProtectedRoute.tsx`**: Loading spinner during session check, redirects to `/login` if unauthenticated.
+- **`LoginPage.tsx`**: sign-in form and forgot-password entry.
+- **`RegisterPage.tsx`**: onboarding with email code send, code entry, username, password, and skill sliders.
+- **`ForgotPasswordPage.tsx`**: unauthenticated email-code reset flow with client-side email format validation before API calls.
 
-### 16. Profile Page
+### 16. Profile Password Pages
 
-**`ProfilePage.tsx`**: Read-only email, editable username, skill sliders (updating rebases hidden effective levels), change password link.
-**`ChangePasswordPage.tsx`**: Current password verification, new password with confirmation.
+- **`ProfilePage.tsx`**: read-only email, editable username/levels, and one `Reset Password` entry that opens the current-password reset page.
+- **`ResetPasswordByPasswordPage.tsx`**: signed-in reset by current password.
+- **`ResetPasswordByEmailPage.tsx`**: signed-in reset by email code, using the current account email in read-only mode.
 
-### 17. Shared Components
-
-**`Navbar.tsx`**: Brand text, nav links (Chat, My Notebooks, Learning Hub, Profile), Admin link when `is_admin`, Logout button.
-**`LoadingSpinner.tsx`**: Tailwind `animate-spin` spinner.
-
-### 18. Routing
+### 17. Routing
 
 | Path | Component | Auth |
 |------|-----------|------|
 | `/login` | LoginPage | No |
 | `/register` | RegisterPage | No |
+| `/forgot-password` | ForgotPasswordPage | No |
 | `/chat` | ChatPage | Yes |
 | `/profile` | ProfilePage | Yes |
-| `/change-password` | ChangePasswordPage | Yes |
+| `/profile/reset-password/password` | ResetPasswordByPasswordPage | Yes |
+| `/profile/reset-password/email` | ResetPasswordByEmailPage | Yes |
+| `/my-notebooks` | MyNotebooksPage | Yes |
+| `/notebook/:notebookId` | NotebookWorkspacePage | Yes |
+| `/learning-hub` | LearningHubPage | Yes |
+| `/zones/:zoneId` | ZoneDetailPage | Yes |
+| `/zone-notebook/:zoneId/:notebookId` | ZoneNotebookWorkspacePage | Yes |
+| `/admin` | AdminDashboardPage | Yes |
+| `/health` | HealthPage | Yes |
 | `/` | Redirect to `/chat` | No |
 
 ---
 
 ## Verification Checklist
 
-- [ ] Backend and database start without errors.
-- [ ] Health endpoint returns 200.
-- [ ] Register creates user, returns token, sets cookie.
-- [ ] Duplicate email returns 400.
-- [ ] Login works with email + password.
-- [ ] Profile returns email and username.
-- [ ] Profile update rebases hidden effective levels when skill sliders change.
-- [ ] Password change verifies current password.
-- [ ] Refresh endpoint rotates tokens.
-- [ ] Page refresh preserves session.
-- [ ] Logout clears session; protected pages redirect to login.
+- [ ] Register flow requires a valid 6-digit email code.
+- [ ] `/api/auth/password-reset/send-code` returns `404` and `Email is not registered.` for unknown email.
+- [ ] Unknown-email forgot-password requests do not create a reset token record.
+- [ ] `/api/auth/password-reset/confirm` returns `404` and `Email is not registered.` for unknown email.
+- [ ] Signed-in password reset verifies current password and rejects incorrect current password.
+- [ ] Profile update accepts username and level changes and rejects unsupported fields such as `email`.
+- [ ] Password reset by email code remains single-use and respects expiry/attempt limits.
+- [ ] Verification emails contain a full `<html>` document and render correctly in Outlook clients.
+- [ ] Refresh endpoint rotates tokens and preserves authenticated browser sessions.

@@ -142,6 +142,8 @@ Root storage from `NOTEBOOK_STORAGE_DIR` (default `/tmp/ai_coding_tutor_notebook
 | `/api/admin/zones/{zone_id}/notebooks/reorder` | PUT    | Reorder notebooks.                        |
 | `/api/admin/llm/models`                        | GET    | Return current active LLM and available switch options with pricing. |
 | `/api/admin/llm/switch`                        | POST   | Switch active LLM after admin password confirmation. |
+| `/api/admin/llm-errors`                        | GET    | Return recent in-memory LLM runtime errors for operations diagnostics. |
+| `/api/admin/usage`                             | GET    | Return total usage and estimated cost snapshots (today / week / month). |
 | `/api/admin/audit-log`                         | GET    | Return paginated admin audit log entries. |
 | `/api/admin/usage/by-model`                    | GET    | Return usage and estimated cost for one selected provider/model. |
 

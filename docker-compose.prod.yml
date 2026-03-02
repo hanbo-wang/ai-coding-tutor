@@ -30,7 +30,7 @@ services:
     volumes:
       - uploads_data:/data/uploads
       - notebooks_data:/data/notebooks
-      - ${GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH:?set GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH}:${GOOGLE_APPLICATION_CREDENTIALS:?set GOOGLE_APPLICATION_CREDENTIALS}:ro
+      - ${GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH:-/dev/null}:${GOOGLE_APPLICATION_CREDENTIALS:-/run/secrets/google/service-account.json}:ro
     depends_on:
       db:
         condition: service_healthy
@@ -52,11 +52,11 @@ services:
     image: ${GHCR_REGISTRY:-ghcr.io}/${GHCR_OWNER:?set GHCR_OWNER}/${GHCR_IMAGE_PREFIX:-ai-coding-tutor}-frontend:${IMAGE_TAG:-main}
     restart: unless-stopped
     environment:
-      SERVER_NAME: ${SERVER_NAME:?set SERVER_NAME}
+      SERVER_NAME: ${WEBSITE_DOMAIN:?set WEBSITE_DOMAIN}
       BACKEND_UPSTREAM: ${BACKEND_UPSTREAM:-backend:8000}
       CLIENT_MAX_BODY_SIZE: ${CLIENT_MAX_BODY_SIZE:-16m}
-      TLS_CERT_PATH: ${TLS_CERT_PATH:?set TLS_CERT_PATH}
-      TLS_KEY_PATH: ${TLS_KEY_PATH:?set TLS_KEY_PATH}
+      TLS_CERT_PATH: /etc/letsencrypt/live/${WEBSITE_DOMAIN:?set WEBSITE_DOMAIN}/fullchain.pem
+      TLS_KEY_PATH: /etc/letsencrypt/live/${WEBSITE_DOMAIN:?set WEBSITE_DOMAIN}/privkey.pem
     depends_on:
       backend:
         condition: service_healthy

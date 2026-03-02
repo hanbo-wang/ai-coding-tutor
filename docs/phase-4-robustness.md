@@ -14,7 +14,7 @@
 - Cost estimation and usage visibility in the admin dashboard.
 - An audit log tracking every Learning Hub module file change.
 - A comprehensive automated test suite covering all features.
-- Structured JSON logging for significant events.
+- Structured application logging for significant events.
 - Improved error handling on both frontend and backend.
 
 The application exposes three health-related endpoints: `GET /health` for browser-facing health diagnostics (including the current running model, with basic liveness JSON for non-HTML probes), `GET /api/health/ai` for AI provider verification, and `GET /api/health/ai/models` for model-level smoke checks plus the current running model snapshot.
@@ -57,11 +57,11 @@ For a single process deployment, in-memory data structures are sufficient and av
 
 `GET /api/chat/usage` returns the current week's usage snapshot: `week_start`, `week_end`, `input_tokens_used`, `output_tokens_used`, `weighted_tokens_used`, `remaining_weighted_tokens`, `weekly_weighted_limit`, `usage_percentage`.
 
-Weighted usage: `(input_tokens_used / 6) + output_tokens_used`. `usage_percentage` is capped at 100.
+Weighted usage: `(input_tokens_used / 5) + output_tokens_used`. `usage_percentage` is capped at 100.
 
 ### 3.3 Per User Weekly Limit
 
-`USER_WEEKLY_WEIGHTED_TOKEN_LIMIT` (default: 80,000). Input tokens contribute at 1/6 weight; output tokens at full weight.
+`USER_WEEKLY_WEIGHTED_TOKEN_LIMIT` (default: 80,000). Input tokens contribute at 1/5 weight; output tokens at full weight.
 
 ### 3.4 Per Message Input Guard
 
@@ -182,6 +182,7 @@ The default offline run executes the full backend suite. External smoke tests ma
 | `test_admin_audit.py` | Audit log model and service |
 | `test_admin_usage.py` | Admin usage and cost logic |
 | `test_auth.py` | Auth helpers and token lifecycle |
+| `test_auth_email_verification.py` | Registration and reset email-code auth flows |
 | `test_auth_profile_update_levels.py` | Profile update effective-level rebasing |
 | `test_chat.py` | Chat router helper logic |
 | `test_chat_service_scoping.py` | Chat session scope-matching and reuse |
@@ -193,6 +194,8 @@ The default offline run executes the full backend suite. External smoke tests ma
 | `test_connection_tracker.py` | Concurrent WebSocket caps |
 | `test_context_builder.py` | Token-aware context assembly |
 | `test_e2e_api.py` | End-to-end API flows |
+| `test_email_verification_service.py` | Email template and verification helper checks |
+| `test_external_model_smoke.py` | Optional live provider/model smoke tests (`external_ai`) |
 | `test_health_ai.py` | Health check endpoints |
 | `test_llm_anthropic.py` | Anthropic provider streaming |
 | `test_llm_factory.py` | LLM factory provider selection |
@@ -219,17 +222,17 @@ Run from `backend/`: `PYTHONPATH=. pytest tests/ -q -s`
 
 ### 8.1 Backend
 
-All route handlers catch exceptions and return structured error responses with `detail` and `code` fields. Standard error codes: `AUTH_INVALID`, `AUTH_FORBIDDEN`, `RATE_LIMITED`, `WEEKLY_LIMIT`, `LLM_UNAVAILABLE`, `NOT_FOUND`, `VALIDATION`. Non-retryable WebSocket stage failures send a structured `error` event and then close the socket with code `1011`. Database connection failures return HTTP 503.
+HTTP routes use FastAPI `HTTPException` and validation responses with a `detail` field. WebSocket stage failures send an `error` event and then close with code `1011`. Connection-cap rejections use code `4002`. Database unavailability surfaces as HTTP 503 from dependency initialisation.
 
 ### 8.2 Frontend
 
-WebSocket disconnection shows a reconnect status with exponential backoff (300 ms base delay, capped at 3 seconds). If the socket drops before a terminal event, the frontend retries one in-flight message automatically when safe; otherwise it prompts for manual resend. LLM errors display as styled system messages in the chat. REST call failures show a brief toast notification.
+WebSocket disconnection shows a reconnect status with exponential backoff (300 ms base delay, capped at 3 seconds). If the socket drops before a terminal event, the frontend retries one in-flight message automatically when safe; otherwise it prompts for manual resend. LLM errors display as styled system messages in chat, and REST failures are shown inline in the relevant page panels/forms.
 
 ---
 
 ## 9. Structured Logging
 
-Python `logging` module with a JSON formatter, configured in `backend/app/main.py` at startup. Events logged: LLM calls (provider, model, tokens, cost, latency), metadata header parse results, summary cache refresh, WebSocket connect/disconnect, auth events, rate limit hits, and errors with tracebacks. Development uses human-readable stdout; production uses structured JSON.
+Python `logging` is configured in `backend/app/main.py` at startup with a consistent timestamped text format (`%(asctime)s | %(name)s | %(levelname)s | %(message)s`). Events include LLM calls (provider, model, tokens, cost, latency), metadata header parse results, summary-cache refresh, WebSocket connect/disconnect, auth events, rate-limit hits, and errors with tracebacks.
 
 ---
 

@@ -22,6 +22,7 @@ export interface RegisterData {
   email: string;
   username: string;
   password: string;
+  verification_code: string;
   programming_level?: number;
   maths_level?: number;
 }
@@ -34,6 +35,12 @@ export interface ProfileUpdateData {
 
 export interface ChangePasswordData {
   current_password: string;
+  new_password: string;
+}
+
+export interface PasswordResetConfirmData {
+  email: string;
+  verification_code: string;
   new_password: string;
 }
 

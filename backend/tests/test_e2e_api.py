@@ -30,13 +30,18 @@ async def _register_user(
     password: str = "StrongPass123",
     programming_level: int = 3,
     maths_level: int = 3,
+    verification_code: str = "123456",
 ) -> dict:
+    send_code = await client.post("/api/auth/register/send-code", json={"email": email})
+    assert send_code.status_code == 200
+
     response = await client.post(
         "/api/auth/register",
         json={
             "email": email,
             "username": username,
             "password": password,
+            "verification_code": verification_code,
             "programming_level": programming_level,
             "maths_level": maths_level,
         },
@@ -54,6 +59,11 @@ async def e2e_client(monkeypatch: pytest.MonkeyPatch, tmp_path):
 
     monkeypatch.setattr(settings, "upload_storage_dir", str(upload_dir))
     monkeypatch.setattr(settings, "admin_email", "")
+    monkeypatch.setattr(settings, "email_provider", "noop")
+    monkeypatch.setattr(
+        "app.services.email_verification_service._generate_code",
+        lambda: "123456",
+    )
 
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)

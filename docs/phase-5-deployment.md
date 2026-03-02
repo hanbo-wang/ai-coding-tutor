@@ -60,14 +60,13 @@ Operational notes:
 
 ---
 
-## 4. Optional Environment Variable Validation
+## 4. Runtime Configuration Normalisation
 
-Optional start-up validation in `backend/app/config.py`:
+Current runtime normalisation in `backend/app/config.py`:
 
-- Reject placeholder or short `JWT_SECRET_KEY` (minimum 32 characters).
-- Reject missing `DATABASE_URL`.
-- When `LLM_PROVIDER=google`, ensure `GOOGLE_GEMINI_TRANSPORT` is set and matching credentials are present.
-- When using Vertex AI, ensure `GOOGLE_VERTEX_GEMINI_LOCATION` is set (for Gemini 3 preview models, use `global`).
+- `WEBSITE_DOMAIN` is required, trimmed, protocol-stripped, and trailing-slash-stripped.
+- `CORS_ORIGINS` is optional; when omitted, backend derives it as `https://<WEBSITE_DOMAIN>`.
+- `LLM_PROVIDER`, model aliases, and `GOOGLE_GEMINI_TRANSPORT` values are normalised to canonical runtime values.
 
 ---
 
@@ -82,7 +81,9 @@ Runs on push to `main`. Two jobs:
 
 ### 5.2 Manual Production Deploy (`deploy-prod.yml`)
 
-Manually triggered workflow. Connects to the server via SSH, uploads `docker-compose.prod.yml`, pulls images, and runs `docker compose up -d`. Post-deploy runs a `/health` check.
+Manually triggered workflow. It connects via SSH, uploads `docker-compose.prod.yml`, derives TLS paths from `WEBSITE_DOMAIN`, runs `docker compose config`, starts `db` and `backend`, ensures TLS certificates exist (issuing via Certbot when missing), then starts `frontend` and the `certbot` renewal profile.
+
+Post-deploy checks call `/health` and `/api/health/ai?force=true` from inside the backend container. The gate passes when at least one configured LLM provider is reachable.
 
 Inputs: `image_tag` (GHCR tag), `deploy_path` (server directory with `.env`), `reset_mode` (`none` or `all_volumes`), `reset_confirm` (required for volume reset).
 
@@ -94,11 +95,11 @@ Required GitHub Actions secrets: `SSH_HOST`, `SSH_USER`, `SSH_PORT`, `SSH_PRIVAT
 
 ### 6.1 Prerequisites
 
-Point DNS to the server IP. Allow inbound traffic on ports 80 and 443. Set `TLS_CERT_PATH` and `TLS_KEY_PATH` in the server `.env`.
+Point DNS to the server IP. Allow inbound traffic on ports 80 and 443. Set `WEBSITE_DOMAIN` in the server `.env`. TLS paths are derived automatically from this value.
 
 ### 6.2 Initial Certificate Issuance
 
-Use a one-off Certbot container with `--standalone` challenge before the first full deploy. Alternatively, use webroot-based issuance if a temporary HTTP server is available.
+The deploy workflow can issue the first certificate automatically when files are missing (requires `CERTBOT_EMAIL`, or `ADMIN_EMAIL` fallback). A manual one-off Certbot `--standalone` run is still a valid fallback option.
 
 ### 6.3 Renewal
 
@@ -110,12 +111,12 @@ Start the renewal service profile: `docker compose -f docker-compose.prod.yml --
 
 1. Prepare a Linux server with Docker and Docker Compose.
 2. Create a deploy directory (e.g. `/opt/ai-coding-tutor`).
-3. Create the production `.env` file from `.github/workflows/templates/env.prod.example`. Fill in `GHCR_OWNER`, `SERVER_NAME`, TLS paths, PostgreSQL credentials, `DATABASE_URL`, `JWT_SECRET_KEY`, `CORS_ORIGINS`, `ANTHROPIC_API_KEY`, and optional fallback provider keys (Google, OpenAI).
-4. If using Google Vertex AI, pre-place the Google service account JSON file on the server at the configured host path. Set permissions to 600.
+3. Create the production `.env` file from `.github/workflows/templates/env.prod.example`. Fill in `GHCR_OWNER`, `WEBSITE_DOMAIN`, PostgreSQL credentials, `DATABASE_URL`, `JWT_SECRET_KEY`, and at least one LLM provider key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or Google credentials/API key).
+4. If using Google Vertex AI, place the Google service account JSON file on the server at the configured host path and set permissions to 600.
 5. Configure GitHub Actions repository secrets for SSH and GHCR access.
-6. Prepare the first HTTPS certificate (Section 6).
+6. Ensure `CERTBOT_EMAIL` (or `ADMIN_EMAIL`) is configured so the workflow can issue certificates automatically when needed.
 7. Push to `main` to trigger the image build workflow.
-8. Run `Deploy Production (Manual)` with the desired image tag and deploy path. The workflow validates the Google JSON file path and runs `docker compose config` before pulling images.
+8. Run `Deploy Production (Manual)` with the desired image tag and deploy path. The workflow derives TLS paths from `WEBSITE_DOMAIN`, runs `docker compose config`, deploys services in dependency order, and enforces the post-check that at least one configured LLM provider is reachable.
 9. Verify the deployment: `/health` page, login flow, chat streaming, JupyterLite workspace, file uploads.
 10. Start certificate renewal (recommended).
 
@@ -140,7 +141,7 @@ Back up PostgreSQL regularly using `docker compose exec` with `pg_dump`. If usin
 - [ ] The manual deploy workflow completes successfully.
 - [ ] `Deploy Production (Manual)` with `reset_mode=none` completes without removing volumes.
 - [ ] The `/health` page returns 200 in a browser, and non-HTML probes still receive liveness JSON.
-- [ ] The deploy workflow post-check confirms the current running LLM provider is available.
+- [ ] The deploy workflow post-check confirms at least one configured LLM provider is reachable.
 - [ ] `GET /api/health/ai/models` returns the current running model and smoke-tested available LLM models.
 - [ ] `reset_mode=all_volumes` requires `reset_confirm=RESET_ALL_VOLUMES` and fails safely without it.
 - [ ] The backup job runs and produces valid `.sql.gz` files.
