@@ -32,7 +32,7 @@ The **pedagogy engine** controls every AI response:
 - **Notebook workspace**: open `.ipynb` files in a split-pane layout with JupyterLite (browser-side Python via Pyodide) on the left and AI tutor chat on the right. Pre-loaded with NumPy, SciPy, Pandas, Matplotlib, and SymPy.
 - **Notebook-aware tutoring**: the tutor sees notebook content, the current cell code, and the latest error output.
 - **Learning Hub**: admin-managed learning zones with curated notebooks and shared dependency files. Each student gets an independent working copy with reset-to-original support.
-- **Admin dashboard**: zone management, bulk asset import, runtime LLM model switching (password-confirmed), model input/output pricing visibility, total usage plus selected-model usage tracking (today / this week / this month), a full audit log, and a direct link to the `/health` diagnostics page.
+- **Admin dashboard**: zone management, bulk asset import, runtime LLM model switching (password-confirmed), model input/output pricing visibility, total usage plus selected-model usage tracking (today / this week / this month), a full audit log, and a direct link to the `/system-health` diagnostics page.
 - **Rate limiting and cost control**: per-user and global request limits, weekly token budgets, concurrent connection caps. All configurable via `.env`.
 - **Precise token and cost tracking**: counts come from each provider's API response and are stored per message.
 
@@ -133,7 +133,7 @@ Production runs on Docker Compose + Nginx reverse proxy + HTTPS, deployed via Gi
 - **Local backup pull**: run `bash scripts/ops/pull_backup_to_local.sh` manually when you want to copy snapshots to your local machine.
 - **Rollback**: re-run the deploy workflow with an earlier image tag.
 - **Config**: create `.env` from `.github/workflows/templates/env.prod.example`. Set API keys for desired providers.
-- **Health**: `/health` (browser page showing the current running model and smoke-tested LLM availability; non-HTML probes still get liveness JSON), `/api/health/ai` for LLM provider verification, `/api/health/ai/models` for model-level smoke checks plus the current running model snapshot.
+- **Health**: `/health` (JSON liveness), `/system-health` (authenticated frontend diagnostics), `/api/health/ai` for LLM provider verification, `/api/health/ai/models` for model-level smoke checks plus the current running model snapshot.
 
 ## Documentation
 

@@ -6,18 +6,23 @@ from types import SimpleNamespace
 import pytest
 
 from app.routers.chat import (
-    FATAL_LLM_ERROR_MESSAGE,
     GENERIC_LLM_UNAVAILABLE_ERROR,
+    GENERIC_LLM_RETRY_EXHAUSTED_ERROR,
     GOOGLE_AI_STUDIO_PROVIDER,
     GOOGLE_VERTEX_PROVIDER,
+    _llm_error_ring,
+    _record_llm_error,
+    _resolved_llm_error_ids,
     _build_enriched_message,
     _build_multimodal_user_parts,
     _build_notebook_context_block,
+    _classify_llm_error,
+    get_recent_llm_errors,
+    mark_llm_error_resolved,
     _resolve_ws_token,
     _runtime_usage_provider_id,
     _split_uploads,
     _truncate_text_by_tokens,
-    _user_facing_llm_error_message,
     _validate_upload_mix,
 )
 
@@ -177,29 +182,64 @@ def test_runtime_usage_provider_id_keeps_non_google_provider() -> None:
     assert _runtime_usage_provider_id("openai") == "openai"
 
 
-def test_user_facing_llm_error_message_fatal_for_vertex_location_issue() -> None:
-    """Vertex location/404 errors contain fatal keywords and are non-retryable."""
-    message = _user_facing_llm_error_message(
-        Exception("Gemini API error 404: model not found in location"),
-        "google",
-        "vertex",
+def test_classify_llm_error_marks_payload_invalid_as_clean_context_retry() -> None:
+    classified = _classify_llm_error(
+        Exception("Anthropic API error 400: invalid_request_error: messages: text content"),
+        "anthropic",
     )
-    assert message == FATAL_LLM_ERROR_MESSAGE
+    assert classified.error_code == "payload_invalid"
+    assert classified.retry_same_target is False
+    assert classified.retry_with_clean_context is True
+    assert classified.retry_with_model_switch is True
+    assert classified.suggest_refresh_session is True
+    assert classified.user_message == GENERIC_LLM_UNAVAILABLE_ERROR
 
 
-def test_user_facing_llm_error_message_fatal_for_auth_error() -> None:
-    """Authentication errors are fatal and non-retryable."""
-    message = _user_facing_llm_error_message(
+def test_classify_llm_error_marks_auth_as_model_switch_only() -> None:
+    classified = _classify_llm_error(
         Exception("Error 401: Unauthorized - invalid API key"),
         "openai",
     )
-    assert message == FATAL_LLM_ERROR_MESSAGE
+    assert classified.error_code == "auth_failed"
+    assert classified.retry_same_target is False
+    assert classified.retry_with_clean_context is False
+    assert classified.retry_with_model_switch is True
 
 
-def test_user_facing_llm_error_message_transient_for_timeout() -> None:
-    """Timeout errors are transient and retryable."""
-    message = _user_facing_llm_error_message(Exception("timeout"), "openai")
-    assert message == GENERIC_LLM_UNAVAILABLE_ERROR
+def test_classify_llm_error_marks_timeout_as_retryable() -> None:
+    classified = _classify_llm_error(Exception("timeout"), "openai")
+    assert classified.error_code == "timeout"
+    assert classified.retry_same_target is True
+    assert classified.retry_with_model_switch is True
+    assert classified.user_message == GENERIC_LLM_UNAVAILABLE_ERROR
+    assert GENERIC_LLM_RETRY_EXHAUSTED_ERROR.endswith("moment.")
+
+
+def test_mark_llm_error_resolved_hides_alert_from_default_listing() -> None:
+    _llm_error_ring.clear()
+    _resolved_llm_error_ids.clear()
+    _record_llm_error(
+        provider="openai",
+        model="gpt-5-mini",
+        error_type="fatal",
+        error_code="unknown",
+        detail="synthetic failure",
+        stage="single_pass_header_route",
+    )
+
+    current = get_recent_llm_errors()
+    assert len(current) == 1
+    error_id = current[0]["id"]
+
+    assert mark_llm_error_resolved(error_id) is True
+    assert get_recent_llm_errors() == []
+    assert len(get_recent_llm_errors(include_resolved=True)) == 1
+
+
+def test_mark_llm_error_resolved_returns_false_for_unknown_id() -> None:
+    _llm_error_ring.clear()
+    _resolved_llm_error_ids.clear()
+    assert mark_llm_error_resolved("missing-alert-id") is False
 
 
 @pytest.mark.asyncio

@@ -99,6 +99,7 @@ export function AdminDashboardPage() {
   const [auditTotalPages, setAuditTotalPages] = useState(1);
   const [llmErrors, setLlmErrors] = useState<AdminLlmError[]>([]);
   const [llmErrorsExpanded, setLlmErrorsExpanded] = useState(true);
+  const [resolvingLlmErrorId, setResolvingLlmErrorId] = useState<string | null>(null);
 
   useEffect(() => {
     if (user && !user.is_admin) {
@@ -207,6 +208,23 @@ export function AdminDashboardPage() {
       setLlmErrors(data.errors);
     } catch {
       // LLM error fetch is non-critical.
+    }
+  };
+
+  const handleResolveLlmError = async (errorId: string) => {
+    if (resolvingLlmErrorId) {
+      return;
+    }
+    setResolvingLlmErrorId(errorId);
+    try {
+      await apiFetch(`/api/admin/llm-errors/${errorId}/resolve`, {
+        method: "POST",
+      });
+      setLlmErrors((items) => items.filter((item) => item.id !== errorId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to resolve the alert.");
+    } finally {
+      setResolvingLlmErrorId(null);
     }
   };
 
@@ -602,7 +620,7 @@ export function AdminDashboardPage() {
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-2">
             <a
-              href="/health"
+              href="/system-health"
               target="_blank"
               rel="noopener noreferrer"
               className={btnSecondary}
@@ -648,12 +666,13 @@ export function AdminDashboardPage() {
                       <th className="pb-2 pr-3 font-medium">Type</th>
                       <th className="pb-2 pr-3 font-medium">Provider</th>
                       <th className="pb-2 font-medium">Detail</th>
+                      <th className="pb-2 pl-3 text-right font-medium">Action</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {llmErrors.map((err, idx) => (
+                    {llmErrors.map((err) => (
                       <tr
-                        key={`${err.timestamp}-${idx}`}
+                        key={err.id}
                         className="border-b border-gray-100 last:border-0"
                       >
                         <td className="whitespace-nowrap py-1.5 pr-3 text-gray-500">
@@ -674,6 +693,16 @@ export function AdminDashboardPage() {
                         </td>
                         <td className="max-w-xs truncate py-1.5 text-gray-600">
                           {err.detail}
+                        </td>
+                        <td className="py-1.5 pl-3 text-right">
+                          <button
+                            type="button"
+                            className={btnSecondary}
+                            onClick={() => void handleResolveLlmError(err.id)}
+                            disabled={resolvingLlmErrorId === err.id}
+                          >
+                            {resolvingLlmErrorId === err.id ? "Resolving..." : "Resolved"}
+                          </button>
                         </td>
                       </tr>
                     ))}

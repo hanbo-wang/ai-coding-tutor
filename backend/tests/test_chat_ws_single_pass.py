@@ -14,14 +14,17 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from starlette.websockets import WebSocketDisconnect
 
 from app.ai.llm_base import LLMError, LLMProvider, LLMUsage
 from app.ai.llm_factory import LLMTarget
 from app.ai.pedagogy_engine import PedagogyFastSignals, ProcessResult, StreamPedagogyMeta
 from app.models.chat import ChatMessage
 from app.models.user import Base, User
-from app.routers.chat import router as chat_router
+from app.routers.chat import (
+    GENERIC_LLM_RETRY_EXHAUSTED_ERROR,
+    GENERIC_LLM_UNAVAILABLE_ERROR,
+    router as chat_router,
+)
 
 
 def _run(coro):
@@ -334,13 +337,6 @@ def _collect_until_terminal(ws, timeout: float = 30) -> list[dict]:
         if event.get("type") in {"done", "error"}:
             break
     return events
-
-
-def _assert_ws_disconnected(ws, expected_code: int = 1011) -> None:
-    """Assert that the server has closed the WebSocket."""
-    with pytest.raises(WebSocketDisconnect) as exc_info:
-        ws.receive_json()
-    assert exc_info.value.code == expected_code
 
 
 def test_ws_single_pass_emits_meta_before_token_and_strips_header(tmp_path, monkeypatch) -> None:
@@ -746,7 +742,7 @@ def test_ws_temporarily_unavailable_retries_same_model_then_switches_candidate(
 def test_ws_partial_visible_output_failure_does_not_retry_or_switch(
     tmp_path, monkeypatch
 ) -> None:
-    """Failures after visible tokens should stop immediately with a standard error."""
+    """Failures after visible tokens should stop immediately without fallback retries."""
 
     primary_llm = _HeaderThenFailLLM(provider_id="openai", model_id="gpt-5-mini")
     fallback_llm = _FakeStreamLLM(
@@ -782,14 +778,17 @@ def test_ws_partial_visible_output_failure_does_not_retry_or_switch(
         with client.websocket_connect("/ws/chat?token=test") as ws:
             ws.send_text(json.dumps({"content": "hello"}))
             events = _collect_until_terminal(ws)
-            _assert_ws_disconnected(ws)
+            session_id = next(e for e in events if e["type"] == "session")["session_id"]
+            ws.send_text(json.dumps({"content": "hello again", "session_id": session_id}))
+            events2 = _collect_until_terminal(ws)
 
         assert any(e["type"] == "meta" for e in events)
         assert "".join(e["content"] for e in events if e["type"] == "token") == "Partial"
         error_event = next(e for e in events if e["type"] == "error")
-        assert error_event["message"] == "AI service temporarily unavailable. Please try again."
+        assert error_event["message"] == GENERIC_LLM_UNAVAILABLE_ERROR
         assert not any(e["type"] == "status" for e in events)
-        assert primary_llm.call_count == 1
+        assert next(e for e in events2 if e["type"] == "error")["message"] == GENERIC_LLM_UNAVAILABLE_ERROR
+        assert primary_llm.call_count == 2
         assert fallback_llm.call_count == 0
         assert not any(e["type"] == "done" for e in events)
     finally:
@@ -797,8 +796,10 @@ def test_ws_partial_visible_output_failure_does_not_retry_or_switch(
         _run(engine.dispose())
 
 
-def test_ws_non_unavailable_error_does_not_trigger_auto_retry(tmp_path, monkeypatch) -> None:
-    """Non-unavailable errors should keep previous no-retry behaviour."""
+def test_ws_unknown_error_retries_then_returns_generic_terminal_error(
+    tmp_path, monkeypatch
+) -> None:
+    """Unknown errors should exhaust retries and return the standard terminal error."""
 
     primary_llm = _PlainErrorLLM(
         provider_id="openai",
@@ -825,28 +826,31 @@ def test_ws_non_unavailable_error_does_not_trigger_auto_retry(tmp_path, monkeypa
         with client.websocket_connect("/ws/chat?token=test") as ws:
             ws.send_text(json.dumps({"content": "hello"}))
             events = _collect_until_terminal(ws)
-            _assert_ws_disconnected(ws)
 
         error_event = next(e for e in events if e["type"] == "error")
-        assert error_event["message"] == "malformed prompt payload"
-        assert not any(e["type"] == "status" for e in events)
-        assert primary_llm.call_count == 1
+        status_events = [e for e in events if e["type"] == "status"]
+        same_target_statuses = [e for e in status_events if not e.get("switched_model")]
+        switched_statuses = [e for e in status_events if e.get("switched_model")]
+        assert [e["attempt"] for e in same_target_statuses[:5]] == [1, 2, 3, 4, 5]
+        assert len(switched_statuses) == 1
+        assert error_event["message"] == GENERIC_LLM_RETRY_EXHAUSTED_ERROR
+        assert error_event["error_code"] == "unknown"
+        assert primary_llm.call_count == 12
     finally:
         client.close()
         _run(engine.dispose())
 
 
-def test_ws_non_unavailable_error_closes_socket_without_fallback_switch(
+def test_ws_payload_invalid_error_refreshes_context_before_terminal_error(
     tmp_path, monkeypatch
 ) -> None:
-    """Non-retryable failures should close the socket without status or fallback calls."""
+    """Payload-invalid errors should move through clean-context refresh modes first."""
 
     primary_llm = _PlainErrorLLM(
         provider_id="openai",
         model_id="gpt-5-mini",
-        message="malformed prompt payload",
+        message="invalid_request_error: messages: text content must be non-empty",
     )
-    fallback_build_calls = {"count": 0}
     client, _session_factory, engine, _scheduled, _llm, _pedagogy = _setup_ws_test_env(
         tmp_path,
         monkeypatch,
@@ -854,39 +858,34 @@ def test_ws_non_unavailable_error_closes_socket_without_fallback_switch(
     )
     monkeypatch.setattr(
         "app.routers.chat.list_llm_fallback_targets",
-        lambda *_args, **_kwargs: [
-            LLMTarget(provider="anthropic", model_id="claude-3-5-haiku-latest")
-        ],
-    )
-
-    def _counting_build_target(_settings, _target):
-        fallback_build_calls["count"] += 1
-        return primary_llm
-
-    monkeypatch.setattr(
-        "app.routers.chat.build_llm_provider_for_target",
-        _counting_build_target,
+        lambda *_args, **_kwargs: [],
     )
 
     try:
         with client.websocket_connect("/ws/chat?token=test") as ws:
             ws.send_text(json.dumps({"content": "hello"}))
             events = _collect_until_terminal(ws)
-            _assert_ws_disconnected(ws)
 
-        assert not any(e["type"] == "status" for e in events)
-        assert next(e for e in events if e["type"] == "error")["message"] == "malformed prompt payload"
-        assert primary_llm.call_count == 1
-        assert fallback_build_calls["count"] == 0
+        status_events = [e for e in events if e["type"] == "status"]
+        refresh_statuses = [e for e in status_events if e["stage"] == "context_refresh"]
+        assert [e["context_mode"] for e in refresh_statuses] == [
+            "sanitised_context",
+            "fresh_turn_only",
+        ]
+        error_event = next(e for e in events if e["type"] == "error")
+        assert error_event["message"] == GENERIC_LLM_RETRY_EXHAUSTED_ERROR
+        assert error_event["error_code"] == "payload_invalid"
+        assert error_event["suggest_refresh_session"] is True
+        assert primary_llm.call_count == 3
     finally:
         client.close()
         _run(engine.dispose())
 
 
-def test_ws_unavailable_without_fallback_closes_after_retries(
+def test_ws_unavailable_without_fallback_errors_after_retries_and_allows_new_turn(
     tmp_path, monkeypatch
 ) -> None:
-    """Transient unavailability without fallback should error and close after retries."""
+    """Transient unavailability without fallback should error after retries and stay connected."""
 
     primary_llm = _AlwaysUnavailableLLM(provider_id="openai", model_id="gpt-5-mini")
     client, _session_factory, engine, _scheduled, _llm, _pedagogy = _setup_ws_test_env(
@@ -907,15 +906,18 @@ def test_ws_unavailable_without_fallback_closes_after_retries(
         with client.websocket_connect("/ws/chat?token=test") as ws:
             ws.send_text(json.dumps({"content": "hello"}))
             events = _collect_until_terminal(ws)
-            _assert_ws_disconnected(ws)
+            session_id = next(e for e in events if e["type"] == "session")["session_id"]
+            ws.send_text(json.dumps({"content": "hello again", "session_id": session_id}))
+            events2 = _collect_until_terminal(ws)
 
         status_events = [e for e in events if e["type"] == "status"]
         assert [e["attempt"] for e in status_events] == [1, 2, 3, 4, 5]
         assert all(e["max_attempts"] == 5 for e in status_events)
         assert not any(e.get("switched_model") for e in status_events)
         error_event = next(e for e in events if e["type"] == "error")
-        assert error_event["message"] == "AI service temporarily unavailable. Please try again."
-        assert primary_llm.call_count == 6
+        assert error_event["message"] == GENERIC_LLM_RETRY_EXHAUSTED_ERROR
+        assert next(e for e in events2 if e["type"] == "error")["message"] == GENERIC_LLM_RETRY_EXHAUSTED_ERROR
+        assert primary_llm.call_count == 12
     finally:
         client.close()
         _run(engine.dispose())

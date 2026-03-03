@@ -26,6 +26,8 @@ export type WsEvent =
     attempt: number;
     max_attempts: number;
     switched_model?: boolean;
+    context_mode?: "full_context" | "sanitised_context" | "fresh_turn_only" | string;
+    candidate_index?: number;
     message: string;
   }
   | {
@@ -38,7 +40,14 @@ export type WsEvent =
     input_tokens: number;
     output_tokens: number;
   }
-  | { type: "error"; session_id?: string; message: string };
+  | {
+    type: "error";
+    session_id?: string;
+    message: string;
+    error_code?: string;
+    retryable?: boolean;
+    suggest_refresh_session?: boolean;
+  };
 
 export interface ChatSendOptions {
   sessionId?: string | null;

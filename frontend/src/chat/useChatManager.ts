@@ -47,6 +47,7 @@ export function useChatManager(props?: UseChatManagerProps) {
         setSessionId,
         connected,
         sendMessage,
+        consumeFreshSessionRequirement,
     } = useChatSocket(() => {
         void refreshSessions();
     });
@@ -79,6 +80,13 @@ export function useChatManager(props?: UseChatManagerProps) {
     const handleSend = async (content: string, files: File[]) => {
         if (isStreaming || isLoadingSessions) return;
 
+        const shouldRefreshSession = consumeFreshSessionRequirement();
+        if (shouldRefreshSession) {
+            setSessionId(null);
+            setMessages([]);
+            setRetryStatus("Chat context refreshed automatically. Sending your message again.");
+        }
+
         const prepared = await prepareSendPayload(content, files).catch((err) => {
             const message = err instanceof Error ? err.message : "Failed to upload files.";
             setMessages((items: ChatMessage[]) => [...items, { role: "assistant", content: `Error: ${message}` }]);
@@ -103,7 +111,7 @@ export function useChatManager(props?: UseChatManagerProps) {
         }
 
         const accepted = sendMessage(prepared.cleanedContent, {
-            sessionId,
+            sessionId: shouldRefreshSession ? null : sessionId,
             uploadIds: prepared.uploadIds,
             notebookId: sessionType === "notebook" ? moduleId : undefined,
             zoneNotebookId: sessionType === "zone" ? moduleId : undefined,

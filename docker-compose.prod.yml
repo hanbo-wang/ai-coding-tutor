@@ -52,7 +52,8 @@ services:
     image: ${GHCR_REGISTRY:-ghcr.io}/${GHCR_OWNER:?set GHCR_OWNER}/${GHCR_IMAGE_PREFIX:-ai-coding-tutor}-frontend:${IMAGE_TAG:-main}
     restart: unless-stopped
     environment:
-      SERVER_NAME: ${WEBSITE_DOMAIN:?set WEBSITE_DOMAIN}
+      SERVER_NAME: ${SERVER_NAME:-${WEBSITE_DOMAIN:?set WEBSITE_DOMAIN}}
+      PRIMARY_DOMAIN: ${PRIMARY_DOMAIN:-${WEBSITE_DOMAIN:?set WEBSITE_DOMAIN}}
       BACKEND_UPSTREAM: ${BACKEND_UPSTREAM:-backend:8000}
       CLIENT_MAX_BODY_SIZE: ${CLIENT_MAX_BODY_SIZE:-16m}
       TLS_CERT_PATH: /etc/letsencrypt/live/${WEBSITE_DOMAIN:?set WEBSITE_DOMAIN}/fullchain.pem

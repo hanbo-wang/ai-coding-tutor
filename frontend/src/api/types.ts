@@ -236,10 +236,12 @@ export interface AuditLogResponse {
 }
 
 export interface AdminLlmError {
+  id: string;
   timestamp: string;
   provider: string;
   model: string;
   error_type: "fatal" | "transient";
+  error_code?: string;
   detail: string;
   stage: string;
 }

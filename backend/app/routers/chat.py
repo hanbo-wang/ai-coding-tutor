@@ -9,7 +9,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import (
     APIRouter,
@@ -36,6 +36,7 @@ from app.ai.llm_factory import (
     get_llm_provider,
     list_llm_fallback_targets,
 )
+from app.ai.message_sanitizer import sanitise_history_messages
 from app.ai.pricing import estimate_llm_cost_usd
 from app.config import settings
 from app.db.session import AsyncSessionLocal
@@ -60,24 +61,33 @@ router = APIRouter(tags=["chat"])
 GOOGLE_AI_STUDIO_PROVIDER = "google-aistudio"
 GOOGLE_VERTEX_PROVIDER = "google-vertex"
 GENERIC_LLM_UNAVAILABLE_ERROR = "AI service temporarily unavailable. Please try again."
-FATAL_LLM_ERROR_MESSAGE = "Internal error. The administrator has been notified."
+GENERIC_LLM_RETRY_EXHAUSTED_ERROR = (
+    "AI service temporarily unavailable. Please try again in a moment."
+)
 SAME_MODEL_RETRY_LIMIT = 5
 SINGLE_PASS_PARSE_RETRY_LIMIT = 3
-
-# Fatal error keywords that indicate non-transient LLM provider failures.
-# When any of these appear in the exception text, the error is not retryable.
-_FATAL_ERROR_KEYWORDS = (
-    "400", "401", "403", "404",
-    "api_key", "api key", "apikey",
-    "unauthorized", "forbidden",
-    "credential", "permission", "authentication",
-    "invalid", "unsupported", "not found", "does not exist",
-    "billing", "quota exceeded",
+CONTEXT_MODE_SEQUENCE: tuple[str, ...] = (
+    "full_context",
+    "sanitised_context",
+    "fresh_turn_only",
 )
 
 # In-memory ring buffer for recent LLM errors, read by the admin endpoint.
 _LLM_ERROR_RING_MAX = 50
 _llm_error_ring: deque[dict] = deque(maxlen=_LLM_ERROR_RING_MAX)
+_resolved_llm_error_ids: set[str] = set()
+
+
+def _context_mode_at(index: int) -> Literal[
+    "full_context", "sanitised_context", "fresh_turn_only"
+]:
+    """Return a typed context mode name for retry orchestration."""
+    value = CONTEXT_MODE_SEQUENCE[index]
+    if value == "sanitised_context":
+        return "sanitised_context"
+    if value == "fresh_turn_only":
+        return "fresh_turn_only"
+    return "full_context"
 
 
 @dataclass
@@ -104,8 +114,35 @@ class _UsageSegment:
     usage_details: dict
 
 
+@dataclass(frozen=True)
+class _ClassifiedLLMError:
+    """Normalised model-error handling instructions for retries and UX."""
+
+    error_code: str
+    error_type: str
+    user_message: str
+    detail: str
+    retry_same_target: bool
+    retry_with_clean_context: bool
+    retry_with_model_switch: bool
+    suggest_refresh_session: bool
+
+
 class _StageExecutionError(Exception):
     """Internal wrapper for a stage-level user-facing failure."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_code: str = "unknown",
+        retry_with_clean_context: bool = False,
+        suggest_refresh_session: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+        self.retry_with_clean_context = retry_with_clean_context
+        self.suggest_refresh_session = suggest_refresh_session
 
 
 # ── REST endpoints ──────────────────────────────────────────────────
@@ -480,80 +517,186 @@ def _record_llm_error(
     provider: str,
     model: str,
     error_type: str,
+    error_code: str,
     detail: str,
     stage: str = "",
 ) -> None:
     """Append an LLM error entry to the in-memory ring buffer."""
+    error_id = uuid_mod.uuid4().hex
     _llm_error_ring.append({
+        "id": error_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "provider": provider,
         "model": model,
         "error_type": error_type,
+        "error_code": error_code,
         "detail": detail[:500],
         "stage": stage,
     })
+    active_ids = {entry.get("id") for entry in _llm_error_ring}
+    _resolved_llm_error_ids.intersection_update(
+        {
+            error_id
+            for error_id in _resolved_llm_error_ids
+            if error_id in active_ids
+        }
+    )
 
 
-def get_recent_llm_errors() -> list[dict]:
+def get_recent_llm_errors(*, include_resolved: bool = False) -> list[dict]:
     """Return recent LLM errors, newest first. Used by the admin endpoint."""
-    return list(reversed(_llm_error_ring))
+    recent = list(reversed(_llm_error_ring))
+    for error in recent:
+        if not str(error.get("id", "")).strip():
+            error["id"] = uuid_mod.uuid4().hex
+    if include_resolved:
+        return recent
+    return [
+        error
+        for error in recent
+        if str(error.get("id", "")) not in _resolved_llm_error_ids
+    ]
 
 
-def _user_facing_llm_error_message(
+def mark_llm_error_resolved(error_id: str) -> bool:
+    """Mark one ring-buffer error row as resolved for admin alert filtering."""
+    target = str(error_id or "").strip()
+    if not target:
+        return False
+    if not any(str(entry.get("id", "")) == target for entry in _llm_error_ring):
+        return False
+    _resolved_llm_error_ids.add(target)
+    return True
+
+
+def _classify_llm_error(
     exc: Exception,
     llm_provider_id: str,
+    llm_model_id: str = "",
     llm_transport: str | None = None,
-) -> str:
-    """Classify an LLM error as fatal or transient.
-
-    Fatal errors (authentication, invalid API key, bad request, etc.) return a
-    specific non-retryable message so the failover loop terminates immediately.
-    Transient errors (timeouts, 429/5xx after provider-level retries) return the
-    generic retryable message so the outer failover loop can retry or switch.
-    """
+    stage: str = "",
+) -> _ClassifiedLLMError:
+    """Classify provider errors into a deterministic retry strategy."""
     raw_detail = str(exc).strip()
     detail = raw_detail.lower()
 
-    # Check for fatal keywords across all providers.
-    is_fatal = any(keyword in detail for keyword in _FATAL_ERROR_KEYWORDS)
-
     provider_label = llm_provider_id or "unknown"
-    model_label = ""
+    model_label = llm_model_id or ""
 
-    if is_fatal:
-        logger.error(
-            "Fatal LLM error (provider=%s transport=%s): %s",
-            llm_provider_id,
-            llm_transport or "",
-            raw_detail,
-        )
+    def _emit(
+        *,
+        error_code: str,
+        error_type: str,
+        retry_same_target: bool,
+        retry_with_clean_context: bool,
+        retry_with_model_switch: bool,
+        suggest_refresh_session: bool,
+    ) -> _ClassifiedLLMError:
         _record_llm_error(
             provider=provider_label,
             model=model_label,
-            error_type="fatal",
+            error_type=error_type,
+            error_code=error_code,
             detail=raw_detail,
+            stage=stage,
         )
-        return FATAL_LLM_ERROR_MESSAGE
+        log_fn = logger.error if error_type == "fatal" else logger.warning
+        log_fn(
+            "LLM error classified (provider=%s transport=%s code=%s): %s",
+            llm_provider_id,
+            llm_transport or "",
+            error_code,
+            raw_detail,
+        )
+        return _ClassifiedLLMError(
+            error_code=error_code,
+            error_type=error_type,
+            user_message=GENERIC_LLM_UNAVAILABLE_ERROR,
+            detail=raw_detail,
+            retry_same_target=retry_same_target,
+            retry_with_clean_context=retry_with_clean_context,
+            retry_with_model_switch=retry_with_model_switch,
+            suggest_refresh_session=suggest_refresh_session,
+        )
 
-    # Transient error — log at warning level and allow retry.
-    logger.warning(
-        "Transient LLM error (provider=%s transport=%s): %s",
-        llm_provider_id,
-        llm_transport or "",
-        raw_detail,
+    payload_invalid_markers = (
+        "invalid_request_error",
+        "bad request",
+        "messages: text content",
+        "payload is empty after message sanitisation",
+        "payload is empty after sanitization",
+        "payload is empty",
     )
-    _record_llm_error(
-        provider=provider_label,
-        model=model_label,
+    if any(marker in detail for marker in payload_invalid_markers):
+        return _emit(
+            error_code="payload_invalid",
+            error_type="fatal",
+            retry_same_target=False,
+            retry_with_clean_context=True,
+            retry_with_model_switch=True,
+            suggest_refresh_session=True,
+        )
+
+    auth_markers = (
+        "401",
+        "403",
+        "unauthoriz",
+        "forbidden",
+        "api key",
+        "api_key",
+        "credential",
+        "authentication",
+        "permission",
+    )
+    if any(marker in detail for marker in auth_markers):
+        return _emit(
+            error_code="auth_failed",
+            error_type="fatal",
+            retry_same_target=False,
+            retry_with_clean_context=False,
+            retry_with_model_switch=True,
+            suggest_refresh_session=False,
+        )
+
+    quota_markers = ("quota", "billing", "insufficient credit", "rate limit")
+    if any(marker in detail for marker in quota_markers):
+        return _emit(
+            error_code="quota_or_rate_limit",
+            error_type="transient",
+            retry_same_target=True,
+            retry_with_clean_context=False,
+            retry_with_model_switch=True,
+            suggest_refresh_session=False,
+        )
+
+    if "timeout" in detail or "timed out" in detail:
+        return _emit(
+            error_code="timeout",
+            error_type="transient",
+            retry_same_target=True,
+            retry_with_clean_context=False,
+            retry_with_model_switch=True,
+            suggest_refresh_session=False,
+        )
+
+    if "429" in detail or "500" in detail or "502" in detail or "503" in detail or "504" in detail:
+        return _emit(
+            error_code="upstream_unavailable",
+            error_type="transient",
+            retry_same_target=True,
+            retry_with_clean_context=False,
+            retry_with_model_switch=True,
+            suggest_refresh_session=False,
+        )
+
+    return _emit(
+        error_code="unknown",
         error_type="transient",
-        detail=raw_detail,
+        retry_same_target=True,
+        retry_with_clean_context=False,
+        retry_with_model_switch=True,
+        suggest_refresh_session=False,
     )
-    return GENERIC_LLM_UNAVAILABLE_ERROR
-
-
-def _is_retryable_unavailable_error(message: str) -> bool:
-    """Only the generic transient message is retryable."""
-    return message == GENERIC_LLM_UNAVAILABLE_ERROR
 
 
 def _status_event_payload(
@@ -563,22 +706,25 @@ def _status_event_payload(
     max_attempts: int,
     switched_model: bool = False,
     session_id: str,
+    context_mode: str | None = None,
+    candidate_index: int | None = None,
+    message_override: str | None = None,
 ) -> dict[str, object]:
     """Return websocket status payload for retries and model switching.
 
     `attempt` and `max_attempts` represent retry counts only, excluding the
     initial attempt.
     """
-    if switched_model:
+    if message_override:
+        message = message_override
+    elif switched_model:
         message = (
             "Reconnecting to the AI service. "
             f"Switching to a fallback model for this session after {max_attempts} retries."
         )
     else:
-        message = (
-            f"Reconnecting to the AI service (retry {attempt} of {max_attempts})."
-        )
-    return {
+        message = f"Reconnecting to the AI service (retry {attempt} of {max_attempts})."
+    payload = {
         "type": "status",
         "session_id": session_id,
         "status": "reconnecting",
@@ -588,6 +734,11 @@ def _status_event_payload(
         "switched_model": switched_model,
         "message": message,
     }
+    if context_mode:
+        payload["context_mode"] = context_mode
+    if candidate_index is not None:
+        payload["candidate_index"] = candidate_index
+    return payload
 
 
 def _build_usage_segment(label: str, llm) -> _UsageSegment:
@@ -951,22 +1102,52 @@ async def websocket_chat(
                         and runtime_state.auto_degraded_to_two_step_recovery
                     )
                 )
+                history_full = list(chat_history)
+                history_sanitised = sanitise_history_messages(chat_history)
+                context_mode_index = 0
+                active_context_mode: Literal[
+                    "full_context", "sanitised_context", "fresh_turn_only"
+                ] = "full_context"
+                messages: list[dict] = []
 
-                messages = await build_context_messages(
-                    chat_history=chat_history,
-                    user_message=enriched_user_message,
-                    llm=active_llm,
-                    max_context_tokens=settings.llm_max_context_tokens,
-                    compression_threshold=settings.context_compression_threshold,
-                    cached_summary=summary_cache.text,
-                    cached_summary_message_count=summary_cache.message_count,
-                    allow_inline_compression=False,
-                )
-                if image_uploads and messages:
-                    messages[-1] = {
-                        "role": "user",
-                        "content": _build_multimodal_user_parts(enriched_user_message, image_uploads),
-                    }
+                async def _build_messages_for_context_mode(
+                    mode: Literal["full_context", "sanitised_context", "fresh_turn_only"],
+                    llm_for_mode,
+                ) -> list[dict]:
+                    if mode == "fresh_turn_only":
+                        mode_history: list[dict] = []
+                        cached_summary = None
+                        cached_summary_message_count = 0
+                    elif mode == "sanitised_context":
+                        mode_history = history_sanitised
+                        cached_summary = None
+                        cached_summary_message_count = 0
+                    else:
+                        mode_history = history_full
+                        cached_summary = summary_cache.text
+                        cached_summary_message_count = summary_cache.message_count
+
+                    context_messages = await build_context_messages(
+                        chat_history=mode_history,
+                        user_message=enriched_user_message,
+                        llm=llm_for_mode,
+                        max_context_tokens=settings.llm_max_context_tokens,
+                        compression_threshold=settings.context_compression_threshold,
+                        cached_summary=cached_summary,
+                        cached_summary_message_count=cached_summary_message_count,
+                        allow_inline_compression=False,
+                    )
+                    if image_uploads and context_messages:
+                        context_messages[-1] = {
+                            "role": "user",
+                            "content": _build_multimodal_user_parts(
+                                enriched_user_message, image_uploads
+                            ),
+                        }
+                    return context_messages
+
+                active_context_mode = _context_mode_at(context_mode_index)
+                messages = await _build_messages_for_context_mode(active_context_mode, active_llm)
 
                 full_response: list[str] = []
                 stream_meta = None
@@ -1006,10 +1187,12 @@ async def websocket_chat(
                     stage_label: str,
                     runner,
                     has_visible_output,
+                    can_retry_with_clean_context,
                 ):
                     nonlocal current_candidate_index
                     same_model_retry_count = 0
                     while True:
+                        llm_candidate = current_llm
                         try:
                             llm_candidate, pedagogy_candidate, _ = await _activate_candidate(
                                 current_candidate_index
@@ -1020,26 +1203,36 @@ async def websocket_chat(
                             )
                             return result_value, llm_candidate, pedagogy_candidate
                         except Exception as exc:
-                            # Evaluate whether to provide a specific LLM error or a generic fallback
-                            if isinstance(exc, LLMError):
-                                message = _user_facing_llm_error_message(
-                                    exc,
-                                    str(getattr(current_llm, "provider_id", "") or ""),
-                                    str(getattr(current_llm, "runtime_transport", "") or ""),
-                                )
-                            else:
-                                message = str(exc).strip() or GENERIC_LLM_UNAVAILABLE_ERROR
+                            classified = _classify_llm_error(
+                                exc,
+                                str(getattr(llm_candidate, "provider_id", "") or ""),
+                                str(getattr(llm_candidate, "model_id", "") or ""),
+                                str(getattr(llm_candidate, "runtime_transport", "") or ""),
+                                stage=stage_label,
+                            )
 
-                            # If the error is not a transient availability issue, or if the client
-                            # has already received visible tokens, we cannot safely retry invisibly.
+                            if has_visible_output():
+                                raise _StageExecutionError(
+                                    classified.user_message,
+                                    error_code=classified.error_code,
+                                    suggest_refresh_session=classified.suggest_refresh_session,
+                                ) from exc
+
                             if (
-                                not _is_retryable_unavailable_error(message)
-                                or has_visible_output()
+                                classified.retry_with_clean_context
+                                and can_retry_with_clean_context()
                             ):
-                                raise _StageExecutionError(message) from exc
+                                raise _StageExecutionError(
+                                    classified.user_message,
+                                    error_code=classified.error_code,
+                                    retry_with_clean_context=True,
+                                    suggest_refresh_session=classified.suggest_refresh_session,
+                                ) from exc
 
-                            # Attempt a retry using the current model if under the limit
-                            if same_model_retry_count < SAME_MODEL_RETRY_LIMIT:
+                            if (
+                                classified.retry_same_target
+                                and same_model_retry_count < SAME_MODEL_RETRY_LIMIT
+                            ):
                                 same_model_retry_count += 1
                                 await websocket.send_json(
                                     _status_event_payload(
@@ -1048,12 +1241,16 @@ async def websocket_chat(
                                         max_attempts=SAME_MODEL_RETRY_LIMIT,
                                         switched_model=False,
                                         session_id=str(session.id),
+                                        context_mode=active_context_mode,
+                                        candidate_index=current_candidate_index,
                                     )
                                 )
                                 continue
 
-                            # If the same-model retries are exhausted, attempt to fall back to the next candidate model
-                            if current_candidate_index + 1 < len(candidate_targets):
+                            if (
+                                classified.retry_with_model_switch
+                                and current_candidate_index + 1 < len(candidate_targets)
+                            ):
                                 await websocket.send_json(
                                     _status_event_payload(
                                         stage=stage_label,
@@ -1061,14 +1258,19 @@ async def websocket_chat(
                                         max_attempts=SAME_MODEL_RETRY_LIMIT,
                                         switched_model=True,
                                         session_id=str(session.id),
+                                        context_mode=active_context_mode,
+                                        candidate_index=current_candidate_index + 1,
                                     )
                                 )
                                 current_candidate_index += 1
                                 same_model_retry_count = 0
                                 continue
 
-                            # All gracefully handled retry paths have failed
-                            raise _StageExecutionError(message) from exc
+                            raise _StageExecutionError(
+                                GENERIC_LLM_RETRY_EXHAUSTED_ERROR,
+                                error_code=classified.error_code,
+                                suggest_refresh_session=classified.suggest_refresh_session,
+                            ) from exc
 
                 async def _stream_visible_reply(
                     llm_for_stage,
@@ -1088,194 +1290,16 @@ async def websocket_chat(
                         await websocket.send_json({"type": "token", "session_id": str(session.id), "content": chunk})
                     return parts
 
-                try:
-                    if use_two_step_recovery_route:
-                        stream_meta, _, _ = await _run_stage_with_failover(
-                            stage_label="two_step_recovery_meta",
-                            runner=lambda _llm, pedagogy: pedagogy.classify_two_step_recovery_meta(
-                                enriched_user_message,
-                                student_state=student_state,
-                                fast_signals=fast_signals,
-                            ),
-                            has_visible_output=lambda: False,
-                        )
-                        await websocket.send_json(_meta_event_payload(stream_meta, str(session.id)))
-                        single_pass_meta_source = stream_meta.source
-                        visible_state = {"sent": False}
-                        system_prompt = build_system_prompt(
-                            programming_hint_level=stream_meta.programming_hint_level,
-                            maths_hint_level=stream_meta.maths_hint_level,
-                            programming_level=round(student_state.effective_programming_level),
-                            maths_level=round(student_state.effective_maths_level),
-                            notebook_context=notebook_context,
-                        )
-                        full_response, reply_llm, _ = await _run_stage_with_failover(
-                            stage_label="two_step_recovery_reply",
-                            runner=lambda llm_for_stage, _pedagogy: _stream_visible_reply(
-                                llm_for_stage,
-                                system_prompt=system_prompt,
-                                visible_state=visible_state,
-                            ),
-                            has_visible_output=lambda: visible_state["sent"],
-                        )
-                        final_reply_target = _llm_target_from_provider(reply_llm)
-                    else:
-                        single_pass_success = False
-
-                        async def _single_pass_stream_attempt(
-                            llm_for_stage,
-                            pedagogy_for_stage,
-                            visible_state: dict[str, bool],
-                        ):
-                            parser = StreamMetaParser()
-                            single_pass_visible_chunks: list[str] = []
-                            meta_sent = False
-                            attempt_stream_meta = None
-                            attempt_meta_source: str | None = None
-                            attempt_parse_failed = False
-                            attempt_parse_failure_reason: str | None = None
-                            async def _handle_parser_output(parsed) -> None:
-                                nonlocal attempt_stream_meta, meta_sent, attempt_meta_source
-                                nonlocal attempt_parse_failed, attempt_parse_failure_reason
-
-                                if (
-                                    parsed.meta_parsed
-                                    and parsed.meta is not None
-                                    and attempt_stream_meta is None
-                                ):
-                                    try:
-                                        attempt_stream_meta = pedagogy_for_stage.coerce_stream_meta(
-                                            parsed.meta,
-                                            student_state=student_state,
-                                            fast_signals=fast_signals,
-                                            source="single_pass_header_route",
-                                        )
-                                        attempt_meta_source = attempt_stream_meta.source
-                                        if not meta_sent:
-                                            await websocket.send_json(
-                                                _meta_event_payload(attempt_stream_meta, str(session.id))
-                                            )
-                                            meta_sent = True
-                                    except Exception as exc:
-                                        attempt_parse_failed = True
-                                        attempt_parse_failure_reason = "invalid_header_json"
-                                        logger.warning(
-                                            "Invalid Single-Pass Header Route metadata; "
-                                            "discarding output and recovering: %s",
-                                            exc,
-                                        )
-                                        attempt_stream_meta = None
-                                        meta_sent = False
-
-                                if parsed.parse_error_reason:
-                                    attempt_parse_failed = True
-                                    if attempt_parse_failure_reason is None:
-                                        attempt_parse_failure_reason = parsed.parse_error_reason
-                                    logger.warning(
-                                        "Single-Pass Header Route parse failure (%s); "
-                                        "discarding output and recovering",
-                                        parsed.parse_error_reason,
-                                    )
-
-                                for body_chunk in parsed.body_chunks:
-                                    if not body_chunk:
-                                        continue
-                                    if attempt_parse_failed:
-                                        continue
-                                    if attempt_stream_meta is None:
-                                        attempt_parse_failed = True
-                                        attempt_parse_failure_reason = (
-                                            attempt_parse_failure_reason
-                                            or "missing_or_unparsed_header"
-                                        )
-                                        logger.warning(
-                                            "Single-Pass Header Route body arrived before "
-                                            "valid metadata; discarding output and recovering"
-                                        )
-                                        continue
-                                    if not meta_sent:
-                                        await websocket.send_json(
-                                            _meta_event_payload(attempt_stream_meta, str(session.id))
-                                        )
-                                        meta_sent = True
-                                    visible_state["sent"] = True
-                                    single_pass_visible_chunks.append(body_chunk)
-                                    await websocket.send_json(
-                                        {"type": "token", "session_id": str(session.id), "content": body_chunk}
-                                    )
-
-                            async for chunk in llm_for_stage.generate_stream(
-                                system_prompt=build_single_pass_system_prompt(
-                                    programming_level=round(
-                                        student_state.effective_programming_level
-                                    ),
-                                    maths_level=round(student_state.effective_maths_level),
-                                    pedagogy_context=_build_single_pass_pedagogy_context(
-                                        llm_for_stage,
-                                        student_state,
-                                        fast_signals,
-                                    ),
-                                    notebook_context=notebook_context,
-                                ),
-                                messages=messages,
-                            ):
-                                await _handle_parser_output(parser.feed(chunk))
-                            await _handle_parser_output(parser.finalize())
-
-                            return {
-                                "meta": attempt_stream_meta,
-                                "meta_source": attempt_meta_source,
-                                "parse_failed": attempt_parse_failed,
-                                "parse_failure_reason": attempt_parse_failure_reason,
-                                "visible_chunks": single_pass_visible_chunks,
-                                "visible_sent": visible_state["sent"],
-                            }
-
-                        for parse_retry_index in range(SINGLE_PASS_PARSE_RETRY_LIMIT + 1):
-                            single_pass_visible_state = {"sent": False}
-                            single_pass_result, single_pass_llm, _ = await _run_stage_with_failover(
-                                stage_label="single_pass_header_route",
-                                runner=lambda llm_for_stage, pedagogy_for_stage: _single_pass_stream_attempt(
-                                    llm_for_stage,
-                                    pedagogy_for_stage,
-                                    single_pass_visible_state,
-                                ),
-                                has_visible_output=lambda: single_pass_visible_state["sent"],
-                            )
-                            if (
-                                not single_pass_result["parse_failed"]
-                                and single_pass_result["meta"] is not None
-                                and single_pass_result["meta_source"]
-                                == "single_pass_header_route"
-                            ):
-                                stream_meta = single_pass_result["meta"]
-                                single_pass_meta_source = single_pass_result["meta_source"]
-                                single_pass_parse_failed = False
-                                full_response = list(single_pass_result["visible_chunks"])
-                                final_reply_target = _llm_target_from_provider(single_pass_llm)
-                                single_pass_success = True
-                                break
-
-                            single_pass_parse_failed = True
-                            single_pass_parse_failure_reason = single_pass_result[
-                                "parse_failure_reason"
-                            ] or "header_parse_failure"
-
-                            if single_pass_result["visible_sent"]:
-                                raise _StageExecutionError(GENERIC_LLM_UNAVAILABLE_ERROR)
-
-                            if parse_retry_index < SINGLE_PASS_PARSE_RETRY_LIMIT:
-                                await websocket.send_json(
-                                    _status_event_payload(
-                                        stage="single_pass_header_meta",
-                                        attempt=parse_retry_index + 1,
-                                        max_attempts=SINGLE_PASS_PARSE_RETRY_LIMIT,
-                                        switched_model=False,
-                                        session_id=str(session.id),
-                                    )
-                                )
-
-                        if not single_pass_success:
+                pipeline_succeeded = False
+                stage_error: _StageExecutionError | None = None
+                while True:
+                    full_response = []
+                    stream_meta = None
+                    single_pass_meta_source = None
+                    single_pass_parse_failed = False
+                    single_pass_parse_failure_reason = None
+                    try:
+                        if use_two_step_recovery_route:
                             stream_meta, _, _ = await _run_stage_with_failover(
                                 stage_label="two_step_recovery_meta",
                                 runner=lambda _llm, pedagogy: pedagogy.classify_two_step_recovery_meta(
@@ -1284,11 +1308,14 @@ async def websocket_chat(
                                     fast_signals=fast_signals,
                                 ),
                                 has_visible_output=lambda: False,
+                                can_retry_with_clean_context=(
+                                    lambda: context_mode_index + 1 < len(CONTEXT_MODE_SEQUENCE)
+                                ),
                             )
                             await websocket.send_json(_meta_event_payload(stream_meta, str(session.id)))
                             single_pass_meta_source = stream_meta.source
                             visible_state = {"sent": False}
-                            recovery_system_prompt = build_system_prompt(
+                            system_prompt = build_system_prompt(
                                 programming_hint_level=stream_meta.programming_hint_level,
                                 maths_hint_level=stream_meta.maths_hint_level,
                                 programming_level=round(student_state.effective_programming_level),
@@ -1299,21 +1326,310 @@ async def websocket_chat(
                                 stage_label="two_step_recovery_reply",
                                 runner=lambda llm_for_stage, _pedagogy: _stream_visible_reply(
                                     llm_for_stage,
-                                    system_prompt=recovery_system_prompt,
+                                    system_prompt=system_prompt,
                                     visible_state=visible_state,
                                 ),
                                 has_visible_output=lambda: visible_state["sent"],
+                                can_retry_with_clean_context=(
+                                    lambda: context_mode_index + 1 < len(CONTEXT_MODE_SEQUENCE)
+                                ),
                             )
                             final_reply_target = _llm_target_from_provider(reply_llm)
-                except _StageExecutionError as exc:
-                    logger.error("LLM stage error: %s", exc)
-                    await websocket.send_json({"type": "error", "session_id": str(session.id), "message": str(exc)})
+                        else:
+                            single_pass_success = False
+
+                            async def _single_pass_stream_attempt(
+                                llm_for_stage,
+                                pedagogy_for_stage,
+                                visible_state: dict[str, bool],
+                            ):
+                                parser = StreamMetaParser()
+                                single_pass_visible_chunks: list[str] = []
+                                meta_sent = False
+                                attempt_stream_meta = None
+                                attempt_meta_source: str | None = None
+                                attempt_parse_failed = False
+                                attempt_parse_failure_reason: str | None = None
+
+                                async def _handle_parser_output(parsed) -> None:
+                                    nonlocal attempt_stream_meta, meta_sent, attempt_meta_source
+                                    nonlocal attempt_parse_failed, attempt_parse_failure_reason
+
+                                    if (
+                                        parsed.meta_parsed
+                                        and parsed.meta is not None
+                                        and attempt_stream_meta is None
+                                    ):
+                                        try:
+                                            attempt_stream_meta = (
+                                                pedagogy_for_stage.coerce_stream_meta(
+                                                    parsed.meta,
+                                                    student_state=student_state,
+                                                    fast_signals=fast_signals,
+                                                    source="single_pass_header_route",
+                                                )
+                                            )
+                                            attempt_meta_source = attempt_stream_meta.source
+                                            if not meta_sent:
+                                                await websocket.send_json(
+                                                    _meta_event_payload(
+                                                        attempt_stream_meta, str(session.id)
+                                                    )
+                                                )
+                                                meta_sent = True
+                                        except Exception as exc:
+                                            attempt_parse_failed = True
+                                            attempt_parse_failure_reason = "invalid_header_json"
+                                            logger.warning(
+                                                "Invalid Single-Pass Header Route metadata; "
+                                                "discarding output and recovering: %s",
+                                                exc,
+                                            )
+                                            attempt_stream_meta = None
+                                            meta_sent = False
+
+                                    if parsed.parse_error_reason:
+                                        attempt_parse_failed = True
+                                        if attempt_parse_failure_reason is None:
+                                            attempt_parse_failure_reason = parsed.parse_error_reason
+                                        logger.warning(
+                                            "Single-Pass Header Route parse failure (%s); "
+                                            "discarding output and recovering",
+                                            parsed.parse_error_reason,
+                                        )
+
+                                    for body_chunk in parsed.body_chunks:
+                                        if not body_chunk:
+                                            continue
+                                        if attempt_parse_failed:
+                                            continue
+                                        if attempt_stream_meta is None:
+                                            attempt_parse_failed = True
+                                            attempt_parse_failure_reason = (
+                                                attempt_parse_failure_reason
+                                                or "missing_or_unparsed_header"
+                                            )
+                                            logger.warning(
+                                                "Single-Pass Header Route body arrived before "
+                                                "valid metadata; discarding output and recovering"
+                                            )
+                                            continue
+                                        if not meta_sent:
+                                            await websocket.send_json(
+                                                _meta_event_payload(
+                                                    attempt_stream_meta, str(session.id)
+                                                )
+                                            )
+                                            meta_sent = True
+                                        visible_state["sent"] = True
+                                        single_pass_visible_chunks.append(body_chunk)
+                                        await websocket.send_json(
+                                            {
+                                                "type": "token",
+                                                "session_id": str(session.id),
+                                                "content": body_chunk,
+                                            }
+                                        )
+
+                                async for chunk in llm_for_stage.generate_stream(
+                                    system_prompt=build_single_pass_system_prompt(
+                                        programming_level=round(
+                                            student_state.effective_programming_level
+                                        ),
+                                        maths_level=round(student_state.effective_maths_level),
+                                        pedagogy_context=_build_single_pass_pedagogy_context(
+                                            llm_for_stage,
+                                            student_state,
+                                            fast_signals,
+                                        ),
+                                        notebook_context=notebook_context,
+                                    ),
+                                    messages=messages,
+                                ):
+                                    await _handle_parser_output(parser.feed(chunk))
+                                await _handle_parser_output(parser.finalize())
+
+                                return {
+                                    "meta": attempt_stream_meta,
+                                    "meta_source": attempt_meta_source,
+                                    "parse_failed": attempt_parse_failed,
+                                    "parse_failure_reason": attempt_parse_failure_reason,
+                                    "visible_chunks": single_pass_visible_chunks,
+                                    "visible_sent": visible_state["sent"],
+                                }
+
+                            for parse_retry_index in range(SINGLE_PASS_PARSE_RETRY_LIMIT + 1):
+                                single_pass_visible_state = {"sent": False}
+                                single_pass_result, single_pass_llm, _ = await _run_stage_with_failover(
+                                    stage_label="single_pass_header_route",
+                                    runner=lambda llm_for_stage, pedagogy_for_stage: _single_pass_stream_attempt(
+                                        llm_for_stage,
+                                        pedagogy_for_stage,
+                                        single_pass_visible_state,
+                                    ),
+                                    has_visible_output=lambda: single_pass_visible_state["sent"],
+                                    can_retry_with_clean_context=(
+                                        lambda: context_mode_index + 1 < len(CONTEXT_MODE_SEQUENCE)
+                                    ),
+                                )
+                                if (
+                                    not single_pass_result["parse_failed"]
+                                    and single_pass_result["meta"] is not None
+                                    and single_pass_result["meta_source"]
+                                    == "single_pass_header_route"
+                                ):
+                                    stream_meta = single_pass_result["meta"]
+                                    single_pass_meta_source = single_pass_result["meta_source"]
+                                    single_pass_parse_failed = False
+                                    full_response = list(single_pass_result["visible_chunks"])
+                                    final_reply_target = _llm_target_from_provider(single_pass_llm)
+                                    single_pass_success = True
+                                    break
+
+                                single_pass_parse_failed = True
+                                single_pass_parse_failure_reason = single_pass_result[
+                                    "parse_failure_reason"
+                                ] or "header_parse_failure"
+
+                                if single_pass_result["visible_sent"]:
+                                    raise _StageExecutionError(
+                                        GENERIC_LLM_UNAVAILABLE_ERROR,
+                                        error_code="stream_visible_failure",
+                                        suggest_refresh_session=True,
+                                    )
+
+                                if parse_retry_index < SINGLE_PASS_PARSE_RETRY_LIMIT:
+                                    await websocket.send_json(
+                                        _status_event_payload(
+                                            stage="single_pass_header_meta",
+                                            attempt=parse_retry_index + 1,
+                                            max_attempts=SINGLE_PASS_PARSE_RETRY_LIMIT,
+                                            switched_model=False,
+                                            session_id=str(session.id),
+                                            context_mode=active_context_mode,
+                                            candidate_index=current_candidate_index,
+                                        )
+                                    )
+
+                            if not single_pass_success:
+                                stream_meta, _, _ = await _run_stage_with_failover(
+                                    stage_label="two_step_recovery_meta",
+                                    runner=lambda _llm, pedagogy: pedagogy.classify_two_step_recovery_meta(
+                                        enriched_user_message,
+                                        student_state=student_state,
+                                        fast_signals=fast_signals,
+                                    ),
+                                    has_visible_output=lambda: False,
+                                    can_retry_with_clean_context=(
+                                        lambda: context_mode_index + 1 < len(CONTEXT_MODE_SEQUENCE)
+                                    ),
+                                )
+                                await websocket.send_json(
+                                    _meta_event_payload(stream_meta, str(session.id))
+                                )
+                                single_pass_meta_source = stream_meta.source
+                                visible_state = {"sent": False}
+                                recovery_system_prompt = build_system_prompt(
+                                    programming_hint_level=stream_meta.programming_hint_level,
+                                    maths_hint_level=stream_meta.maths_hint_level,
+                                    programming_level=round(student_state.effective_programming_level),
+                                    maths_level=round(student_state.effective_maths_level),
+                                    notebook_context=notebook_context,
+                                )
+                                full_response, reply_llm, _ = await _run_stage_with_failover(
+                                    stage_label="two_step_recovery_reply",
+                                    runner=lambda llm_for_stage, _pedagogy: _stream_visible_reply(
+                                        llm_for_stage,
+                                        system_prompt=recovery_system_prompt,
+                                        visible_state=visible_state,
+                                    ),
+                                    has_visible_output=lambda: visible_state["sent"],
+                                    can_retry_with_clean_context=(
+                                        lambda: context_mode_index + 1 < len(CONTEXT_MODE_SEQUENCE)
+                                    ),
+                                )
+                                final_reply_target = _llm_target_from_provider(reply_llm)
+                    except _StageExecutionError as exc:
+                        if (
+                            exc.retry_with_clean_context
+                            and context_mode_index + 1 < len(CONTEXT_MODE_SEQUENCE)
+                        ):
+                            context_mode_index += 1
+                            active_context_mode = _context_mode_at(context_mode_index)
+                            current_candidate_index = 0
+                            messages = await _build_messages_for_context_mode(
+                                active_context_mode, current_llm
+                            )
+                            await websocket.send_json(
+                                _status_event_payload(
+                                    stage="context_refresh",
+                                    attempt=context_mode_index,
+                                    max_attempts=len(CONTEXT_MODE_SEQUENCE) - 1,
+                                    switched_model=False,
+                                    session_id=str(session.id),
+                                    context_mode=active_context_mode,
+                                    candidate_index=current_candidate_index,
+                                    message_override=(
+                                        "Refreshing chat context and retrying the request."
+                                    ),
+                                )
+                            )
+                            continue
+                        stage_error = exc
+                        break
+                    pipeline_succeeded = True
+                    break
+
+                if not pipeline_succeeded:
+                    message = (
+                        str(stage_error)
+                        if stage_error is not None
+                        else GENERIC_LLM_RETRY_EXHAUSTED_ERROR
+                    )
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "session_id": str(session.id),
+                            "message": message,
+                            "error_code": (
+                                stage_error.error_code if stage_error is not None else "retry_exhausted"
+                            ),
+                            "retryable": True,
+                            "suggest_refresh_session": bool(
+                                stage_error and stage_error.suggest_refresh_session
+                            ),
+                        }
+                    )
                     await db.commit()
-                    # Stage failures are terminal for this socket lifecycle.
-                    await websocket.close(code=1011, reason="LLM stage error")
-                    return
+                    continue
 
                 assistant_text = "".join(full_response)
+                if not assistant_text.strip():
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "session_id": str(session.id),
+                            "message": GENERIC_LLM_RETRY_EXHAUSTED_ERROR,
+                            "error_code": "empty_assistant_output",
+                            "retryable": True,
+                            "suggest_refresh_session": True,
+                        }
+                    )
+                    await db.commit()
+                    continue
+                if stream_meta is None:
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "session_id": str(session.id),
+                            "message": GENERIC_LLM_RETRY_EXHAUSTED_ERROR,
+                            "error_code": "missing_stream_meta",
+                            "retryable": True,
+                            "suggest_refresh_session": True,
+                        }
+                    )
+                    await db.commit()
+                    continue
                 result = current_pedagogy_engine.apply_stream_meta(student_state, stream_meta)
 
                 if not use_two_step_recovery_route and metadata_route_mode == "auto":

@@ -842,9 +842,26 @@ async def reorder_admin_zone_notebooks(
 @router.get("/llm-errors")
 async def get_llm_errors(
     _: Annotated[User, Depends(get_admin_user)],
+    include_resolved: bool = Query(default=False),
 ):
     """Return recent LLM errors from the in-memory ring buffer, newest first."""
     from app.routers.chat import get_recent_llm_errors
 
-    return {"errors": get_recent_llm_errors()}
+    return {"errors": get_recent_llm_errors(include_resolved=include_resolved)}
 
+
+@router.post("/llm-errors/{error_id}/resolve")
+async def resolve_llm_error(
+    error_id: str,
+    _: Annotated[User, Depends(get_admin_user)],
+):
+    """Mark one LLM error alert as resolved."""
+    from app.routers.chat import mark_llm_error_resolved
+
+    resolved = mark_llm_error_resolved(error_id)
+    if not resolved:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="LLM error alert not found.",
+        )
+    return {"message": "LLM error alert resolved.", "id": error_id}

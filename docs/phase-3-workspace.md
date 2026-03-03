@@ -144,7 +144,8 @@ Root storage from `NOTEBOOK_STORAGE_DIR` (default `/tmp/ai_coding_tutor_notebook
 | `/api/admin/zones/{zone_id}/notebooks/reorder` | PUT    | Reorder notebooks.                        |
 | `/api/admin/llm/models`                        | GET    | Return current active LLM and available switch options with pricing. |
 | `/api/admin/llm/switch`                        | POST   | Switch active LLM after admin password confirmation. |
-| `/api/admin/llm-errors`                        | GET    | Return recent in-memory LLM runtime errors for operations diagnostics. |
+| `/api/admin/llm-errors`                        | GET    | Return recent in-memory unresolved LLM runtime errors for operations diagnostics (`include_resolved=true` to include resolved rows). |
+| `/api/admin/llm-errors/{error_id}/resolve`     | POST   | Mark one LLM runtime alert as resolved so it is removed from the default alerts view. |
 | `/api/admin/usage`                             | GET    | Return total usage and estimated cost snapshots (today / week / month). |
 | `/api/admin/audit-log`                         | GET    | Return paginated admin audit log entries. |
 | `/api/admin/usage/by-model`                    | GET    | Return usage and estimated cost for one selected provider/model. |
@@ -165,7 +166,7 @@ The chat service resolves and reuses scoped sessions, validates scope matching, 
 
 ### 5.1 Routes and Navigation
 
-Routes: `/my-notebooks`, `/notebook/:notebookId`, `/learning-hub`, `/zones/:zoneId`, `/zone-notebook/:zoneId/:notebookId`, `/admin`, `/health`.
+Routes: `/my-notebooks`, `/notebook/:notebookId`, `/learning-hub`, `/zones/:zoneId`, `/zone-notebook/:zoneId/:notebookId`, `/admin`, `/system-health`.
 
 Navbar shows Chat, My Notebooks, Learning Hub, Profile for logged-in users, and Admin when `user.is_admin`.
 
@@ -187,7 +188,7 @@ Navbar shows Chat, My Notebooks, Learning Hub, Profile for logged-in users, and 
 
 ### 5.6 Admin Dashboard
 
-**`frontend/src/admin/AdminDashboardPage.tsx`:** Zone CRUD with optional descriptions, file/folder import, shared file management, notebook metadata editing, notebook replace/delete/reorder, total usage panel, selected-model usage panel, and an LLM switch panel at the top. The model switch flow shows current model, available smoke-tested options, per-model input/output pricing, and requires the admin password before applying changes. Links to the frontend `/health` page for model diagnostics.
+**`frontend/src/admin/AdminDashboardPage.tsx`:** Zone CRUD with optional descriptions, file/folder import, shared file management, notebook metadata editing, notebook replace/delete/reorder, total usage panel, selected-model usage panel, and an LLM switch panel at the top. The model switch flow shows current model, available smoke-tested options, per-model input/output pricing, and requires the admin password before applying changes. Includes an `LLM Error Alerts` panel with a per-row `Resolved` action that removes acknowledged alerts from the active list. Links to the frontend `/system-health` page for model diagnostics.
 
 ### 5.7 Split Layout
 

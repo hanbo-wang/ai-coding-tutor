@@ -73,34 +73,7 @@ async def test_ai_model_catalog_health_check_returns_llm_only_and_caches(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_root_health_returns_html_for_browser_accept_header(monkeypatch) -> None:
-    class _DummyRequest:
-        headers = {"accept": "text/html,application/xhtml+xml"}
-
-    async def _fake_model_catalog(force: bool = False):
-        return {
-            "current": {"provider": "openai", "model": "gpt-5-mini"},
-            "smoke_tested_models": {"llm": {}},
-            "cached": True,
-            "checked_at": "2026-02-25T00:00:00Z",
-        }
-
-    monkeypatch.setattr("app.main.ai_model_catalog_health_check", _fake_model_catalog)
-
-    response = await root_health_check(_DummyRequest())
-
-    assert response.status_code == 200
-    assert response.media_type == "text/html"
-    body = response.body.decode()
-    assert "System Health" in body
-    assert "Current running model and smoke-tested LLM provider availability." in body
-
-
-@pytest.mark.asyncio
-async def test_root_health_returns_json_for_probe_requests() -> None:
-    class _DummyRequest:
-        headers = {"accept": "*/*"}
-
-    response = await root_health_check(_DummyRequest())
+async def test_root_health_returns_json_liveness_response() -> None:
+    response = await root_health_check()
 
     assert response == {"status": "healthy"}

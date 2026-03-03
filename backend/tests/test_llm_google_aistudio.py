@@ -7,6 +7,7 @@ import json
 import pytest
 
 from app.ai.llm_google import GoogleGeminiAIStudioProvider
+from app.ai.llm_base import LLMError
 
 
 class _FakeStreamResponse:
@@ -139,3 +140,20 @@ async def test_ai_studio_multimodal_payload_uses_gemini_api_field_names(monkeypa
             "data": "ZmFrZS1iYXNlNjQ=",
         }
     }
+
+
+@pytest.mark.asyncio
+async def test_ai_studio_stream_rejects_payload_when_messages_are_blank(monkeypatch) -> None:
+    monkeypatch.setattr("app.ai.llm_google.httpx.AsyncClient", _FakeAsyncClient)
+    provider = GoogleGeminiAIStudioProvider(
+        api_key="AIza-test-key",
+        model_id="gemini-3-flash-preview",
+    )
+
+    with pytest.raises(LLMError, match="payload is empty after message sanitisation"):
+        async for _ in provider.generate_stream(
+            system_prompt="Test",
+            messages=[{"role": "user", "content": "   "}],
+            max_tokens=8,
+        ):
+            pass

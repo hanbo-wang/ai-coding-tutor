@@ -10,6 +10,7 @@ import httpx
 
 from app.ai.google_auth import GoogleServiceAccountTokenProvider
 from app.ai.llm_base import LLMError, LLMMessage, LLMProvider, LLMUsage
+from app.ai.message_sanitizer import is_blank_text, normalise_text
 from app.ai.model_registry import normalise_google_vertex_location
 
 logger = logging.getLogger(__name__)
@@ -54,12 +55,18 @@ class _GoogleGeminiBaseProvider(LLMProvider, ABC):
         contents = []
         for msg in messages:
             role = "model" if msg["role"] == "assistant" else "user"
+            parts = self._to_gemini_parts(msg["content"])
+            if not parts:
+                continue
             contents.append(
                 {
                     "role": role,
-                    "parts": self._to_gemini_parts(msg["content"]),
+                    "parts": parts,
                 }
             )
+
+        if not contents:
+            raise LLMError("Gemini payload is empty after message sanitisation")
 
         payload = {
             self._system_instruction_key(): {
@@ -156,22 +163,31 @@ class _GoogleGeminiBaseProvider(LLMProvider, ABC):
 
     def _to_gemini_parts(self, content: str | list[dict[str, str]]) -> list[dict]:
         if isinstance(content, str):
-            return [{"text": content}]
+            text = normalise_text(content)
+            if is_blank_text(text):
+                return []
+            return [{"text": text}]
 
         parts: list[dict] = []
         for part in content:
             if part.get("type") == "text":
-                parts.append({"text": part.get("text", "")})
+                text = normalise_text(part.get("text", ""))
+                if is_blank_text(text):
+                    continue
+                parts.append({"text": text})
             elif part.get("type") == "image":
+                data = normalise_text(part.get("data", "")).strip()
+                if not data:
+                    continue
                 parts.append(
                     {
                         self._inline_data_key(): {
                             self._mime_type_key(): part.get("media_type", "image/png"),
-                            "data": part.get("data", ""),
+                            "data": data,
                         }
                     }
                 )
-        return parts or [{"text": ""}]
+        return parts
 
 
 class GoogleGeminiVertexProvider(_GoogleGeminiBaseProvider):

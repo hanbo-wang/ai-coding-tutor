@@ -17,7 +17,7 @@
 - Structured application logging for significant events.
 - Improved error handling on both frontend and backend.
 
-The application exposes three health-related endpoints: `GET /health` for browser-facing health diagnostics (including the current running model, with basic liveness JSON for non-HTML probes), `GET /api/health/ai` for AI provider verification, and `GET /api/health/ai/models` for model-level smoke checks plus the current running model snapshot.
+The application exposes three backend health-related endpoints: `GET /health` for JSON liveness checks, `GET /api/health/ai` for AI provider verification, and `GET /api/health/ai/models` for model-level smoke checks plus the current running model snapshot. The authenticated frontend diagnostics page is served at `/system-health`.
 
 ---
 
@@ -134,6 +134,12 @@ In the admin dashboard, `Select LLM model` and `Selected Model Usage` default to
 
 `POST /api/admin/llm/switch` requires `provider`, `model`, and `admin_password`. The backend verifies the admin password, validates model availability, updates runtime LLM settings immediately, invalidates model-catalog cache, and records an audit entry.
 
+### 4.4 LLM Error Alerts (Admin)
+
+`GET /api/admin/llm-errors` returns recent in-memory runtime LLM errors (newest first). By default this returns unresolved alerts only; use `include_resolved=true` when a full list is needed for diagnostics.
+
+`POST /api/admin/llm-errors/{error_id}/resolve` marks one alert as resolved. Resolved alerts are removed from the default `GET /api/admin/llm-errors` response and from the active alerts panel in the admin dashboard.
+
 ---
 
 ## 5. Audit Log (Admin Dashboard)
@@ -246,7 +252,8 @@ Python `logging` is configured in `backend/app/main.py` at startup with a consis
 - [ ] Opening a 4th browser tab with the chat page rejects the WebSocket connection with code 4002.
 - [ ] All tests pass: `cd backend && PYTHONPATH=. pytest tests/ -q -s`.
 - [ ] Pedagogy tests confirm independent programming/maths hint escalation 1, 2, 3, 4, 5 and reset on new problem.
-- [ ] The browser health page at `/health` returns 200 (and non-HTML probes still receive liveness JSON).
+- [ ] The backend liveness endpoint at `/health` returns 200 with JSON payload.
+- [ ] The authenticated frontend diagnostics page at `/system-health` loads and shows current model + smoke-tested availability.
 - [ ] The AI provider verification endpoint at `/api/health/ai` returns 200.
 - [ ] The model smoke-check endpoint at `/api/health/ai/models` returns 200.
 - [ ] Backend logs show structured entries for LLM calls with cost estimates.

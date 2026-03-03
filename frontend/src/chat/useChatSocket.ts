@@ -63,6 +63,7 @@ export function useChatSocket(onSessionCreated?: (sessionId: string) => void) {
   const onSessionCreatedRef = useRef(onSessionCreated);
   const streamingMetaRef = useRef<StreamingMeta | null>(null);
   const backgroundStreamsRef = useRef<Record<string, StreamState>>({});
+  const forceFreshSessionRef = useRef(false);
 
   const setSessionId = useCallback((id: string | null | ((prev: string | null) => string | null)) => {
     setSessionIdState((prev) => {
@@ -191,6 +192,7 @@ export function useChatSocket(onSessionCreated?: (sessionId: string) => void) {
 
     switch (event.type) {
       case "session":
+        forceFreshSessionRef.current = false;
         setSessionId((prev) => {
           if (prev !== event.session_id) {
             onSessionCreatedRef.current?.(event.session_id);
@@ -252,10 +254,15 @@ export function useChatSocket(onSessionCreated?: (sessionId: string) => void) {
           break;
         }
       case "error":
+        if (event.suggest_refresh_session) {
+          forceFreshSessionRef.current = true;
+          setRetryStatus(
+            "We will start a fresh chat context on your next message."
+          );
+        }
         appendSystemError(event.message);
         setStreamingContent("");
         setStreamingMeta(null);
-        setRetryStatus(null);
         setIsStreaming(false);
         break;
       case "status":
@@ -395,6 +402,12 @@ export function useChatSocket(onSessionCreated?: (sessionId: string) => void) {
     return true;
   }, [scheduleReconnect, sendPendingNow]);
 
+  const consumeFreshSessionRequirement = useCallback((): boolean => {
+    const shouldRefresh = forceFreshSessionRef.current;
+    forceFreshSessionRef.current = false;
+    return shouldRefresh;
+  }, []);
+
   return {
     messages,
     setMessages,
@@ -410,5 +423,6 @@ export function useChatSocket(onSessionCreated?: (sessionId: string) => void) {
     setSessionId,
     connected,
     sendMessage,
+    consumeFreshSessionRequirement,
   };
 }

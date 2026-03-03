@@ -114,7 +114,7 @@ Auth and verification-related settings include JWT keys and expiry, email provid
 
 - application lifespan startup/shutdown,
 - CORS middleware with credentials enabled,
-- `/health` endpoint for browser and probe checks.
+- `/health` JSON liveness endpoint for probes and runtime checks.
 
 ### 10. Migrations
 
@@ -180,7 +180,7 @@ Vite + React + TypeScript + Tailwind CSS, with API and WebSocket proxy settings 
 | `/zones/:zoneId` | ZoneDetailPage | Yes |
 | `/zone-notebook/:zoneId/:notebookId` | ZoneNotebookWorkspacePage | Yes |
 | `/admin` | AdminDashboardPage | Yes |
-| `/health` | HealthPage | Yes |
+| `/system-health` | HealthPage | Yes |
 | `/` | Redirect to `/chat` | No |
 
 ---

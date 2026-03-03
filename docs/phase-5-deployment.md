@@ -37,8 +37,8 @@ Nginx serves three roles: HTTPS termination, static frontend hosting, and revers
 
 Key behaviours:
 
-- Port 80 redirects to HTTPS (except `/.well-known/acme-challenge/` for certificate issuance and `/health` for liveness probes).
-- Port 443 terminates TLS and serves the React SPA with `index.html` fallback.
+- Port 80 redirects to the primary HTTPS domain (except `/.well-known/acme-challenge/` for certificate issuance and `/health` for liveness probes).
+- Port 443 terminates TLS, canonicalises hostnames to the primary domain, and serves the React SPA with `index.html` fallback.
 - `/api/` and `/ws/` are proxied to the backend. WebSocket connections use `Upgrade` headers with 3600s timeouts.
 - `/jupyterlite/` adds `Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy` headers for Pyodide.
 - `client_max_body_size` is configurable via the server `.env` file.
@@ -53,7 +53,8 @@ Four services: `db` (PostgreSQL 15), `backend` (FastAPI), `frontend` (Nginx), `c
 
 Operational notes:
 
-- Backend liveness check uses `/health` (non-HTML probes receive JSON), not `/api/health/ai`, so routine probes do not trigger external API checks.
+- Backend liveness check uses `/health` (always JSON), not `/api/health/ai`, so routine probes do not trigger external API checks.
+- The frontend runtime receives `SERVER_NAME` (primary + additional domains) and `PRIMARY_DOMAIN` (canonical host) from the deploy workflow.
 - Upload and notebook storage paths are forced to persistent container paths (`/data/uploads`, `/data/notebooks`).
 - The frontend service requires valid TLS certificate files at the configured paths.
 - The server-side `.env` file is expected in the same directory as `docker-compose.prod.yml`.
@@ -81,7 +82,7 @@ Runs on push to `main`. Two jobs:
 
 ### 5.2 Manual Production Deploy (`deploy-prod.yml`)
 
-Manually triggered workflow. It connects via SSH, uploads `docker-compose.prod.yml` and `scripts/ops/create_backup_snapshot.sh`, derives TLS paths from `WEBSITE_DOMAIN`, validates compose config, creates a deployment snapshot, applies the selected data handling mode, then starts services.
+Manually triggered workflow. It connects via SSH, uploads `docker-compose.prod.yml` and `scripts/ops/create_backup_snapshot.sh`, derives domain and TLS settings from `WEBSITE_DOMAIN` plus optional `WEBSITE_ALT_DOMAINS`, validates compose config, creates a deployment snapshot, applies the selected data handling mode, then starts services.
 
 Post-deploy checks call `/health` and `/api/health/ai?force=true` from inside the backend container. The gate passes when at least one configured LLM provider is reachable.
 
@@ -103,11 +104,11 @@ Required GitHub Actions secrets: `SSH_HOST`, `SSH_USER`, `SSH_PORT`, `SSH_PRIVAT
 
 ### 6.1 Prerequisites
 
-Point DNS to the server IP. Allow inbound traffic on ports 80 and 443. Set `WEBSITE_DOMAIN` in the server `.env`. TLS paths are derived automatically from this value.
+Point DNS to the server IP. Allow inbound traffic on ports 80 and 443. Set `WEBSITE_DOMAIN` in the server `.env`, and add `WEBSITE_ALT_DOMAINS` when additional hostnames should share the same certificate.
 
 ### 6.2 Initial Certificate Issuance
 
-The deploy workflow can issue the first certificate automatically when files are missing (requires `CERTBOT_EMAIL`, or `ADMIN_EMAIL` fallback). A manual one-off Certbot `--standalone` run is still a valid fallback option.
+The deploy workflow automatically issues or expands the certificate for all configured domains (`WEBSITE_DOMAIN` + `WEBSITE_ALT_DOMAINS`) when files are missing or SAN coverage is incomplete. This requires `CERTBOT_EMAIL`, or `ADMIN_EMAIL` as a fallback. A manual one-off Certbot `--standalone` run is still a valid fallback option.
 
 ### 6.3 Renewal
 
@@ -119,14 +120,14 @@ Start the renewal service profile: `docker compose -f docker-compose.prod.yml --
 
 1. Prepare a Linux server with Docker and Docker Compose.
 2. Create a deploy directory (e.g. `/opt/ai-coding-tutor`).
-3. Create the production `.env` file from `.github/workflows/templates/env.prod.example`. Fill in `GHCR_OWNER`, `WEBSITE_DOMAIN`, PostgreSQL credentials, `DATABASE_URL`, `JWT_SECRET_KEY`, and at least one LLM provider key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or Google credentials/API key).
+3. Create the production `.env` file from `.github/workflows/templates/env.prod.example`. Fill in `GHCR_OWNER`, `WEBSITE_DOMAIN`, optional `WEBSITE_ALT_DOMAINS`, PostgreSQL credentials, `DATABASE_URL`, `JWT_SECRET_KEY`, and at least one LLM provider key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or Google credentials/API key).
 4. If using Google Vertex AI, place the Google service account JSON file on the server at the configured host path and set permissions to 600.
 5. Configure GitHub Actions repository secrets for SSH and GHCR access.
 6. Ensure `CERTBOT_EMAIL` (or `ADMIN_EMAIL`) is configured so the workflow can issue certificates automatically when needed.
 7. Push to `main` to trigger the image build workflow.
 8. Run `Deploy Production (Manual)` with the desired image tag, deploy path, and data mode.
 9. Confirm the deployment snapshot path reported by the workflow.
-10. Verify the deployment: `/health` page, login flow, chat streaming, JupyterLite workspace, file uploads.
+10. Verify the deployment: `/health` JSON liveness endpoint, `/system-health` diagnostics page (authenticated), canonical-domain redirect behaviour, login flow, chat streaming, JupyterLite workspace, file uploads.
 11. Start certificate renewal (recommended).
 
 ---
@@ -167,7 +168,7 @@ Use:
 
 Default behaviour:
 
-- pulls the latest snapshot from `root@138.68.132.151:/opt/backups/ai-coding-tutor/daily`
+- pulls the latest snapshot from `root@<server-ip>:/opt/backups/ai-coding-tutor/daily`
 - verifies checksums locally
 - keeps local snapshots for `60` days
 
@@ -180,8 +181,10 @@ Each deployment creates a fresh snapshot before applying `deployment_data_mode`.
 ## Verification Checklist
 
 - [ ] `docker compose -f docker-compose.prod.yml up -d` starts services without errors.
-- [ ] The application loads at `https://guidedcursor.studio`.
+- [ ] The application loads at `https://<your-primary-domain>`.
 - [ ] The HTTPS certificate is valid.
+- [ ] The certificate SAN list covers `WEBSITE_DOMAIN` and all entries in `WEBSITE_ALT_DOMAINS`.
+- [ ] Requests to additional domains return `301` to `https://<your-primary-domain>`.
 - [ ] A user can register, log in, chat, and use the workspace.
 - [ ] WebSocket connections work through Nginx.
 - [ ] JupyterLite loads and runs Python code in production.
@@ -193,4 +196,5 @@ Each deployment creates a fresh snapshot before applying `deployment_data_mode`.
 - [ ] `deployment_data_mode=restore_from_deployment_backup` restores from the deployment snapshot.
 - [ ] `deployment_data_mode=start_with_empty_data` requires `empty_data_confirm=START_WITH_EMPTY_DATA`.
 - [ ] Deployment does not delete any older snapshot folders.
+- [ ] `/system-health` loads the authenticated frontend diagnostics page.
 - [ ] `GET /api/health/ai/models` returns the current running model and smoke-tested available LLM models.

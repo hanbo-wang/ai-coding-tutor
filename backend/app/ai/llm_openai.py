@@ -8,6 +8,7 @@ from typing import AsyncIterator
 import httpx
 
 from app.ai.llm_base import LLMError, LLMMessage, LLMProvider, LLMUsage
+from app.ai.message_sanitizer import is_blank_text, normalise_text
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +41,18 @@ class OpenAIProvider(LLMProvider):
 
         api_messages: list[dict] = [{"role": "system", "content": system_prompt}]
         for msg in messages:
+            content = self._to_openai_content(msg["content"])
+            if content == "":
+                continue
+            if isinstance(content, list) and len(content) == 0:
+                continue
             api_messages.append({
                 "role": msg["role"],
-                "content": self._to_openai_content(msg["content"]),
+                "content": content,
             })
+
+        if len(api_messages) == 1:
+            raise LLMError("OpenAI payload is empty after message sanitisation")
 
         payload = {
             "model": self.model_id,
@@ -124,15 +133,21 @@ class OpenAIProvider(LLMProvider):
     @staticmethod
     def _to_openai_content(content: str | list[dict[str, str]]) -> str | list[dict]:
         if isinstance(content, str):
-            return content
+            text = normalise_text(content)
+            return text if not is_blank_text(text) else ""
 
         parts: list[dict] = []
         for part in content:
             if part.get("type") == "text":
-                parts.append({"type": "text", "text": part.get("text", "")})
+                text = normalise_text(part.get("text", ""))
+                if is_blank_text(text):
+                    continue
+                parts.append({"type": "text", "text": text})
             elif part.get("type") == "image":
                 media_type = part.get("media_type", "image/png")
-                image_data = part.get("data", "")
+                image_data = normalise_text(part.get("data", "")).strip()
+                if not image_data:
+                    continue
                 parts.append(
                     {
                         "type": "image_url",
@@ -141,4 +156,4 @@ class OpenAIProvider(LLMProvider):
                         },
                     }
                 )
-        return parts or [{"type": "text", "text": ""}]
+        return parts

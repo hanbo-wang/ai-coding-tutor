@@ -112,7 +112,7 @@ Each dimension is updated independently: programming EMA uses `programming_diffi
 
 **`backend/app/ai/llm_base.py`:** Abstract `LLMProvider` with `generate_stream` (async token iterator) and `count_tokens`.
 
-Three provider implementations (`llm_google.py`, `llm_anthropic.py`, `llm_openai.py`), each with streaming, retry on 429/5xx (3 attempts, exponential backoff), and `LLMError` on failure. Google supports AI Studio and Vertex AI transports, selected via `GOOGLE_GEMINI_TRANSPORT`.
+Three provider implementations (`llm_google.py`, `llm_anthropic.py`, `llm_openai.py`), each with streaming, retry on 429/5xx (3 attempts, exponential backoff), request sanitisation (blank text/image parts removed), and `LLMError` on failure. If sanitisation leaves no usable message content, the provider raises `LLMError` before the API call. Google supports AI Studio and Vertex AI transports, selected via `GOOGLE_GEMINI_TRANSPORT`.
 
 **`backend/app/ai/llm_factory.py`:** Returns the configured provider (`LLM_PROVIDER`, default `anthropic` in the recommended `.env`), with session-level failover. The factory tries alternate models within the same provider first, then crosses to other providers in a ring (anthropic → openai → google).
 
@@ -146,12 +146,12 @@ Hint levels are always computed by the backend via `compute_hint_levels()`. See 
 
 REST: `GET /api/chat/sessions` (list, newest first), `DELETE /api/chat/sessions/{id}`, `GET /api/chat/sessions/{id}/messages`.
 
-WebSocket `/ws/chat`: authenticates via JWT query parameter, initialises pedagogy services, and processes each message through the pipeline (parse, validate uploads, build enriched text, persist user turn, run pedagogy checks, build context, run LLM via route controller, send `meta`/`token`/`done` events, persist assistant turn, refresh summary cache). Non-retryable stage failures send an `error` event and then close the socket with code `1011`.
+WebSocket `/ws/chat`: authenticates via JWT query parameter, initialises pedagogy services, and processes each message through the pipeline (parse, validate uploads, build enriched text, persist user turn, run pedagogy checks, build context, run LLM via route controller, send `meta`/`token`/`done` events, persist assistant turn, refresh summary cache). Stage execution uses layered recovery: same-target retries (up to 5), model failover candidates, and context refresh modes (`full_context` → `sanitised_context` → `fresh_turn_only`) for payload-invalid failures. If a turn still fails, the server emits a structured `error` event (`error_code`, `retryable`, `suggest_refresh_session`) and keeps the socket open for the next turn.
 
 ### 4.9 Frontend: Chat Components
 
 - **`ws.ts`**: WebSocket helper forwarding `session`, `meta`, `token`, `done`, `error` events, with explicit close metadata.
-- **`useChatSocket.ts`**: Shared hook managing socket lifecycle, message list, streaming content, and `StreamingMeta` (separate `programmingHintLevel` and `mathsHintLevel`). It reconnects with exponential backoff (300 ms base, 3 s cap), retries one in-flight message only when no terminal event has been received yet, and asks for manual resend when a disconnect happens after session acknowledgement.
+- **`useChatSocket.ts`**: Shared hook managing socket lifecycle, message list, streaming content, and `StreamingMeta` (separate `programmingHintLevel` and `mathsHintLevel`). It reconnects with exponential backoff (300 ms base, 3 s cap), retries one in-flight message only when no terminal event has been received yet, asks for manual resend when a disconnect happens after session acknowledgement, and flags when the backend recommends a fresh chat context after repeated payload failures.
 - **`ChatPage.tsx`**: Full-page layout with collapsible sidebar, welcome greeting, streaming display, and disclaimer.
 - **`ChatSidebar.tsx`**: Session list (newest first), new chat button, delete with confirmation.
 - **`ChatMessageList.tsx`**: Auto-scrolling container rendering both persisted and streaming messages.

@@ -3,9 +3,16 @@
 from datetime import date
 
 import pytest
+from fastapi import HTTPException
 
 from app.ai.pricing import estimate_llm_cost_usd
-from app.routers.admin import _aggregate_usage, _aggregate_usage_for_model, _estimate_cost
+from app.routers.admin import (
+    _aggregate_usage,
+    _aggregate_usage_for_model,
+    _estimate_cost,
+    get_llm_errors,
+    resolve_llm_error,
+)
 
 
 class _FakeAggregateResult:
@@ -90,3 +97,46 @@ async def test_aggregate_usage_for_model_filters_and_returns_cost() -> None:
     assert usage["output_tokens"] == 654
     assert usage["estimated_cost_usd"] == 0.4321
     assert usage["estimated_cost_coverage"] == 0.75
+
+
+@pytest.mark.asyncio
+async def test_get_llm_errors_passes_include_resolved_flag(monkeypatch) -> None:
+    captured = {"include_resolved": None}
+
+    def _fake_get_recent_llm_errors(*, include_resolved: bool = False):
+        captured["include_resolved"] = include_resolved
+        return [{"id": "err-1"}]
+
+    monkeypatch.setattr(
+        "app.routers.chat.get_recent_llm_errors",
+        _fake_get_recent_llm_errors,
+    )
+
+    payload = await get_llm_errors(_=None, include_resolved=True)
+    assert captured["include_resolved"] is True
+    assert payload == {"errors": [{"id": "err-1"}]}
+
+
+@pytest.mark.asyncio
+async def test_resolve_llm_error_returns_success_when_found(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.routers.chat.mark_llm_error_resolved",
+        lambda _error_id: True,
+    )
+
+    payload = await resolve_llm_error(error_id="err-1", _=None)
+    assert payload["id"] == "err-1"
+    assert payload["message"] == "LLM error alert resolved."
+
+
+@pytest.mark.asyncio
+async def test_resolve_llm_error_returns_404_when_missing(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.routers.chat.mark_llm_error_resolved",
+        lambda _error_id: False,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await resolve_llm_error(error_id="missing", _=None)
+
+    assert getattr(exc_info.value, "status_code", None) == 404

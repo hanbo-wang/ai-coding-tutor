@@ -7,6 +7,7 @@ import json
 import pytest
 
 from app.ai.llm_anthropic import AnthropicProvider
+from app.ai.llm_base import LLMError
 
 
 class _FakeResponse:
@@ -77,3 +78,27 @@ async def test_anthropic_stream_uses_selected_model(monkeypatch) -> None:
     assert provider.last_usage.output_tokens == 3
     call = _FakeAsyncClient.last_call or {}
     assert call["json"]["model"] == "claude-haiku-4-5"
+
+
+def test_to_anthropic_content_drops_blank_text_parts() -> None:
+    parts = AnthropicProvider._to_anthropic_content(
+        [
+            {"type": "text", "text": "   "},
+            {"type": "text", "text": "hello"},
+        ]
+    )
+    assert parts == [{"type": "text", "text": "hello"}]
+
+
+@pytest.mark.asyncio
+async def test_anthropic_stream_rejects_payload_when_all_messages_are_blank(monkeypatch) -> None:
+    monkeypatch.setattr("app.ai.llm_anthropic.httpx.AsyncClient", _FakeAsyncClient)
+    provider = AnthropicProvider("ak-test", model_id="claude-haiku-4-5")
+
+    with pytest.raises(LLMError, match="payload is empty after message sanitisation"):
+        async for _ in provider.generate_stream(
+            system_prompt="Test",
+            messages=[{"role": "user", "content": "   "}],
+            max_tokens=5,
+        ):
+            pass

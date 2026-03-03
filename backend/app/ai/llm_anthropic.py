@@ -8,6 +8,7 @@ from typing import AsyncIterator
 import httpx
 
 from app.ai.llm_base import LLMError, LLMMessage, LLMProvider, LLMUsage
+from app.ai.message_sanitizer import is_blank_text, normalise_text
 
 logger = logging.getLogger(__name__)
 
@@ -38,17 +39,26 @@ class AnthropicProvider(LLMProvider):
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         }
+        api_messages: list[dict] = []
+        for msg in messages:
+            parts = self._to_anthropic_content(msg["content"])
+            if not parts:
+                continue
+            api_messages.append(
+                {
+                    "role": msg["role"],
+                    "content": parts,
+                }
+            )
+
+        if not api_messages:
+            raise LLMError("Anthropic payload is empty after message sanitisation")
+
         payload = {
             "model": self.model_id,
             "max_tokens": max_tokens,
             "system": system_prompt,
-            "messages": [
-                {
-                    "role": msg["role"],
-                    "content": self._to_anthropic_content(msg["content"]),
-                }
-                for msg in messages
-            ],
+            "messages": api_messages,
             "stream": True,
         }
 
@@ -134,21 +144,30 @@ class AnthropicProvider(LLMProvider):
     @staticmethod
     def _to_anthropic_content(content: str | list[dict[str, str]]) -> list[dict]:
         if isinstance(content, str):
-            return [{"type": "text", "text": content}]
+            text = normalise_text(content)
+            if is_blank_text(text):
+                return []
+            return [{"type": "text", "text": text}]
 
         blocks: list[dict] = []
         for part in content:
             if part.get("type") == "text":
-                blocks.append({"type": "text", "text": part.get("text", "")})
+                text = normalise_text(part.get("text", ""))
+                if is_blank_text(text):
+                    continue
+                blocks.append({"type": "text", "text": text})
             elif part.get("type") == "image":
+                data = normalise_text(part.get("data", "")).strip()
+                if not data:
+                    continue
                 blocks.append(
                     {
                         "type": "image",
                         "source": {
                             "type": "base64",
                             "media_type": part.get("media_type", "image/png"),
-                            "data": part.get("data", ""),
+                            "data": data,
                         },
                     }
                 )
-        return blocks or [{"type": "text", "text": ""}]
+        return blocks

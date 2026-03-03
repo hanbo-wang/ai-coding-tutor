@@ -45,7 +45,7 @@ export default function App() {
               <Route path="/zones/:zoneId" element={<ProtectedRoute><ZoneDetailPage /></ProtectedRoute>} />
               <Route path="/zone-notebook/:zoneId/:notebookId" element={<ProtectedRoute><ZoneNotebookWorkspacePage /></ProtectedRoute>} />
               <Route path="/admin" element={<ProtectedRoute><AdminDashboardPage /></ProtectedRoute>} />
-              <Route path="/health" element={<ProtectedRoute><HealthPage /></ProtectedRoute>} />
+              <Route path="/system-health" element={<ProtectedRoute><HealthPage /></ProtectedRoute>} />
               <Route path="/" element={<Navigate to="/chat" replace />} />
             </Routes>
           </Suspense>

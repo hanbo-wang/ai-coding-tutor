@@ -7,6 +7,7 @@ import json
 import pytest
 
 from app.ai.llm_openai import OpenAIProvider
+from app.ai.llm_base import LLMError
 
 
 class _FakeResponse:
@@ -78,3 +79,27 @@ async def test_openai_stream_uses_selected_model_and_parses_usage(monkeypatch) -
     assert call["url"].endswith("/v1/chat/completions")
     assert call["json"]["model"] == "gpt-5-mini"
     assert call["json"]["max_completion_tokens"] == 9
+
+
+def test_to_openai_content_drops_blank_parts() -> None:
+    parts = OpenAIProvider._to_openai_content(
+        [
+            {"type": "text", "text": "   "},
+            {"type": "text", "text": "ready"},
+        ]
+    )
+    assert parts == [{"type": "text", "text": "ready"}]
+
+
+@pytest.mark.asyncio
+async def test_openai_stream_rejects_empty_payload_after_sanitisation(monkeypatch) -> None:
+    monkeypatch.setattr("app.ai.llm_openai.httpx.AsyncClient", _FakeAsyncClient)
+    provider = OpenAIProvider("sk-test", model_id="gpt-5-mini")
+
+    with pytest.raises(LLMError, match="payload is empty after message sanitisation"):
+        async for _ in provider.generate_stream(
+            system_prompt="Test",
+            messages=[{"role": "user", "content": "   "}],
+            max_tokens=9,
+        ):
+            pass
