@@ -24,6 +24,14 @@ on:
         description: "Required only for deployment_data_mode=start_with_empty_data: type START_WITH_EMPTY_DATA"
         required: false
         default: ""
+      force_reissue_certificate:
+        description: "Force certificate reissuance using current WEBSITE_DOMAIN and WEBSITE_ALT_DOMAINS"
+        required: true
+        type: choice
+        default: "false"
+        options:
+          - "false"
+          - "true"
 
 permissions:
   contents: read
@@ -85,6 +93,7 @@ jobs:
           IMAGE_TAG: ${{ inputs.image_tag }}
           DEPLOYMENT_DATA_MODE: ${{ inputs.deployment_data_mode }}
           EMPTY_DATA_CONFIRM: ${{ inputs.empty_data_confirm }}
+          FORCE_REISSUE_CERTIFICATE: ${{ inputs.force_reissue_certificate }}
           GHCR_OWNER: ${{ steps.vars.outputs.owner_lc }}
           GHCR_IMAGE_PREFIX: ${{ steps.vars.outputs.repo_lc }}
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
@@ -94,7 +103,7 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT || '22' }}
-          envs: DEPLOY_PATH,IMAGE_TAG,DEPLOYMENT_DATA_MODE,EMPTY_DATA_CONFIRM,GHCR_OWNER,GHCR_IMAGE_PREFIX,GHCR_USERNAME,GHCR_TOKEN
+          envs: DEPLOY_PATH,IMAGE_TAG,DEPLOYMENT_DATA_MODE,EMPTY_DATA_CONFIRM,FORCE_REISSUE_CERTIFICATE,GHCR_OWNER,GHCR_IMAGE_PREFIX,GHCR_USERNAME,GHCR_TOKEN
           script: |
             set -euo pipefail
             cd "$DEPLOY_PATH"
@@ -193,6 +202,22 @@ jobs:
               exit 1
             fi
 
+            FORCE_REISSUE_VALUE="$(trim_env_value "${FORCE_REISSUE_CERTIFICATE:-false}")"
+            FORCE_REISSUE_VALUE="$(printf '%s' "$FORCE_REISSUE_VALUE" | tr '[:upper:]' '[:lower:]')"
+            case "$FORCE_REISSUE_VALUE" in
+              true|1|yes)
+                FORCE_REISSUE_ENABLED=1
+                ;;
+              false|0|no|"")
+                FORCE_REISSUE_ENABLED=0
+                ;;
+              *)
+                echo "Unsupported force_reissue_certificate value: ${FORCE_REISSUE_CERTIFICATE:-}"
+                echo "Supported values: true or false."
+                exit 1
+                ;;
+            esac
+
             TARGET_DOMAINS=()
             TARGET_DOMAINS+=("$WEBSITE_DOMAIN_VALUE")
             ALT_DOMAINS_NORMALISED="$(printf '%s' "${WEBSITE_ALT_DOMAINS_VALUE:-}" | tr ',;\n\r\t' '     ')"
@@ -235,7 +260,24 @@ jobs:
             certificate_covers_all_domains() {
               cert_domains="$(
                 compose --profile ops run --rm --no-deps --entrypoint sh certbot -lc \
-                  "certbot certificates --cert-name \"$PRIMARY_DOMAIN_VALUE\" 2>/dev/null | sed -n 's/^[[:space:]]*Domains:[[:space:]]*//p' | head -n 1" \
+                  "CERT_PATH=\"$TLS_CERT_PATH_VALUE\" python - <<'PY'
+import os
+import ssl
+import sys
+
+cert_path = os.environ.get('CERT_PATH', '').strip()
+if not cert_path:
+    sys.exit(1)
+
+try:
+    decoded = ssl._ssl._test_decode_cert(cert_path)
+except Exception:
+    sys.exit(1)
+
+for entry_type, entry_value in decoded.get('subjectAltName', []):
+    if entry_type == 'DNS' and entry_value:
+        print(entry_value.strip().lower())
+PY" \
                   || true
               )"
               cert_domains="$(trim_env_value "${cert_domains:-}")"
@@ -243,12 +285,36 @@ jobs:
                 return 1
               fi
               for domain in "${TARGET_DOMAINS[@]}"; do
-                case " $cert_domains " in
-                  *" $domain "*) ;;
-                  *) return 1 ;;
-                esac
+                if ! printf '%s\n' "$cert_domains" | grep -Fxqi "$domain"; then
+                  return 1
+                fi
               done
               return 0
+            }
+
+            remove_legacy_certificates() {
+              cert_names="$(
+                compose --profile ops run --rm --no-deps --entrypoint sh certbot -lc \
+                  "certbot certificates 2>/dev/null | sed -n 's/^[[:space:]]*Certificate Name:[[:space:]]*//p'" \
+                  || true
+              )"
+              cert_names="$(trim_env_value "${cert_names:-}")"
+              if [ -z "$cert_names" ]; then
+                echo "No legacy certificate lineages found to remove."
+                return 0
+              fi
+
+              while IFS= read -r cert_name; do
+                cert_name="$(trim_env_value "$cert_name")"
+                if [ -z "$cert_name" ] || [ "$cert_name" = "$PRIMARY_DOMAIN_VALUE" ]; then
+                  continue
+                fi
+                echo "Removing legacy certificate lineage: $cert_name"
+                compose --profile ops run --rm --no-deps --entrypoint certbot certbot \
+                  delete --non-interactive --quiet --cert-name "$cert_name"
+              done <<EOF
+$cert_names
+EOF
             }
 
             ensure_tls_certificate() {
@@ -258,7 +324,7 @@ jobs:
                 has_cert_files=1
               fi
 
-              if [ "$has_cert_files" -eq 1 ] && certificate_covers_all_domains; then
+              if [ "$FORCE_REISSUE_ENABLED" -eq 0 ] && [ "$has_cert_files" -eq 1 ] && certificate_covers_all_domains; then
                 echo "TLS certificate already covers configured domains: $SERVER_NAME_VALUE"
                 return 0
               fi
@@ -269,15 +335,31 @@ jobs:
                 exit 1
               fi
 
-              if [ "$has_cert_files" -eq 1 ]; then
+              if [ "$FORCE_REISSUE_ENABLED" -eq 1 ]; then
+                echo "Force reissue mode is enabled. Reissuing certificate for: ${SERVER_NAME_VALUE}"
+              elif [ "$has_cert_files" -eq 1 ]; then
                 echo "Expanding TLS certificate to cover configured domains: ${SERVER_NAME_VALUE}"
               else
                 echo "Issuing a new TLS certificate for configured domains: ${SERVER_NAME_VALUE}"
               fi
+
+              CERTBOT_ISSUE_ARGS=(
+                certonly
+                --standalone
+                --non-interactive
+                --agree-tos
+                --no-eff-email
+                --cert-name "${PRIMARY_DOMAIN_VALUE}"
+              )
+              if [ "$FORCE_REISSUE_ENABLED" -eq 1 ]; then
+                CERTBOT_ISSUE_ARGS+=(--force-renewal)
+              else
+                CERTBOT_ISSUE_ARGS+=(--expand)
+              fi
+
               compose stop frontend >/dev/null 2>&1 || true
               compose --profile ops run --rm --no-deps -p 80:80 --entrypoint certbot certbot \
-                certonly --standalone --non-interactive --agree-tos --no-eff-email \
-                --cert-name "${PRIMARY_DOMAIN_VALUE}" --expand \
+                "${CERTBOT_ISSUE_ARGS[@]}" \
                 "${CERTBOT_DOMAIN_ARGS[@]}" \
                 -m "${CERTBOT_EMAIL_VALUE}"
 
@@ -291,6 +373,11 @@ jobs:
               if ! certificate_covers_all_domains; then
                 echo "Certbot finished, but certificate domains do not match: ${SERVER_NAME_VALUE}"
                 exit 1
+              fi
+
+              if [ "$FORCE_REISSUE_ENABLED" -eq 1 ]; then
+                # In force mode, keep the active primary lineage and remove older lineages.
+                remove_legacy_certificates
               fi
 
               echo "TLS certificate is ready for domains: ${SERVER_NAME_VALUE}"

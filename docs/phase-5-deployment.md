@@ -82,7 +82,7 @@ Runs on push to `main`. Two jobs:
 
 ### 5.2 Manual Production Deploy (`deploy-prod.yml`)
 
-Manually triggered workflow. It connects via SSH, uploads `docker-compose.prod.yml` and `scripts/ops/create_backup_snapshot.sh`, derives domain and TLS settings from `WEBSITE_DOMAIN` plus optional `WEBSITE_ALT_DOMAINS`, validates compose config, creates a deployment snapshot, applies the selected data handling mode, then starts services.
+Manually triggered workflow. It connects via SSH, uploads `docker-compose.prod.yml` and `scripts/ops/create_backup_snapshot.sh`, derives domain and TLS settings from `WEBSITE_DOMAIN` plus optional `WEBSITE_ALT_DOMAINS`, validates compose config, creates a deployment snapshot, applies the selected data handling mode, then starts services. It also supports a force-reissue mode for certificate repair and lineage cleanup.
 
 Post-deploy checks call `/health` and `/api/health/ai?force=true` from inside the backend container. The gate passes when at least one configured LLM provider is reachable.
 
@@ -95,6 +95,9 @@ Inputs:
   - `restore_from_deployment_backup`
   - `start_with_empty_data`
 - `empty_data_confirm` (required only for `start_with_empty_data`; must be `START_WITH_EMPTY_DATA`)
+- `force_reissue_certificate`:
+  - `false` (default): only issue or expand certificates when files are missing or SAN coverage does not match configured domains.
+  - `true`: always reissue the certificate with current domains and then remove legacy non-primary certificate lineages.
 
 Required GitHub Actions secrets: `SSH_HOST`, `SSH_USER`, `SSH_PORT`, `SSH_PRIVATE_KEY`, `GHCR_USERNAME`, `GHCR_TOKEN`.
 
@@ -108,7 +111,9 @@ Point DNS to the server IP. Allow inbound traffic on ports 80 and 443. Set `WEBS
 
 ### 6.2 Initial Certificate Issuance
 
-The deploy workflow automatically issues or expands the certificate for all configured domains (`WEBSITE_DOMAIN` + `WEBSITE_ALT_DOMAINS`) when files are missing or SAN coverage is incomplete. This requires `CERTBOT_EMAIL`, or `ADMIN_EMAIL` as a fallback. A manual one-off Certbot `--standalone` run is still a valid fallback option.
+The deploy workflow automatically issues or expands the certificate for all configured domains (`WEBSITE_DOMAIN` + `WEBSITE_ALT_DOMAINS`) when files are missing or SAN coverage is incomplete. It validates SAN coverage directly from the active certificate file. This requires `CERTBOT_EMAIL`, or `ADMIN_EMAIL` as a fallback. A manual one-off Certbot `--standalone` run is still a valid fallback option.
+
+When `force_reissue_certificate=true`, the workflow reissues the certificate unconditionally using the current configured domains, then removes legacy certificate lineages and keeps the primary lineage.
 
 ### 6.3 Renewal
 
@@ -127,8 +132,9 @@ Start the renewal service profile: `docker compose -f docker-compose.prod.yml --
 7. Push to `main` to trigger the image build workflow.
 8. Run `Deploy Production (Manual)` with the desired image tag, deploy path, and data mode.
 9. Confirm the deployment snapshot path reported by the workflow.
-10. Verify the deployment: `/health` JSON liveness endpoint, `/system-health` diagnostics page (authenticated), canonical-domain redirect behaviour, login flow, chat streaming, JupyterLite workspace, file uploads.
-11. Start certificate renewal (recommended).
+10. If certificate metadata is out of sync, run deployment with `force_reissue_certificate=true` to reissue and clean up legacy lineages.
+11. Verify the deployment: `/health` JSON liveness endpoint, `/system-health` diagnostics page (authenticated), canonical-domain redirect behaviour, login flow, chat streaming, JupyterLite workspace, file uploads.
+12. Start certificate renewal (recommended).
 
 ---
 
@@ -185,6 +191,7 @@ Each deployment creates a fresh snapshot before applying `deployment_data_mode`.
 - [ ] The HTTPS certificate is valid.
 - [ ] The certificate SAN list covers `WEBSITE_DOMAIN` and all entries in `WEBSITE_ALT_DOMAINS`.
 - [ ] Requests to additional domains return `301` to `https://<your-primary-domain>`.
+- [ ] `force_reissue_certificate=true` reissues the certificate and leaves only the primary lineage active.
 - [ ] A user can register, log in, chat, and use the workspace.
 - [ ] WebSocket connections work through Nginx.
 - [ ] JupyterLite loads and runs Python code in production.
