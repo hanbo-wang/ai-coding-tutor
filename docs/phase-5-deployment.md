@@ -25,7 +25,7 @@ Python 3.11-slim base image with runtime dependencies only. Bakes application co
 
 ### Frontend (`frontend/Dockerfile.prod`)
 
-Multi-stage build: Node 20 builds the React app, then Nginx 1.27-alpine serves the static output. The same container serves the frontend and proxies `/api`, `/ws`, and `/health` to the backend. Nginx loads a template config and substitutes environment variables at container start.
+Multi-stage build: Node 20 builds the React app, then Nginx 1.27-alpine serves the static output. The same container serves the frontend and proxies `/api`, `/ws`, and `/health` to the backend. Nginx loads a template config and substitutes environment variables at container start. Build-time `node_modules` are not copied into the runtime image.
 
 ---
 
@@ -57,6 +57,7 @@ Operational notes:
 - Upload and notebook storage paths are forced to persistent container paths (`/data/uploads`, `/data/notebooks`).
 - The frontend service requires valid TLS certificate files at the configured paths.
 - The server-side `.env` file is expected in the same directory as `docker-compose.prod.yml`.
+- `jupyterlite-bridge` may report residual audit items in its webpack toolchain where upstream has no fix yet; these packages are build-time only and are not present in runtime containers.
 
 ---
 

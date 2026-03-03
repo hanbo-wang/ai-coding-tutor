@@ -12,6 +12,9 @@ if [ -d "$HOME/.local/node-v24.13.0-linux-x64/bin" ]; then
 fi
 export PATH="$HOME/.local/bin:$PATH"
 
+# Suppress the optional libarchive-c performance warning from JupyterLite build
+export PYTHONWARNINGS="ignore:install libarchive-c"
+
 python3 -m pip install --user --break-system-packages jupyterlite-core jupyterlite-pyodide-kernel jupyterlab
 
 cd "$PROJECT_ROOT/jupyterlite-bridge"

@@ -40,6 +40,7 @@
     "vite": "^6.0.5"
   },
   "overrides": {
-    "minimatch": "^10.2.2"
+    "minimatch": "^10.2.4",
+    "rollup": "^4.59.0"
   }
 }

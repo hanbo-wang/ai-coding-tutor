@@ -2,7 +2,23 @@ import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import remarkGfm from "remark-gfm";
 import rehypeKatex from "rehype-katex";
-import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { PrismLight as SyntaxHighlighter } from "react-syntax-highlighter";
+import bash from "react-syntax-highlighter/dist/esm/languages/prism/bash";
+import c from "react-syntax-highlighter/dist/esm/languages/prism/c";
+import cpp from "react-syntax-highlighter/dist/esm/languages/prism/cpp";
+import csharp from "react-syntax-highlighter/dist/esm/languages/prism/csharp";
+import css from "react-syntax-highlighter/dist/esm/languages/prism/css";
+import java from "react-syntax-highlighter/dist/esm/languages/prism/java";
+import javascript from "react-syntax-highlighter/dist/esm/languages/prism/javascript";
+import json from "react-syntax-highlighter/dist/esm/languages/prism/json";
+import jsx from "react-syntax-highlighter/dist/esm/languages/prism/jsx";
+import markdown from "react-syntax-highlighter/dist/esm/languages/prism/markdown";
+import markup from "react-syntax-highlighter/dist/esm/languages/prism/markup";
+import python from "react-syntax-highlighter/dist/esm/languages/prism/python";
+import sql from "react-syntax-highlighter/dist/esm/languages/prism/sql";
+import tsx from "react-syntax-highlighter/dist/esm/languages/prism/tsx";
+import typescript from "react-syntax-highlighter/dist/esm/languages/prism/typescript";
+import yaml from "react-syntax-highlighter/dist/esm/languages/prism/yaml";
 import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
 import "katex/dist/katex.min.css";
 // KaTeX copy-tex keeps formula selections copyable as LaTeX in mixed text.
@@ -104,6 +120,50 @@ const LANGUAGE_LABELS: Record<string, string> = {
   typescript: "TypeScript",
   yaml: "YAML",
   yml: "YAML",
+};
+
+// Register only the languages that the UI explicitly labels.
+SyntaxHighlighter.registerLanguage("bash", bash);
+SyntaxHighlighter.registerLanguage("c", c);
+SyntaxHighlighter.registerLanguage("cpp", cpp);
+SyntaxHighlighter.registerLanguage("csharp", csharp);
+SyntaxHighlighter.registerLanguage("css", css);
+SyntaxHighlighter.registerLanguage("java", java);
+SyntaxHighlighter.registerLanguage("javascript", javascript);
+SyntaxHighlighter.registerLanguage("json", json);
+SyntaxHighlighter.registerLanguage("jsx", jsx);
+SyntaxHighlighter.registerLanguage("markdown", markdown);
+SyntaxHighlighter.registerLanguage("markup", markup);
+SyntaxHighlighter.registerLanguage("python", python);
+SyntaxHighlighter.registerLanguage("sql", sql);
+SyntaxHighlighter.registerLanguage("tsx", tsx);
+SyntaxHighlighter.registerLanguage("typescript", typescript);
+SyntaxHighlighter.registerLanguage("yaml", yaml);
+
+const HIGHLIGHT_LANGUAGE_ALIASES: Record<string, string> = {
+  c: "c",
+  cpp: "cpp",
+  csharp: "csharp",
+  css: "css",
+  html: "markup",
+  java: "java",
+  javascript: "javascript",
+  js: "javascript",
+  json: "json",
+  jsx: "jsx",
+  markdown: "markdown",
+  md: "markdown",
+  py: "python",
+  python: "python",
+  sh: "bash",
+  shell: "bash",
+  sql: "sql",
+  ts: "typescript",
+  tsx: "tsx",
+  typescript: "typescript",
+  yaml: "yaml",
+  yml: "yaml",
+  xml: "markup",
 };
 
 /**
@@ -689,6 +749,19 @@ function formatLanguageTag(language?: string): string {
     .replace(/\b[a-z]/g, (char) => char.toUpperCase());
 }
 
+function resolveHighlightLanguage(language?: string): string | undefined {
+  if (!language) {
+    return undefined;
+  }
+
+  const normalised = language.trim().toLowerCase();
+  if (!normalised) {
+    return undefined;
+  }
+
+  return HIGHLIGHT_LANGUAGE_ALIASES[normalised];
+}
+
 async function copyTextToClipboard(text: string): Promise<boolean> {
   if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
     try {
@@ -947,6 +1020,7 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
             const match = /language-([^\s]+)/.exec(className || "");
             const codeString = String(children).replace(/\n$/, "");
             const language = match?.[1];
+            const highlightLanguage = resolveHighlightLanguage(language);
             const languageTag = formatLanguageTag(language);
             const plainTextTag = formatLanguageTag();
             const isCompactPlainBlock =
@@ -992,12 +1066,22 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
                 );
               }
 
+              if (!highlightLanguage) {
+                return (
+                  <CopyableCodePanel codeText={codeString} markerLabel={`Code: ${languageTag}`}>
+                    <pre className="markdown-plain-code overflow-x-auto px-3 py-2">
+                      <code className="font-mono text-[0.9rem] leading-6">{codeString}</code>
+                    </pre>
+                  </CopyableCodePanel>
+                );
+              }
+
               return (
                 <CopyableCodePanel codeText={codeString} markerLabel={`Code: ${languageTag}`}>
                   <div className="markdown-code-block overflow-x-auto">
                     <SyntaxHighlighter
                       style={oneLight}
-                      language={language}
+                      language={highlightLanguage}
                       PreTag="div"
                       wrapLongLines
                       codeTagProps={{

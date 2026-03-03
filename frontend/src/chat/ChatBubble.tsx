@@ -1,14 +1,19 @@
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, lazy, useEffect, useMemo, useState } from "react";
 
 import { apiFetchBlob } from "../api/http";
 import { Attachment, ChatMessage } from "../api/types";
-import { MarkdownRenderer } from "../components/MarkdownRenderer";
 
 interface ChatBubbleProps {
   message: ChatMessage;
 }
 
 const EMPTY_ATTACHMENTS: Attachment[] = [];
+
+const MarkdownRenderer = lazy(() =>
+  import("../components/MarkdownRenderer").then((module) => ({
+    default: module.MarkdownRenderer,
+  })),
+);
 
 export function ChatBubble({ message }: ChatBubbleProps) {
   const isUser = message.role === "user";
@@ -167,7 +172,13 @@ export function ChatBubble({ message }: ChatBubbleProps) {
               </div>
             )}
             <div className="w-full max-w-none">
-              <MarkdownRenderer content={message.content} />
+              <Suspense
+                fallback={
+                  <p className="text-sm text-[var(--markdown-muted)]">Loading response...</p>
+                }
+              >
+                <MarkdownRenderer content={message.content} />
+              </Suspense>
             </div>
           </div>
         )}

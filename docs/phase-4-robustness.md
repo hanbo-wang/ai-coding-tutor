@@ -224,7 +224,11 @@ Run from `backend/`: `PYTHONPATH=. pytest tests/ -q -s`
 
 HTTP routes use FastAPI `HTTPException` and validation responses with a `detail` field. WebSocket stage failures send an `error` event and then close with code `1011`. Connection-cap rejections use code `4002`. Database unavailability surfaces as HTTP 503 from dependency initialisation.
 
-### 8.2 Frontend
+### 8.2 Frontend API and Routing
+
+- `GlobalErrorBoundary` catches `React.lazy` chunk load errors (often caused by out-of-sync caching during deployment updates) and displays a graceful full-screen fallback with a manual 'Reload Page' action.
+- `useChatManager` hook encapsulates duplicate WebSocket orchestration logic (`useChatSocket`, connection tracking, and payload preparation) shared between the standalone `ChatPage` and embedded `WorkspaceChatPanel`.
+- Unified network requests through an internal frontend `ChatAPI` SDK object (`src/api/chat.ts`).
 
 WebSocket disconnection shows a reconnect status with exponential backoff (300 ms base delay, capped at 3 seconds). If the socket drops before a terminal event, the frontend retries one in-flight message automatically when safe; otherwise it prompts for manual resend. LLM errors display as styled system messages in chat, and REST failures are shown inline in the relevant page panels/forms.
 

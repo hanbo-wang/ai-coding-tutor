@@ -1,11 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-
-import { apiFetch } from "../api/http";
-import { ChatMessage, ChatSession } from "../api/types";
+import { useMemo, useState } from "react";
 import { ChatInput } from "../chat/ChatInput";
 import { ChatMessageList } from "../chat/ChatMessageList";
-import { prepareSendPayload } from "../chat/prepareSend";
-import { useChatSocket } from "../chat/useChatSocket";
+import { useChatManager } from "../chat/useChatManager";
 
 interface WorkspaceChatPanelProps {
   sessionType: "notebook" | "zone";
@@ -24,177 +20,44 @@ export function WorkspaceChatPanel({
   moduleId,
   getCellContext,
 }: WorkspaceChatPanelProps) {
-  const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [isLoadingScopedSession, setIsLoadingScopedSession] = useState(false);
-  const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
-
-  const refreshScopedSessions = useCallback(async () => {
-    const params = new URLSearchParams({
-      session_type: sessionType,
-      module_id: moduleId,
-    });
-    const list = await apiFetch<ChatSession[]>(
-      `/api/chat/sessions?${params.toString()}`
-    );
-    setSessions(list);
-    return list;
-  }, [sessionType, moduleId]);
 
   const {
+    sessions,
     messages,
-    setMessages,
     streamingContent,
-    setStreamingContent,
     streamingMeta,
-    setStreamingMeta,
     retryStatus,
-    setRetryStatus,
     isStreaming,
-    setIsStreaming,
-    sessionId,
-    setSessionId,
     connected,
-    sendMessage,
-  } = useChatSocket(() => {
-    void refreshScopedSessions();
+    sessionId,
+    isLoadingSessions,
+    deletingSessionId,
+    handleSend,
+    handleSelectSession,
+    handleNewChat,
+    handleDeleteSession,
+  } = useChatManager({
+    sessionType,
+    moduleId,
+    getCellContext,
   });
 
-  const loadSessionMessages = useCallback(
-    async (targetSessionId: string) => {
-      const sessionMessages = await apiFetch<ChatMessage[]>(
-        `/api/chat/sessions/${targetSessionId}/messages`
-      );
-      setSessionId(targetSessionId);
-      setMessages(sessionMessages);
-    },
-    [setMessages, setSessionId]
-  );
-
-  useEffect(() => {
-    let cancelled = false;
-
-    setIsLoadingScopedSession(true);
-    setSessionId(null);
-    setMessages([]);
-    setHistoryOpen(false);
-
-    const bootstrap = async () => {
-      try {
-        // Load history list only; each workspace entry starts in a fresh New chat state.
-        await refreshScopedSessions();
-      } catch {
-        if (!cancelled) {
-          setSessions([]);
-          setSessionId(null);
-          setMessages([]);
-        }
-      } finally {
-        if (!cancelled) {
-          setIsLoadingScopedSession(false);
-        }
-      }
-    };
-
-    void bootstrap();
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    refreshScopedSessions,
-    setMessages,
-    setRetryStatus,
-    setSessionId,
-    setStreamingContent,
-    setStreamingMeta,
-  ]);
-
-  const handleSend = async (content: string, files: File[]) => {
-    if (isStreaming || isLoadingScopedSession) return;
-
-    const prepared = await prepareSendPayload(content, files).catch((err) => {
-      const message =
-        err instanceof Error ? err.message : "Failed to upload files.";
-      setMessages((items) => [
-        ...items,
-        { role: "assistant", content: `Error: ${message}` },
-      ]);
-      throw err;
-    });
-
-    setMessages((items) => [
-      ...items,
-      {
-        role: "user",
-        content: prepared.displayContent,
-        attachments: prepared.attachments,
-      },
-    ]);
-    setStreamingContent("");
-    setStreamingMeta(null);
-    setRetryStatus(null);
-    setIsStreaming(true);
-
-    const context = await getCellContext();
-    const accepted = sendMessage(prepared.cleanedContent, {
-      sessionId,
-      uploadIds: prepared.uploadIds,
-      notebookId: sessionType === "notebook" ? moduleId : undefined,
-      zoneNotebookId: sessionType === "zone" ? moduleId : undefined,
-      cellCode: context.cellCode || null,
-      errorOutput: context.errorOutput,
-    });
-    if (!accepted) {
-      setIsStreaming(false);
-      setMessages((items) => [
-        ...items,
-        {
-          role: "assistant",
-          content: "Error: Please wait for the current request to finish.",
-        },
-      ]);
-    }
-  };
-
-  const handleNewChat = () => {
-    if (isLoadingScopedSession) return;
-    setSessionId(null);
-    setMessages([]);
+  const onSelectSession = (id: string) => {
+    void handleSelectSession(id);
     setHistoryOpen(false);
   };
 
-  const handleSelectSession = async (targetSessionId: string) => {
-    if (targetSessionId === sessionId || isLoadingScopedSession) return;
-    try {
-      await loadSessionMessages(targetSessionId);
-      setHistoryOpen(false);
-    } catch {
-      // Ignore stale session errors.
-    }
-  };
-
-  const handleDeleteSession = async (targetSessionId: string) => {
-    if (isLoadingScopedSession || deletingSessionId) return;
-    try {
-      setDeletingSessionId(targetSessionId);
-      await apiFetch(`/api/chat/sessions/${targetSessionId}`, { method: "DELETE" });
-      await refreshScopedSessions();
-      if (targetSessionId === sessionId) {
-        setSessionId(null);
-        setMessages([]);
-      }
-    } catch {
-      // Keep chat usable if deletion fails.
-    } finally {
-      setDeletingSessionId(null);
-    }
+  const onNewChat = () => {
+    handleNewChat();
+    setHistoryOpen(false);
   };
 
   const historyLabel = useMemo(() => {
-    if (isLoadingScopedSession) return "Loading history...";
+    if (isLoadingSessions) return "Loading history...";
     if (sessions.length === 0) return "No history";
     return `History chats (${sessions.length})`;
-  }, [isLoadingScopedSession, sessions.length]);
+  }, [isLoadingSessions, sessions.length]);
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-gray-50">
@@ -204,15 +67,15 @@ export function WorkspaceChatPanel({
           <button
             type="button"
             onClick={() => setHistoryOpen((prev) => !prev)}
-            disabled={isLoadingScopedSession}
+            disabled={isLoadingSessions}
             className="rounded-md border border-gray-300 px-2.5 py-1 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {historyLabel}
           </button>
           <button
             type="button"
-            onClick={handleNewChat}
-            disabled={isLoadingScopedSession}
+            onClick={onNewChat}
+            disabled={isLoadingSessions}
             className="rounded-md border border-gray-300 px-2.5 py-1 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
           >
             New chat
@@ -234,7 +97,7 @@ export function WorkspaceChatPanel({
                 >
                   <button
                     type="button"
-                    onClick={() => void handleSelectSession(session.id)}
+                    onClick={() => onSelectSession(session.id)}
                     className="block w-full text-left"
                   >
                     <p className="truncate text-sm text-gray-800">{session.preview}</p>
@@ -279,7 +142,7 @@ export function WorkspaceChatPanel({
 
       <ChatInput
         onSend={handleSend}
-        disabled={isStreaming || !connected || isLoadingScopedSession}
+        disabled={isStreaming || !connected || isLoadingSessions}
       />
     </div>
   );

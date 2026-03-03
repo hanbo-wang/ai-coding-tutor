@@ -50,7 +50,9 @@
 
 **Script:** `scripts/build-jupyterlite.sh`
 
-Installs `jupyterlite-core`, `jupyterlite-pyodide-kernel`, and `jupyterlab`. Builds the bridge extension from `jupyterlite-bridge/`, then builds JupyterLite into `frontend/public/jupyterlite/`. The script patches `jupyter-lite.json` for workspace settings (autosave every 12s, no close confirmation, no recents) and verifies the bridge extension is registered.
+Installs `jupyterlite-core`, `jupyterlite-pyodide-kernel`, and `jupyterlab`. Builds the bridge extension from `jupyterlite-bridge/`, then builds JupyterLite into `frontend/public/jupyterlite/`. The script patches `jupyter-lite.json` for workspace settings (autosave every 12s, no close confirmation, no recents) and verifies the bridge extension is registered. 
+
+`jupyterlite-bridge` build dependencies are used at build time only. Runtime images serve compiled static assets and do not ship bridge `node_modules`.
 
 The output directory is git-ignored as a generated artefact.
 

@@ -64,6 +64,10 @@ Thumbs.db
 desktop.ini
 nul
 
+# AI Agent Workflows
+.agent/
+.agents/
+
 # Claude Code
 .claude/
 
