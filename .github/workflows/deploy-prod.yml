@@ -260,24 +260,7 @@ jobs:
             certificate_covers_all_domains() {
               cert_domains="$(
                 compose --profile ops run --rm --no-deps --entrypoint sh certbot -lc \
-                  "CERT_PATH=\"$TLS_CERT_PATH_VALUE\" python - <<'PY'
-import os
-import ssl
-import sys
-
-cert_path = os.environ.get('CERT_PATH', '').strip()
-if not cert_path:
-    sys.exit(1)
-
-try:
-    decoded = ssl._ssl._test_decode_cert(cert_path)
-except Exception:
-    sys.exit(1)
-
-for entry_type, entry_value in decoded.get('subjectAltName', []):
-    if entry_type == 'DNS' and entry_value:
-        print(entry_value.strip().lower())
-PY" \
+                  "CERT_PATH=\"$TLS_CERT_PATH_VALUE\" python -c \"import os,ssl,sys; p=os.environ.get('CERT_PATH','').strip(); d=ssl._ssl._test_decode_cert(p) if p else (_ for _ in ()).throw(SystemExit(1)); print('\\n'.join(v.strip().lower() for t,v in d.get('subjectAltName',[]) if t=='DNS' and str(v).strip()))\"" \
                   || true
               )"
               cert_domains="$(trim_env_value "${cert_domains:-}")"
@@ -304,7 +287,7 @@ PY" \
                 return 0
               fi
 
-              while IFS= read -r cert_name; do
+              printf '%s\n' "$cert_names" | while IFS= read -r cert_name; do
                 cert_name="$(trim_env_value "$cert_name")"
                 if [ -z "$cert_name" ] || [ "$cert_name" = "$PRIMARY_DOMAIN_VALUE" ]; then
                   continue
@@ -312,9 +295,7 @@ PY" \
                 echo "Removing legacy certificate lineage: $cert_name"
                 compose --profile ops run --rm --no-deps --entrypoint certbot certbot \
                   delete --non-interactive --quiet --cert-name "$cert_name"
-              done <<EOF
-$cert_names
-EOF
+              done
             }
 
             ensure_tls_certificate() {
