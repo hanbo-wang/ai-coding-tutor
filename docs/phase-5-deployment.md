@@ -12,8 +12,8 @@
 - A production Docker Compose file orchestrating all services.
 - Nginx reverse proxy with HTTPS and WebSocket support.
 - A CI/CD pipeline via GitHub Actions (GHCR image builds + manual deploy workflow).
-- Automated certificate renewal via a `certbot` service profile.
-- Database backup guidance.
+- Automatic deployment snapshots for database and file data.
+- Manual local snapshot pull tooling.
 
 ---
 
@@ -57,7 +57,6 @@ Operational notes:
 - Upload and notebook storage paths are forced to persistent container paths (`/data/uploads`, `/data/notebooks`).
 - The frontend service requires valid TLS certificate files at the configured paths.
 - The server-side `.env` file is expected in the same directory as `docker-compose.prod.yml`.
-- `jupyterlite-bridge` may report residual audit items in its webpack toolchain where upstream has no fix yet; these packages are build-time only and are not present in runtime containers.
 
 ---
 
@@ -82,11 +81,19 @@ Runs on push to `main`. Two jobs:
 
 ### 5.2 Manual Production Deploy (`deploy-prod.yml`)
 
-Manually triggered workflow. It connects via SSH, uploads `docker-compose.prod.yml`, derives TLS paths from `WEBSITE_DOMAIN`, runs `docker compose config`, starts `db` and `backend`, ensures TLS certificates exist (issuing via Certbot when missing), then starts `frontend` and the `certbot` renewal profile.
+Manually triggered workflow. It connects via SSH, uploads `docker-compose.prod.yml` and `scripts/ops/create_backup_snapshot.sh`, derives TLS paths from `WEBSITE_DOMAIN`, validates compose config, creates a deployment snapshot, applies the selected data handling mode, then starts services.
 
 Post-deploy checks call `/health` and `/api/health/ai?force=true` from inside the backend container. The gate passes when at least one configured LLM provider is reachable.
 
-Inputs: `image_tag` (GHCR tag), `deploy_path` (server directory with `.env`), `reset_mode` (`none` or `all_volumes`), `reset_confirm` (required for volume reset).
+Inputs:
+
+- `image_tag` (GHCR tag)
+- `deploy_path` (server directory with `.env`)
+- `deployment_data_mode`:
+  - `keep_existing_data`
+  - `restore_from_deployment_backup`
+  - `start_with_empty_data`
+- `empty_data_confirm` (required only for `start_with_empty_data`; must be `START_WITH_EMPTY_DATA`)
 
 Required GitHub Actions secrets: `SSH_HOST`, `SSH_USER`, `SSH_PORT`, `SSH_PRIVATE_KEY`, `GHCR_USERNAME`, `GHCR_TOKEN`.
 
@@ -117,22 +124,63 @@ Start the renewal service profile: `docker compose -f docker-compose.prod.yml --
 5. Configure GitHub Actions repository secrets for SSH and GHCR access.
 6. Ensure `CERTBOT_EMAIL` (or `ADMIN_EMAIL`) is configured so the workflow can issue certificates automatically when needed.
 7. Push to `main` to trigger the image build workflow.
-8. Run `Deploy Production (Manual)` with the desired image tag and deploy path. The workflow derives TLS paths from `WEBSITE_DOMAIN`, runs `docker compose config`, deploys services in dependency order, and enforces the post-check that at least one configured LLM provider is reachable.
-9. Verify the deployment: `/health` page, login flow, chat streaming, JupyterLite workspace, file uploads.
-10. Start certificate renewal (recommended).
+8. Run `Deploy Production (Manual)` with the desired image tag, deploy path, and data mode.
+9. Confirm the deployment snapshot path reported by the workflow.
+10. Verify the deployment: `/health` page, login flow, chat streaming, JupyterLite workspace, file uploads.
+11. Start certificate renewal (recommended).
 
 ---
 
-## 8. Database Backups
+## 8. Backup Snapshots
 
-Back up PostgreSQL regularly using `docker compose exec` with `pg_dump`. If using the deploy workflow with `reset_mode=all_volumes`, take a backup first. Recommended: daily backups, 7 to 30 day retention, periodic restore tests. Upload and notebook file volumes need separate backup since they are not included in database dumps.
+Snapshot root path:
+
+- `/opt/backups/ai-coding-tutor/daily/YYYY-MM-DD/HHMMSS/`
+
+Each snapshot contains:
+
+- `db.dump.zst`
+- `uploads.tar.zst`
+- `notebooks.tar.zst`
+- `SHA256SUMS`
+- `manifest.json`
+
+`manifest.json` records snapshot metadata including domain, server IP, creation timestamp, source, data mode label (for deployment snapshots), sizes, and checksums.
+
+### 8.1 Daily server snapshots
+
+Use:
+
+- `scripts/ops/create_backup_snapshot.sh`
+- `scripts/ops/install_daily_backup_cron.sh`
+
+Recommended default:
+
+- daily schedule at `02:05`
+- retention `14` days on the server
+
+### 8.2 Manual local snapshot pull
+
+Use:
+
+- `scripts/ops/pull_backup_to_local.sh`
+
+Default behaviour:
+
+- pulls the latest snapshot from `root@138.68.132.151:/opt/backups/ai-coding-tutor/daily`
+- verifies checksums locally
+- keeps local snapshots for `60` days
+
+### 8.3 Deployment snapshot behaviour
+
+Each deployment creates a fresh snapshot before applying `deployment_data_mode`. The deployment flow does not delete or overwrite older snapshot directories under `/opt/backups/ai-coding-tutor/daily`.
 
 ---
 
 ## Verification Checklist
 
 - [ ] `docker compose -f docker-compose.prod.yml up -d` starts services without errors.
-- [ ] The application loads at `https://yourdomain.example`.
+- [ ] The application loads at `https://guidedcursor.studio`.
 - [ ] The HTTPS certificate is valid.
 - [ ] A user can register, log in, chat, and use the workspace.
 - [ ] WebSocket connections work through Nginx.
@@ -140,9 +188,9 @@ Back up PostgreSQL regularly using `docker compose exec` with `pg_dump`. If usin
 - [ ] File uploads work through Nginx within the configured size limits.
 - [ ] The CI image build workflow passes on push to `main`.
 - [ ] The manual deploy workflow completes successfully.
-- [ ] `Deploy Production (Manual)` with `reset_mode=none` completes without removing volumes.
-- [ ] The `/health` page returns 200 in a browser, and non-HTML probes still receive liveness JSON.
-- [ ] The deploy workflow post-check confirms at least one configured LLM provider is reachable.
+- [ ] A deployment snapshot is created at `/opt/backups/ai-coding-tutor/daily/YYYY-MM-DD/HHMMSS/`.
+- [ ] `deployment_data_mode=keep_existing_data` keeps existing runtime data.
+- [ ] `deployment_data_mode=restore_from_deployment_backup` restores from the deployment snapshot.
+- [ ] `deployment_data_mode=start_with_empty_data` requires `empty_data_confirm=START_WITH_EMPTY_DATA`.
+- [ ] Deployment does not delete any older snapshot folders.
 - [ ] `GET /api/health/ai/models` returns the current running model and smoke-tested available LLM models.
-- [ ] `reset_mode=all_volumes` requires `reset_confirm=RESET_ALL_VOLUMES` and fails safely without it.
-- [ ] The backup job runs and produces valid `.sql.gz` files.

@@ -7,6 +7,7 @@
 ai-coding-tutor-*.json
 .secrets/
 PRIVATE_DEPLOYMENT_RUNBOOK.md
+scripts/ops/pull_backup_to_local.sh
 
 cookies.txt
 

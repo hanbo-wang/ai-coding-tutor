@@ -11,16 +11,17 @@ on:
         description: "Remote directory containing .env and compose deployment files"
         required: true
         default: "/opt/ai-coding-tutor"
-      reset_mode:
-        description: "Data reset mode (destructive options require confirmation)"
+      deployment_data_mode:
+        description: "How deployment should handle runtime data after creating a snapshot"
         required: true
         type: choice
-        default: "none"
+        default: "keep_existing_data"
         options:
-          - none
-          - all_volumes
-      reset_confirm:
-        description: "Required only for reset_mode=all_volumes: type RESET_ALL_VOLUMES"
+          - keep_existing_data
+          - restore_from_deployment_backup
+          - start_with_empty_data
+      empty_data_confirm:
+        description: "Required only for deployment_data_mode=start_with_empty_data: type START_WITH_EMPTY_DATA"
         required: false
         default: ""
 
@@ -30,7 +31,7 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -66,13 +67,24 @@ jobs:
           target: "${{ inputs.deploy_path }}"
           overwrite: true
 
+      - name: Upload backup helper script
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || '22' }}
+          source: "scripts/ops/create_backup_snapshot.sh"
+          target: "${{ inputs.deploy_path }}"
+          overwrite: true
+
       - name: Deploy selected image tag
         uses: appleboy/ssh-action@v1.2.0
         env:
           DEPLOY_PATH: ${{ inputs.deploy_path }}
           IMAGE_TAG: ${{ inputs.image_tag }}
-          RESET_MODE: ${{ inputs.reset_mode }}
-          RESET_CONFIRM: ${{ inputs.reset_confirm }}
+          DEPLOYMENT_DATA_MODE: ${{ inputs.deployment_data_mode }}
+          EMPTY_DATA_CONFIRM: ${{ inputs.empty_data_confirm }}
           GHCR_OWNER: ${{ steps.vars.outputs.owner_lc }}
           GHCR_IMAGE_PREFIX: ${{ steps.vars.outputs.repo_lc }}
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
@@ -82,7 +94,7 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT || '22' }}
-          envs: DEPLOY_PATH,IMAGE_TAG,RESET_MODE,RESET_CONFIRM,GHCR_OWNER,GHCR_IMAGE_PREFIX,GHCR_USERNAME,GHCR_TOKEN
+          envs: DEPLOY_PATH,IMAGE_TAG,DEPLOYMENT_DATA_MODE,EMPTY_DATA_CONFIRM,GHCR_OWNER,GHCR_IMAGE_PREFIX,GHCR_USERNAME,GHCR_TOKEN
           script: |
             set -euo pipefail
             cd "$DEPLOY_PATH"
@@ -91,6 +103,22 @@ jobs:
               echo "Missing $DEPLOY_PATH/.env (use .github/workflows/templates/env.prod.example as your template)"
               exit 1
             fi
+            if [ ! -f docker-compose.prod.yml ]; then
+              echo "Missing $DEPLOY_PATH/docker-compose.prod.yml"
+              exit 1
+            fi
+
+            BACKUP_SCRIPT_PATH="$DEPLOY_PATH/scripts/ops/create_backup_snapshot.sh"
+            BACKUP_ROOT="/opt/backups/ai-coding-tutor/daily"
+            if [ ! -f "$BACKUP_SCRIPT_PATH" ] && [ -f "$DEPLOY_PATH/create_backup_snapshot.sh" ]; then
+              mkdir -p "$DEPLOY_PATH/scripts/ops"
+              mv "$DEPLOY_PATH/create_backup_snapshot.sh" "$BACKUP_SCRIPT_PATH"
+            fi
+            if [ ! -f "$BACKUP_SCRIPT_PATH" ]; then
+              echo "Missing backup helper script: $BACKUP_SCRIPT_PATH"
+              exit 1
+            fi
+            chmod +x "$BACKUP_SCRIPT_PATH"
 
             get_env_value() {
               __env_key="$1"
@@ -120,11 +148,36 @@ jobs:
             WEBSITE_DOMAIN_VALUE="$(get_env_value WEBSITE_DOMAIN || true)"
             CERTBOT_EMAIL_VALUE="$(get_env_value CERTBOT_EMAIL || true)"
             ADMIN_EMAIL_VALUE="$(get_env_value ADMIN_EMAIL || true)"
+            POSTGRES_USER_VALUE="$(get_env_value POSTGRES_USER || true)"
+            POSTGRES_DB_VALUE="$(get_env_value POSTGRES_DB || true)"
 
             WEBSITE_DOMAIN_VALUE="$(trim_env_value "${WEBSITE_DOMAIN_VALUE:-}")"
+            CERTBOT_EMAIL_VALUE="$(trim_env_value "${CERTBOT_EMAIL_VALUE:-}")"
+            ADMIN_EMAIL_VALUE="$(trim_env_value "${ADMIN_EMAIL_VALUE:-}")"
+            POSTGRES_USER_VALUE="$(trim_env_value "${POSTGRES_USER_VALUE:-}")"
+            POSTGRES_DB_VALUE="$(trim_env_value "${POSTGRES_DB_VALUE:-}")"
+
             if [ -z "${WEBSITE_DOMAIN_VALUE:-}" ]; then
               echo "Missing WEBSITE_DOMAIN in $DEPLOY_PATH/.env"
               echo "Use .github/workflows/templates/env.prod.example as the template."
+              exit 1
+            fi
+            if [ -z "${POSTGRES_USER_VALUE:-}" ] || [ -z "${POSTGRES_DB_VALUE:-}" ]; then
+              echo "Missing POSTGRES_USER or POSTGRES_DB in $DEPLOY_PATH/.env"
+              exit 1
+            fi
+
+            case "${DEPLOYMENT_DATA_MODE:-}" in
+              keep_existing_data|restore_from_deployment_backup|start_with_empty_data)
+                ;;
+              *)
+                echo "Unsupported deployment_data_mode: ${DEPLOYMENT_DATA_MODE:-}"
+                exit 1
+                ;;
+            esac
+
+            if [ "${DEPLOYMENT_DATA_MODE}" = "start_with_empty_data" ] && [ "${EMPTY_DATA_CONFIRM:-}" != "START_WITH_EMPTY_DATA" ]; then
+              echo "Refusing empty-data deployment because empty_data_confirm did not match START_WITH_EMPTY_DATA."
               exit 1
             fi
 
@@ -137,8 +190,12 @@ jobs:
             fi
             CERTBOT_EMAIL_VALUE="$(trim_env_value "${CERTBOT_EMAIL_VALUE:-}")"
 
+            compose() {
+              docker compose -f docker-compose.prod.yml "$@"
+            }
+
             ensure_tls_certificate() {
-              if docker compose -f docker-compose.prod.yml --profile ops run --rm --no-deps --entrypoint sh certbot -lc \
+              if compose --profile ops run --rm --no-deps --entrypoint sh certbot -lc \
                 "test -f \"$TLS_CERT_PATH_VALUE\" && test -f \"$TLS_KEY_PATH_VALUE\""; then
                 echo "TLS certificate files already exist: $TLS_CERT_PATH_VALUE and $TLS_KEY_PATH_VALUE"
                 return 0
@@ -151,12 +208,12 @@ jobs:
               fi
 
               echo "TLS certificate files are missing. Issuing a new Let's Encrypt certificate for ${SERVER_NAME_VALUE}..."
-              docker compose -f docker-compose.prod.yml stop frontend >/dev/null 2>&1 || true
-              docker compose -f docker-compose.prod.yml --profile ops run --rm --no-deps -p 80:80 --entrypoint certbot certbot \
+              compose stop frontend >/dev/null 2>&1 || true
+              compose --profile ops run --rm --no-deps -p 80:80 --entrypoint certbot certbot \
                 certonly --standalone --non-interactive --agree-tos --no-eff-email \
                 -d "${SERVER_NAME_VALUE}" -m "${CERTBOT_EMAIL_VALUE}"
 
-              if ! docker compose -f docker-compose.prod.yml --profile ops run --rm --no-deps --entrypoint sh certbot -lc \
+              if ! compose --profile ops run --rm --no-deps --entrypoint sh certbot -lc \
                 "test -f \"$TLS_CERT_PATH_VALUE\" && test -f \"$TLS_KEY_PATH_VALUE\""; then
                 echo "Certbot finished, but TLS certificate files are still missing."
                 echo "Expected files: $TLS_CERT_PATH_VALUE and $TLS_KEY_PATH_VALUE"
@@ -164,6 +221,38 @@ jobs:
               fi
 
               echo "TLS certificate issued successfully for ${SERVER_NAME_VALUE}"
+            }
+
+            clear_database() {
+              compose exec -T db sh -lc "psql -v ON_ERROR_STOP=1 -U \"$POSTGRES_USER_VALUE\" -d \"$POSTGRES_DB_VALUE\" \
+                -c \"DROP SCHEMA IF EXISTS public CASCADE;\" \
+                -c \"CREATE SCHEMA public;\" \
+                -c \"GRANT ALL ON SCHEMA public TO PUBLIC;\""
+            }
+
+            clear_file_data() {
+              compose run --rm --no-deps --entrypoint sh backend -lc "set -eu; \
+                mkdir -p /data/uploads /data/notebooks; \
+                find /data/uploads -mindepth 1 -delete; \
+                find /data/notebooks -mindepth 1 -delete"
+            }
+
+            restore_from_snapshot() {
+              snapshot_dir="$1"
+
+              if [ ! -f "$snapshot_dir/db.dump.zst" ] || [ ! -f "$snapshot_dir/uploads.tar.zst" ] || [ ! -f "$snapshot_dir/notebooks.tar.zst" ]; then
+                echo "Snapshot is incomplete: $snapshot_dir"
+                exit 1
+              fi
+
+              zstd -dc "$snapshot_dir/db.dump.zst" \
+                | compose exec -T db sh -lc "pg_restore -U \"$POSTGRES_USER_VALUE\" -d \"$POSTGRES_DB_VALUE\" --clean --if-exists --no-owner --no-privileges"
+
+              zstd -dc "$snapshot_dir/uploads.tar.zst" \
+                | compose run --rm --no-deps --entrypoint sh backend -lc "set -eu; mkdir -p /data/uploads; tar -C /data/uploads -xf -"
+
+              zstd -dc "$snapshot_dir/notebooks.tar.zst" \
+                | compose run --rm --no-deps --entrypoint sh backend -lc "set -eu; mkdir -p /data/notebooks; tar -C /data/notebooks -xf -"
             }
 
             if [ -n "${GHCR_TOKEN:-}" ] && [ -n "${GHCR_USERNAME:-}" ]; then
@@ -174,40 +263,53 @@ jobs:
             export GHCR_IMAGE_PREFIX
             export IMAGE_TAG
 
-            docker compose -f docker-compose.prod.yml config >/dev/null
+            compose config >/dev/null
+            compose pull
 
-            case "${RESET_MODE:-none}" in
-              none)
+            compose up -d db
+            compose stop frontend backend >/dev/null 2>&1 || true
+
+            SNAPSHOT_OUTPUT="$("$BACKUP_SCRIPT_PATH" --deploy-path "$DEPLOY_PATH" --backup-root "$BACKUP_ROOT" --source deployment --deployment-data-mode "$DEPLOYMENT_DATA_MODE")"
+            echo "$SNAPSHOT_OUTPUT"
+            SNAPSHOT_DIR="$(printf '%s\n' "$SNAPSHOT_OUTPUT" | awk -F= '$1=="SNAPSHOT_DIR" {print $2}' | tail -n 1)"
+            if [ -z "$SNAPSHOT_DIR" ] || [ ! -d "$SNAPSHOT_DIR" ]; then
+              echo "Failed to create deployment snapshot."
+              exit 1
+            fi
+
+            case "$DEPLOYMENT_DATA_MODE" in
+              keep_existing_data)
+                echo "Deployment data mode: keep_existing_data"
                 ;;
-              all_volumes)
-                echo "WARNING: reset_mode=all_volumes will delete all Docker Compose volumes for this stack (PostgreSQL, uploads, notebooks, certbot)."
-                echo "WARNING: This is destructive. Take a backup before continuing."
-                if [ "${RESET_CONFIRM:-}" != "RESET_ALL_VOLUMES" ]; then
-                  echo "Refusing destructive reset because reset_confirm did not match RESET_ALL_VOLUMES."
-                  exit 1
-                fi
-                docker compose -f docker-compose.prod.yml down -v
+              restore_from_deployment_backup)
+                echo "Deployment data mode: restore_from_deployment_backup"
+                clear_database
+                clear_file_data
+                restore_from_snapshot "$SNAPSHOT_DIR"
                 ;;
-              *)
-                echo "Unsupported reset_mode: ${RESET_MODE}"
-                exit 1
+              start_with_empty_data)
+                echo "Deployment data mode: start_with_empty_data"
+                clear_database
+                clear_file_data
                 ;;
             esac
 
-            docker compose -f docker-compose.prod.yml pull
-            docker compose -f docker-compose.prod.yml up -d db backend
+            compose up -d db backend
             ensure_tls_certificate
-            docker compose -f docker-compose.prod.yml up -d frontend
-            docker compose -f docker-compose.prod.yml --profile ops up -d certbot
-            docker compose -f docker-compose.prod.yml ps
+            compose up -d frontend
+            compose --profile ops up -d certbot
+            compose ps
 
-            if ! docker compose -f docker-compose.prod.yml exec -T backend python - <<'PY'
+            if ! compose exec -T backend python - <<'PY'
             import json
             import sys
             import urllib.request
+
+
             def fetch(url: str):
                 with urllib.request.urlopen(url, timeout=15) as response:
                     return json.loads(response.read().decode("utf-8"))
+
 
             health = fetch("http://127.0.0.1:8000/health")
             print({"health": health})
@@ -220,6 +322,9 @@ jobs:
             PY
             then
               echo "Post-deploy health check failed. Printing recent backend logs..."
-              docker compose -f docker-compose.prod.yml logs --tail=200 backend || true
+              compose logs --tail=200 backend || true
               exit 1
             fi
+
+            echo "Deployment completed with data mode: $DEPLOYMENT_DATA_MODE"
+            echo "Deployment snapshot: $SNAPSHOT_DIR"

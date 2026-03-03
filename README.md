@@ -9,7 +9,7 @@
   A web app that teaches students to code through guided problem-solving. The AI tutor never gives answers straight away. It uses graduated hints, starting with Socratic questions and escalating to full solutions only when needed. Communication adapts to the student's programming and maths ability.
 </p>
 
-<p align="center"><strong>Website:</strong> <a href="https://ai-coding-tutor.duckdns.org">https://ai-coding-tutor.duckdns.org</a></p>
+<p align="center"><strong>Website:</strong> <a href="https://guidedcursor.studio">https://guidedcursor.studio</a></p>
 
 ---
 
@@ -129,6 +129,8 @@ Production runs on Docker Compose + Nginx reverse proxy + HTTPS, deployed via Gi
 
 - **Images**: pushed to GHCR on every `main` push, tagged `main` and `sha-<gitsha>`.
 - **Deploy**: run the manual `Deploy Production` workflow in GitHub Actions with an image tag.
+- **Data handling during deploy**: every deploy creates a snapshot in `/opt/backups/ai-coding-tutor/daily/YYYY-MM-DD/HHMMSS/` before applying `deployment_data_mode`.
+- **Local backup pull**: run `bash scripts/ops/pull_backup_to_local.sh` manually when you want to copy snapshots to your local machine.
 - **Rollback**: re-run the deploy workflow with an earlier image tag.
 - **Config**: create `.env` from `.github/workflows/templates/env.prod.example`. Set API keys for desired providers.
 - **Health**: `/health` (browser page showing the current running model and smoke-tested LLM availability; non-HTML probes still get liveness JSON), `/api/health/ai` for LLM provider verification, `/api/health/ai/models` for model-level smoke checks plus the current running model snapshot.
