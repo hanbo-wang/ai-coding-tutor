@@ -75,7 +75,7 @@ A `JupyterFrontEndPlugin` with `autoStart: true`, packaged as a labextension.
 
 ### 3.3 Kernel and Package Defaults
 
-Kernel display name: `Numerical Computing`. Preloaded Pyodide packages: numpy, scipy, pandas, matplotlib, sympy.
+Kernel display name: `Numerical Computing`. Preloaded Pyodide packages: numpy, scipy, pandas, matplotlib, sympy, networkx.
 
 ### 3.4 Single-Notebook Workspace Isolation
 

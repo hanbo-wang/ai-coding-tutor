@@ -56,7 +56,8 @@ cat > "$TMP_LITE_DIR/jupyter-lite.json" <<'JSON'
             "scipy",
             "pandas",
             "matplotlib",
-            "sympy"
+            "sympy",
+            "networkx"
           ]
         }
       }
@@ -88,7 +89,8 @@ import json
 from pathlib import Path
 
 KERNEL_NAME = "Numerical Computing"
-PACKAGES = ["numpy", "scipy", "pandas", "matplotlib", "sympy"]
+# Keep the legacy preload packages and include networkx for PageRank notebooks.
+PACKAGES = ["numpy", "scipy", "pandas", "matplotlib", "sympy", "networkx"]
 BRIDGE_EXTENSION_NAME = "jupyterlite-bridge"
 DISABLED_EXTENSIONS = [
     "@jupyterlab/statusbar-extension",
