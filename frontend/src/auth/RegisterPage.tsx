@@ -3,9 +3,24 @@ import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "./useAuth";
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const UCL_DOMAIN_PATTERN = /@ucl\.ac\.uk$/i;
+const UCL_STUDENT_EMAIL_PATTERN = /^[a-z0-9]+(?:\.[a-z0-9]+)*\.[0-9]+@ucl\.ac\.uk$/;
 
 function isValidEmail(value: string): boolean {
   return EMAIL_PATTERN.test(value);
+}
+
+function getRegistrationEmailError(value: string): string | null {
+  if (!UCL_STUDENT_EMAIL_PATTERN.test(value.toLowerCase())) {
+    if (UCL_DOMAIN_PATTERN.test(value)) {
+      return null;
+    }
+    return (
+      "Registration is limited to UCL student emails in the format " +
+      "name.name.<digits>@ucl.ac.uk. Configured admin emails are exempt."
+    );
+  }
+  return null;
 }
 
 export function RegisterPage() {
@@ -18,6 +33,7 @@ export function RegisterPage() {
   const [programmingLevel, setProgrammingLevel] = useState(3);
   const [mathsLevel, setMathsLevel] = useState(3);
   const [error, setError] = useState("");
+  const [emailHint, setEmailHint] = useState("");
   const [isSendingCode, setIsSendingCode] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
@@ -37,6 +53,7 @@ export function RegisterPage() {
   const handleSendCode = async () => {
     setError("");
     setCodeMessage("");
+    setEmailHint("");
     const normalisedEmail = email.trim();
     const normalisedUsername = username.trim();
 
@@ -47,6 +64,17 @@ export function RegisterPage() {
     if (!isValidEmail(normalisedEmail)) {
       setError("Please enter a valid email address.");
       return;
+    }
+    const registrationEmailError = getRegistrationEmailError(normalisedEmail);
+    if (registrationEmailError) {
+      setError(registrationEmailError);
+      return;
+    }
+    if (!UCL_STUDENT_EMAIL_PATTERN.test(normalisedEmail.toLowerCase())) {
+      setEmailHint(
+        "This address is not in the student-format pattern. " +
+          "If it is an admin email, the server may still allow registration."
+      );
     }
     if (!normalisedUsername) {
       setError("Please enter your username first");
@@ -73,6 +101,7 @@ export function RegisterPage() {
     e.preventDefault();
     setError("");
     setCodeMessage("");
+    setEmailHint("");
     const normalisedEmail = email.trim();
     const normalisedUsername = username.trim();
 
@@ -83,6 +112,17 @@ export function RegisterPage() {
     if (!isValidEmail(normalisedEmail)) {
       setError("Please enter a valid email address.");
       return;
+    }
+    const registrationEmailError = getRegistrationEmailError(normalisedEmail);
+    if (registrationEmailError) {
+      setError(registrationEmailError);
+      return;
+    }
+    if (!UCL_STUDENT_EMAIL_PATTERN.test(normalisedEmail.toLowerCase())) {
+      setEmailHint(
+        "This address is not in the student-format pattern. " +
+          "If it is an admin email, the server may still allow registration."
+      );
     }
     if (!normalisedUsername) {
       setError("Please enter a username");
@@ -171,10 +211,18 @@ export function RegisterPage() {
                 type="email"
                 id="email"
                 value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                onChange={(e) => {
+                  setEmail(e.target.value);
+                  setEmailHint("");
+                }}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-accent"
                 required
               />
+              {emailHint && (
+                <p className="mt-2 rounded border border-blue-300 bg-blue-50 px-2 py-1 text-xs text-blue-700">
+                  {emailHint}
+                </p>
+              )}
             </div>
 
             {codeMessage && (

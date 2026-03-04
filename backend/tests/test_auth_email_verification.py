@@ -29,6 +29,7 @@ async def auth_email_client(tmp_path, monkeypatch: pytest.MonkeyPatch):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     monkeypatch.setattr(settings, "email_provider", "noop")
+    monkeypatch.setattr(settings, "admin_email", "")
     monkeypatch.setattr(settings, "email_code_max_attempts", 5)
     monkeypatch.setattr(
         "app.services.email_verification_service._generate_code",
@@ -97,14 +98,14 @@ async def test_register_send_code_success_and_duplicate_email_rejected(auth_emai
 
     send_code = await client.post(
         "/api/auth/register/send-code",
-        json={"email": "new@example.com", "username": "new_user"},
+        json={"email": "new.user.24@ucl.ac.uk", "username": "new_user"},
     )
     assert send_code.status_code == 200
 
     register = await client.post(
         "/api/auth/register",
         json={
-            "email": "new@example.com",
+            "email": "new.user.24@ucl.ac.uk",
             "username": "new_user",
             "password": "StrongPass123",
             "verification_code": "123456",
@@ -116,10 +117,74 @@ async def test_register_send_code_success_and_duplicate_email_rejected(auth_emai
 
     duplicate = await client.post(
         "/api/auth/register/send-code",
-        json={"email": "new@example.com", "username": "another_user"},
+        json={"email": "new.user.24@ucl.ac.uk", "username": "another_user"},
     )
     assert duplicate.status_code == 400
     assert duplicate.json()["detail"] == "Email already registered"
+
+
+@pytest.mark.asyncio
+async def test_register_send_code_rejects_non_ucl_domain_email(auth_email_client) -> None:
+    client, _, _ = auth_email_client
+
+    response = await client.post(
+        "/api/auth/register/send-code",
+        json={"email": "learner.24@example.com", "username": "non_ucl"},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"].startswith(
+        "Registration is limited to UCL student emails"
+    )
+
+
+@pytest.mark.asyncio
+async def test_register_send_code_rejects_ucl_email_without_numeric_suffix(
+    auth_email_client,
+) -> None:
+    client, _, _ = auth_email_client
+
+    response = await client.post(
+        "/api/auth/register/send-code",
+        json={"email": "v.pedrosa@ucl.ac.uk", "username": "ucl_staff"},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"].startswith(
+        "Registration is limited to UCL student emails"
+    )
+
+
+@pytest.mark.asyncio
+async def test_register_allows_admin_email_exemption(
+    auth_email_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, session_factory, _ = auth_email_client
+    monkeypatch.setattr(settings, "admin_email", "v.pedrosa@ucl.ac.uk")
+
+    send_code = await client.post(
+        "/api/auth/register/send-code",
+        json={"email": "v.pedrosa@ucl.ac.uk", "username": "admin_user"},
+    )
+    assert send_code.status_code == 200
+
+    register = await client.post(
+        "/api/auth/register",
+        json={
+            "email": "v.pedrosa@ucl.ac.uk",
+            "username": "admin_user",
+            "password": "StrongPass123",
+            "verification_code": "123456",
+            "programming_level": 3,
+            "maths_level": 3,
+        },
+    )
+    assert register.status_code == 200
+
+    async with session_factory() as db:
+        user = (
+            await db.execute(select(User).where(User.email == "v.pedrosa@ucl.ac.uk"))
+        ).scalar_one()
+        assert user.is_admin is True
 
 
 @pytest.mark.asyncio
@@ -135,7 +200,7 @@ async def test_register_send_code_rejects_duplicate_username(
 
     send_code = await client.post(
         "/api/auth/register/send-code",
-        json={"email": "new@example.com", "username": "test_user"},
+        json={"email": "candidate.user.24@ucl.ac.uk", "username": "test_user"},
     )
     assert send_code.status_code == 400
     assert send_code.json()["detail"] == "Username already taken"
@@ -144,7 +209,7 @@ async def test_register_send_code_rejects_duplicate_username(
         token = (
             await db.execute(
                 select(EmailVerificationToken).where(
-                    EmailVerificationToken.email == "new@example.com",
+                    EmailVerificationToken.email == "candidate.user.24@ucl.ac.uk",
                     EmailVerificationToken.purpose == "register",
                 )
             )
@@ -163,14 +228,14 @@ async def test_register_rejects_duplicate_username_after_code_issue(auth_email_c
 
     send_code = await client.post(
         "/api/auth/register/send-code",
-        json={"email": "new@example.com", "username": "new_name"},
+        json={"email": "retry.user.24@ucl.ac.uk", "username": "new_name"},
     )
     assert send_code.status_code == 200
 
     duplicate_username = await client.post(
         "/api/auth/register",
         json={
-            "email": "new@example.com",
+            "email": "retry.user.24@ucl.ac.uk",
             "username": "taken_name",
             "password": "StrongPass123",
             "verification_code": "123456",
@@ -184,7 +249,7 @@ async def test_register_rejects_duplicate_username_after_code_issue(auth_email_c
     retry = await client.post(
         "/api/auth/register",
         json={
-            "email": "new@example.com",
+            "email": "retry.user.24@ucl.ac.uk",
             "username": "new_name",
             "password": "StrongPass123",
             "verification_code": "123456",
@@ -201,14 +266,14 @@ async def test_register_rejects_invalid_code(auth_email_client) -> None:
 
     send_code = await client.post(
         "/api/auth/register/send-code",
-        json={"email": "wrong@example.com", "username": "wrong_user"},
+        json={"email": "wrong.user.24@ucl.ac.uk", "username": "wrong_user"},
     )
     assert send_code.status_code == 200
 
     register = await client.post(
         "/api/auth/register",
         json={
-            "email": "wrong@example.com",
+            "email": "wrong.user.24@ucl.ac.uk",
             "username": "wrong_user",
             "password": "StrongPass123",
             "verification_code": "999999",
@@ -226,7 +291,7 @@ async def test_register_rejects_expired_code(auth_email_client) -> None:
 
     send_code = await client.post(
         "/api/auth/register/send-code",
-        json={"email": "expired@example.com", "username": "expired_user"},
+        json={"email": "expired.user.24@ucl.ac.uk", "username": "expired_user"},
     )
     assert send_code.status_code == 200
 
@@ -234,7 +299,7 @@ async def test_register_rejects_expired_code(auth_email_client) -> None:
         token = (
             await db.execute(
                 select(EmailVerificationToken).where(
-                    EmailVerificationToken.email == "expired@example.com"
+                    EmailVerificationToken.email == "expired.user.24@ucl.ac.uk"
                 )
             )
         ).scalar_one()
@@ -244,7 +309,7 @@ async def test_register_rejects_expired_code(auth_email_client) -> None:
     register = await client.post(
         "/api/auth/register",
         json={
-            "email": "expired@example.com",
+            "email": "expired.user.24@ucl.ac.uk",
             "username": "expired_user",
             "password": "StrongPass123",
             "verification_code": "123456",
@@ -262,7 +327,7 @@ async def test_register_rejects_after_max_failed_attempts(auth_email_client) -> 
 
     send_code = await client.post(
         "/api/auth/register/send-code",
-        json={"email": "attempts@example.com", "username": "attempts_user"},
+        json={"email": "attempts.user.24@ucl.ac.uk", "username": "attempts_user"},
     )
     assert send_code.status_code == 200
 
@@ -270,7 +335,7 @@ async def test_register_rejects_after_max_failed_attempts(auth_email_client) -> 
         failed = await client.post(
             "/api/auth/register",
             json={
-                "email": "attempts@example.com",
+                "email": "attempts.user.24@ucl.ac.uk",
                 "username": "attempts_user",
                 "password": "StrongPass123",
                 "verification_code": "999999",
@@ -283,7 +348,7 @@ async def test_register_rejects_after_max_failed_attempts(auth_email_client) -> 
     final_try = await client.post(
         "/api/auth/register",
         json={
-            "email": "attempts@example.com",
+            "email": "attempts.user.24@ucl.ac.uk",
             "username": "attempts_user",
             "password": "StrongPass123",
             "verification_code": "123456",

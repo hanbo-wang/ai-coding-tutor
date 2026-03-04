@@ -80,6 +80,8 @@ Runs on push to `main`. Two jobs:
 1. **Verify:** seeds `.env` from `env.dev.example`, runs backend tests with `PYTHONPATH` set (wrapped in a 20-minute shell timeout and log tail on failure), builds JupyterLite assets, and verifies the frontend production build.
 2. **Build and push:** builds backend and frontend production images and pushes to GHCR with tags `main` and `sha-<gitsha>`.
 
+Feature-branch variant: `ci-build-images-feature-ucl-email-policy.yml` runs the same verify/build flow on pushes to `feature/ucl-email-policy`, publishing branch-scoped tags (`feature-ucl-email-policy` and `feature-ucl-email-policy-sha-<gitsha>`) without changing production deployment behaviour.
+
 ### 5.2 Manual Production Deploy (`deploy-prod.yml`)
 
 Manually triggered workflow. It connects via SSH, uploads `docker-compose.prod.yml` and `scripts/ops/create_backup_snapshot.sh`, derives domain and TLS settings from `WEBSITE_DOMAIN` plus optional `WEBSITE_ALT_DOMAINS`, validates compose config, creates a deployment snapshot, applies the selected data handling mode, then starts services. It also supports a force-reissue mode for certificate repair and lineage cleanup.
