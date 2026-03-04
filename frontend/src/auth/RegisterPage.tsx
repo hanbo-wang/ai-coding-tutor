@@ -38,6 +38,7 @@ export function RegisterPage() {
     setError("");
     setCodeMessage("");
     const normalisedEmail = email.trim();
+    const normalisedUsername = username.trim();
 
     if (!normalisedEmail) {
       setError("Please enter your email first");
@@ -47,10 +48,18 @@ export function RegisterPage() {
       setError("Please enter a valid email address.");
       return;
     }
+    if (!normalisedUsername) {
+      setError("Please enter your username first");
+      return;
+    }
+    if (normalisedUsername.length < 3 || normalisedUsername.length > 50) {
+      setError("Username must be between 3 and 50 characters.");
+      return;
+    }
 
     setIsSendingCode(true);
     try {
-      await sendRegisterCode(normalisedEmail);
+      await sendRegisterCode(normalisedEmail, normalisedUsername);
       setCodeMessage("Verification code sent. Please check your inbox.");
       setResendCooldown(60);
     } catch (err) {
@@ -65,6 +74,7 @@ export function RegisterPage() {
     setError("");
     setCodeMessage("");
     const normalisedEmail = email.trim();
+    const normalisedUsername = username.trim();
 
     if (!normalisedEmail) {
       setError("Please enter your email first");
@@ -72,6 +82,14 @@ export function RegisterPage() {
     }
     if (!isValidEmail(normalisedEmail)) {
       setError("Please enter a valid email address.");
+      return;
+    }
+    if (!normalisedUsername) {
+      setError("Please enter a username");
+      return;
+    }
+    if (normalisedUsername.length < 3 || normalisedUsername.length > 50) {
+      setError("Username must be between 3 and 50 characters.");
       return;
     }
 
@@ -94,7 +112,7 @@ export function RegisterPage() {
     try {
       await register({
         email: normalisedEmail,
-        username,
+        username: normalisedUsername,
         password,
         verification_code: verificationCode,
         programming_level: programmingLevel,

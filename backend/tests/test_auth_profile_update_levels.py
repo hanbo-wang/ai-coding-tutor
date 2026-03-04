@@ -30,7 +30,10 @@ async def _register_user(
     password: str = "StrongPass123",
     verification_code: str = "123456",
 ) -> dict:
-    send_code = await client.post("/api/auth/register/send-code", json={"email": email})
+    send_code = await client.post(
+        "/api/auth/register/send-code",
+        json={"email": email, "username": username},
+    )
     assert send_code.status_code == 200
 
     response = await client.post(
@@ -187,3 +190,28 @@ async def test_profile_update_username_only_keeps_effective_levels(
     assert db_user.username == "renamed_user"
     assert db_user.effective_programming_level == pytest.approx(2.6)
     assert db_user.effective_maths_level == pytest.approx(3.4)
+
+
+@pytest.mark.asyncio
+async def test_profile_update_rejects_duplicate_username(auth_profile_client) -> None:
+    """Changing username to an existing value should return a clear client error."""
+    client, _ = auth_profile_client
+    register = await _register_user(
+        client,
+        email="rename-source@example.com",
+        username="rename_source",
+    )
+    await _register_user(
+        client,
+        email="rename-target@example.com",
+        username="rename_target",
+    )
+    headers = _auth_headers(register["access_token"])
+
+    response = await client.put(
+        "/api/auth/me",
+        headers=headers,
+        json={"username": "rename_target"},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Username already taken"

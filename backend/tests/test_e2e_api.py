@@ -32,7 +32,10 @@ async def _register_user(
     maths_level: int = 3,
     verification_code: str = "123456",
 ) -> dict:
-    send_code = await client.post("/api/auth/register/send-code", json={"email": email})
+    send_code = await client.post(
+        "/api/auth/register/send-code",
+        json={"email": email, "username": username},
+    )
     assert send_code.status_code == 200
 
     response = await client.post(

@@ -17,7 +17,8 @@ export class GlobalErrorBoundary extends Component<Props, State> {
         hasError: false,
     };
 
-    public static getDerivedStateFromError(_: Error): State {
+    public static getDerivedStateFromError(error: Error): State {
+        void error;
         return { hasError: true };
     }
 

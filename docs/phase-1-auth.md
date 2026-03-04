@@ -1,6 +1,6 @@
 # Phase 1: Project Scaffolding and User Authentication
 
-**Visible result:** A user can register with email verification, log in, reset a password either by current password (signed-in) or by email code, and manage profile details. Email is the unique login identifier and is not editable from profile updates. Username is a separate display field and can be changed.
+**Visible result:** A user can register with email verification, log in, reset a password either by current password (signed-in) or by email code, and manage profile details. Email is the unique login identifier and is not editable from profile updates. Username is a separate display field, can be changed, and must be unique.
 
 ---
 
@@ -41,7 +41,7 @@ Auth and verification-related settings include JWT keys and expiry, email provid
 |--------|------|-------|
 | `id` | UUID | Primary key |
 | `email` | VARCHAR(255) | Unique login identifier |
-| `username` | VARCHAR(50) | Display name |
+| `username` | VARCHAR(50) | Unique display name |
 | `password_hash` | VARCHAR(255) | Bcrypt hash |
 | `programming_level` | INTEGER | 1-5, default 3 |
 | `maths_level` | INTEGER | 1-5, default 3 |
@@ -63,6 +63,7 @@ Auth and verification-related settings include JWT keys and expiry, email provid
 
 **`backend/app/schemas/user.py`** includes:
 
+- `RegisterSendCodeRequest` to pre-check email and username before sending a registration code.
 - `RegisterWithCode` for registration with `verification_code`.
 - `SendCodeRequest` and `PasswordResetConfirmRequest` for email-code reset.
 - `ChangePassword` for signed-in reset with current password.
@@ -97,7 +98,7 @@ Auth and verification-related settings include JWT keys and expiry, email provid
 
 | Endpoint | Method | Behaviour |
 |----------|--------|-----------|
-| `/api/auth/register/send-code` | POST | Send registration code; rejects already-registered email |
+| `/api/auth/register/send-code` | POST | Send registration code; rejects already-registered email or existing username |
 | `/api/auth/register` | POST | Verify code, create user, return token, set refresh cookie |
 | `/api/auth/login` | POST | Validate credentials and return token |
 | `/api/auth/refresh` | POST | Rotate refresh token and return new access token |

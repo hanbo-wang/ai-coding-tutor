@@ -16,6 +16,11 @@ class RegisterWithCode(UserCreate):
     verification_code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
 
 
+class RegisterSendCodeRequest(BaseModel):
+    email: EmailStr
+    username: str = Field(min_length=3, max_length=50)
+
+
 class UserLogin(BaseModel):
     email: EmailStr
     password: str

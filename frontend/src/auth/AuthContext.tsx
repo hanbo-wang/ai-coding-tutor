@@ -18,7 +18,7 @@ interface AuthContextType {
   user: User | null;
   isLoading: boolean;
   login: (credentials: LoginCredentials) => Promise<void>;
-  sendRegisterCode: (email: string) => Promise<void>;
+  sendRegisterCode: (email: string, username: string) => Promise<void>;
   register: (data: RegisterData) => Promise<void>;
   logout: () => Promise<void>;
   updateProfile: (data: ProfileUpdateData) => Promise<void>;
@@ -67,10 +67,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(userProfile);
   };
 
-  const sendRegisterCode = async (email: string) => {
+  const sendRegisterCode = async (email: string, username: string) => {
     await apiFetch<{ message: string }>("/api/auth/register/send-code", {
       method: "POST",
-      body: JSON.stringify({ email }),
+      body: JSON.stringify({ email, username }),
     });
   };
 

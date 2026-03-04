@@ -5,6 +5,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -13,6 +14,7 @@ from app.models.user import User
 from app.schemas.user import (
     ChangePassword,
     PasswordResetConfirmRequest,
+    RegisterSendCodeRequest,
     RegisterWithCode,
     SendCodeRequest,
     TokenResponse,
@@ -53,21 +55,46 @@ def set_refresh_cookie(response: Response, refresh_token: str) -> None:
     )
 
 
+def _integrity_error_detail(exc: IntegrityError) -> str | None:
+    """Map common user integrity violations to client-safe messages."""
+    detail = str(getattr(exc, "orig", exc)).lower()
+    if "users.username" in detail or "ix_users_username" in detail:
+        return "Username already taken"
+    if "users.email" in detail or "ix_users_email" in detail:
+        return "Email already registered"
+    if "unique" in detail and "username" in detail:
+        return "Username already taken"
+    if "unique" in detail and "email" in detail:
+        return "Email already registered"
+    return None
+
+
 @router.post("/register/send-code")
 async def send_register_code(
-    payload: SendCodeRequest,
+    payload: RegisterSendCodeRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """Send a registration verification code by email."""
     normalised_email = payload.email.lower()
-    result = await db.execute(select(User).where(User.email == normalised_email))
-    if result.scalar_one_or_none():
+    email_result = await db.execute(
+        select(User).where(User.email == normalised_email)
+    )
+    if email_result.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered",
         )
+    username_result = await db.execute(
+        select(User).where(User.username == payload.username)
+    )
+    if username_result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username already taken",
+        )
 
     try:
+        # Only issue a code when both identity fields are still available.
         await issue_email_verification_code(
             db,
             email=normalised_email,
@@ -102,6 +129,14 @@ async def register(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered",
         )
+    username_result = await db.execute(
+        select(User).where(User.username == user_data.username)
+    )
+    if username_result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username already taken",
+        )
 
     verified = await verify_email_verification_code(
         db,
@@ -124,7 +159,17 @@ async def register(
         is_admin=normalised_email in settings.admin_email_set,
     )
     db.add(user)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        detail = _integrity_error_detail(exc)
+        if detail is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=detail,
+            ) from exc
+        raise
     await db.refresh(user)
 
     access_token = create_access_token(str(user.id))
@@ -289,6 +334,7 @@ async def update_me(
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """Update the current user's profile (username, skill levels)."""
+    username_updated = update_data.username is not None
     if update_data.username is not None:
         current_user.username = update_data.username
 
@@ -299,7 +345,17 @@ async def update_me(
         current_user.maths_level = update_data.maths_level
         current_user.effective_maths_level = float(update_data.maths_level)
 
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        detail = _integrity_error_detail(exc)
+        if username_updated and detail == "Username already taken":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=detail,
+            ) from exc
+        raise
     await db.refresh(current_user)
     return current_user
 
