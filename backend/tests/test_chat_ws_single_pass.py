@@ -121,6 +121,31 @@ class _PlainErrorLLM(LLMProvider):
         return max(1, len(text.split()))
 
 
+class _SinglePassThenEmergencyFallbackLLM(LLMProvider):
+    """Fail four recovery replies, then succeed on the emergency fallback reply."""
+
+    def __init__(self, *, provider_id: str, model_id: str) -> None:
+        super().__init__()
+        self.provider_id = provider_id
+        self.model_id = model_id
+        self.call_count = 0
+
+    async def generate_stream(self, system_prompt, messages, max_tokens=2048):
+        self.call_count += 1
+        self.last_usage = LLMUsage(input_tokens=8, output_tokens=4)
+        if self.call_count == 1:
+            yield "No"
+            yield " header"
+            return
+        if 2 <= self.call_count <= 5:
+            raise LLMError("401 unauthorized")
+        yield "Fallback"
+        yield " answer"
+
+    def count_tokens(self, text: str) -> int:
+        return max(1, len(text.split()))
+
+
 class _FakePedagogyEngine:
     """Small pedagogy stub for router integration tests."""
 
@@ -160,6 +185,17 @@ class _FakePedagogyEngine:
             programming_hint_level=2,
             maths_hint_level=2,
             source="two_step_recovery_route",
+        )
+
+    def build_emergency_full_hint_fallback_meta(self, student_state, fast_signals):
+        return StreamPedagogyMeta(
+            same_problem=False,
+            is_elaboration=False,
+            programming_difficulty=3,
+            maths_difficulty=3,
+            programming_hint_level=5,
+            maths_hint_level=5,
+            source="emergency_full_hint_fallback",
         )
 
     def apply_stream_meta(self, student_state, meta):
@@ -388,7 +424,7 @@ def test_ws_single_pass_emits_meta_before_token_and_strips_header(tmp_path, monk
 
 
 def test_ws_single_pass_missing_header_discards_output_and_regenerates(tmp_path, monkeypatch) -> None:
-    """Missing headers should discard the failed body and regenerate via recovery route."""
+    """Missing headers should discard output and run one recovery round."""
 
     chunks = [["Hello", " ", "world"], ["Recovered", " ", "reply"]]
     client, session_factory, engine, scheduled, _llm, _pedagogy = _setup_ws_test_env(
@@ -411,14 +447,64 @@ def test_ws_single_pass_missing_header_discards_output_and_regenerates(tmp_path,
         assert [e["content"] for e in token_events] == ["Recovered", " ", "reply"]
 
         status_events = [e for e in events if e["type"] == "status"]
-        assert [e["attempt"] for e in status_events] == [1, 2, 3]
-        assert all(e["max_attempts"] == 3 for e in status_events)
-        assert all(e["stage"] == "single_pass_header_meta" for e in status_events)
+        assert status_events == []
 
         session_event = next(e for e in events if e["type"] == "session")
         stored_messages = _run(_list_messages(session_factory, session_event["session_id"]))
         assert stored_messages[1].content == "Recovered reply"
-        assert _llm.call_count == 5
+        assert _llm.call_count == 2
+        assert len(scheduled) == 1
+    finally:
+        client.close()
+        _run(engine.dispose())
+
+
+def test_ws_single_pass_then_four_recovery_failures_uses_emergency_fallback(
+    tmp_path, monkeypatch
+) -> None:
+    """After four failed recovery rounds, the router should use emergency fallback metadata."""
+
+    llm = _SinglePassThenEmergencyFallbackLLM(
+        provider_id="openai",
+        model_id="gpt-5-mini",
+    )
+    client, session_factory, engine, scheduled, _llm, _pedagogy = _setup_ws_test_env(
+        tmp_path,
+        monkeypatch,
+        llm_override=llm,
+    )
+    monkeypatch.setattr(
+        "app.routers.chat.list_llm_fallback_targets",
+        lambda *_args, **_kwargs: [],
+    )
+
+    try:
+        with client.websocket_connect("/ws/chat?token=test") as ws:
+            ws.send_text(json.dumps({"content": "hello"}))
+            events = _collect_until_done(ws)
+
+        status_events = [e for e in events if e["type"] == "status"]
+        reconnect_events = [
+            e
+            for e in status_events
+            if e["stage"] == "two_step_recovery_round_reconnect"
+        ]
+        assert [e["attempt"] for e in reconnect_events] == [1, 2, 3]
+        assert all(e["max_attempts"] == 3 for e in reconnect_events)
+        assert len(status_events) == len(reconnect_events)
+
+        meta_events = [e for e in events if e["type"] == "meta"]
+        assert [e["source"] for e in meta_events[:-1]] == ["two_step_recovery_route"] * 4
+        assert meta_events[-1]["source"] == "emergency_full_hint_fallback"
+        assert "".join(e["content"] for e in events if e["type"] == "token") == "Fallback answer"
+        done_event = next(e for e in events if e["type"] == "done")
+        assert done_event["programming_hint_level"] == 5
+        assert done_event["maths_hint_level"] == 5
+        assert llm.call_count == 6
+
+        session_event = next(e for e in events if e["type"] == "session")
+        stored_messages = _run(_list_messages(session_factory, session_event["session_id"]))
+        assert stored_messages[1].content == "Fallback answer"
         assert len(scheduled) == 1
     finally:
         client.close()
@@ -436,10 +522,7 @@ def test_ws_auto_mode_degrades_to_two_step_recovery_after_header_failures(
     )
     llm_calls = [
         ["No", " header"],  # First turn: failed single-pass attempt (discarded)
-        ["Still", " no header"],  # First turn: single-pass parse retry 1 (discarded)
-        ["Again", " no header"],  # First turn: single-pass parse retry 2 (discarded)
-        ["Yet", " no header"],  # First turn: single-pass parse retry 3 (discarded)
-        ["Recovered", " reply"],  # First turn: regenerated reply
+        ["Recovered", " reply"],  # First turn: first recovery-round reply
         ["Second", " turn"],  # Second turn: recovery-route visible reply
     ]
     client, session_factory, engine, scheduled, llm, pedagogy = _setup_ws_test_env(
@@ -460,7 +543,7 @@ def test_ws_auto_mode_degrades_to_two_step_recovery_after_header_failures(
         assert "".join(e["content"] for e in events1 if e["type"] == "token") == "Recovered reply"
         assert "".join(e["content"] for e in events2 if e["type"] == "token") == "Second turn"
         assert pedagogy.two_step_recovery_calls == 2
-        assert llm.call_count == 6
+        assert llm.call_count == 3
         assert len(scheduled) == 2
     finally:
         client.close()
@@ -481,9 +564,6 @@ def test_ws_auto_mode_retries_single_pass_after_stable_two_step_recovery_turns(
     )
     llm_calls = [
         ["No", " header"],  # First turn: failed single-pass attempt (discarded)
-        ["Still", " no header"],  # First turn: single-pass parse retry 1 (discarded)
-        ["Again", " no header"],  # First turn: single-pass parse retry 2 (discarded)
-        ["Yet", " no header"],  # First turn: single-pass parse retry 3 (discarded)
         ["Recovered", " first"],  # First turn: regenerated reply, triggers degradation
         ["Two-step", " ok"],  # Second turn: recovery-route visible reply
         [  # Third turn: auto retries single-pass and receives a valid hidden header
@@ -516,7 +596,7 @@ def test_ws_auto_mode_retries_single_pass_after_stable_two_step_recovery_turns(
         assert meta3["source"] == "single_pass_header_route"
         assert "".join(e["content"] for e in events3 if e["type"] == "token") == "Back again"
         assert pedagogy.two_step_recovery_calls == 2
-        assert llm.call_count == 7
+        assert llm.call_count == 4
         assert len(scheduled) == 3
     finally:
         client.close()
@@ -537,9 +617,6 @@ def test_ws_auto_mode_does_not_retry_single_pass_after_emergency_recovery_meta(
     )
     llm_calls = [
         ["No", " header"],  # First turn: failed single-pass attempt (discarded)
-        ["Still", " no header"],  # First turn: single-pass parse retry 1 (discarded)
-        ["Again", " no header"],  # First turn: single-pass parse retry 2 (discarded)
-        ["Yet", " no header"],  # First turn: single-pass parse retry 3 (discarded)
         ["Recovered", " first"],  # First turn: regenerated reply, triggers degradation
         ["Emergency", " second"],  # Second turn: recovery-route visible reply
         ["Still", " recovery"],  # Third turn should remain recovery route
@@ -579,7 +656,7 @@ def test_ws_auto_mode_does_not_retry_single_pass_after_emergency_recovery_meta(
         assert meta2["source"] == "emergency_full_hint_fallback"
         assert meta3["source"] == "emergency_full_hint_fallback"
         assert pedagogy.two_step_recovery_calls == 3
-        assert llm.call_count == 7
+        assert llm.call_count == 4
         assert "".join(e["content"] for e in events3 if e["type"] == "token") == "Still recovery"
         assert len(scheduled) == 3
     finally:
@@ -634,9 +711,6 @@ def test_ws_auto_mode_header_failure_degrade_is_isolated_per_session(
     )
     llm_calls = [
         ["No", " header"],  # First session: initial single-pass fail
-        ["Still", " no header"],  # First session: parse retry 1
-        ["Again", " no header"],  # First session: parse retry 2
-        ["Yet", " no header"],  # First session: parse retry 3
         ["Recovered", " first"],  # First session: two-step recovery visible reply
         [  # Second session: single-pass success remains isolated
             "<<GC_META_V1>>",
@@ -669,7 +743,7 @@ def test_ws_auto_mode_header_failure_degrade_is_isolated_per_session(
         assert meta2["source"] == "single_pass_header_route"
         assert "".join(e["content"] for e in events2 if e["type"] == "token") == "Fresh session"
         assert pedagogy.two_step_recovery_calls == 1
-        assert llm.call_count == 6
+        assert llm.call_count == 3
         assert len(scheduled) == 2
     finally:
         client.close()

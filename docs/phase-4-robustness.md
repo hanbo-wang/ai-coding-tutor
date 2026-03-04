@@ -97,9 +97,11 @@ If metadata-header compliance degrades, the recovery route uses one metadata JSO
 4. Send the `meta` WebSocket event.
 5. Build the tutor reply prompt with `build_system_prompt(...)` using the computed hint levels.
 6. Stream one visible tutor reply and persist metadata with the assistant message.
-7. If the metadata call fails, use Emergency Full-Hint Fallback metadata and still stream a visible reply.
-8. Emergency fallback turns do not contribute fallback difficulty values to the next EMA update.
-9. In `auto` mode, repeated header failures degrade to the recovery route, and stable recovery turns later retry the single-pass path.
+7. In `auto` mode, a turn starts with one single-pass attempt and then runs up to four recovery rounds if header parsing fails.
+8. Recovery-round transitions emit reconnect counters as `Reconnecting 1/3`, `Reconnecting 2/3`, and `Reconnecting 3/3`.
+9. If all four recovery rounds fail, use Emergency Full-Hint Fallback metadata and still stream a visible reply.
+10. Emergency fallback turns do not contribute fallback difficulty values to the next EMA update.
+11. In `auto` mode, repeated header failures degrade to the recovery route, and stable recovery turns later retry the single-pass path.
 
 ### 3.7 Profile Display Behaviour
 
@@ -236,7 +238,7 @@ HTTP routes use FastAPI `HTTPException` and validation responses with a `detail`
 - `useChatManager` hook encapsulates duplicate WebSocket orchestration logic (`useChatSocket`, connection tracking, and payload preparation) shared between the standalone `ChatPage` and embedded `WorkspaceChatPanel`.
 - Unified network requests through an internal frontend `ChatAPI` SDK object (`src/api/chat.ts`).
 
-WebSocket disconnection shows a reconnect status with exponential backoff (300 ms base delay, capped at 3 seconds). If the socket drops before a terminal event, the frontend retries one in-flight message automatically when safe; otherwise it prompts for manual resend. LLM errors display as styled system messages in chat, and REST failures are shown inline in the relevant page panels/forms.
+WebSocket disconnection shows a reconnect status with exponential backoff (300 ms base delay, capped at 3 seconds). If the socket drops before a terminal event, the frontend retries one in-flight message automatically when safe; otherwise it prompts for manual resend. Backend recovery banners are shown only for two-step round transitions, using `Reconnecting 1/3`, `Reconnecting 2/3`, and `Reconnecting 3/3`. LLM errors display as styled system messages in chat, and REST failures are shown inline in the relevant page panels/forms.
 
 ---
 

@@ -31,7 +31,7 @@ User messages are processed through a lightweight local signal step before the m
 The chat path uses a hidden metadata schema with four LLM-classified fields: `same_problem`, `is_elaboration`, `programming_difficulty`, `maths_difficulty`. The backend computes `programming_hint_level` and `maths_hint_level` deterministically using the gap formula (see [`docs/pedagogy-algorithm.md`](pedagogy-algorithm.md) Section 4).
 
 The response controller supports three modes for `/ws/chat`:
-- `auto` (default): prefer the `Single-Pass Header Route`, degrade to the `Two-Step Recovery Route` after repeated header parse failures, and retry the faster route after stable recovery turns.
+- `auto` (default): attempt the `Single-Pass Header Route` once per turn, run up to four `Two-Step Recovery Route` rounds if header parsing fails, use Emergency Full-Hint Fallback metadata if those rounds fail, and retry the faster route after stable recovery turns.
 - `single_pass_header_route`: always use the single-pass route.
 - `two_step_recovery_route`: always use the two-step route.
 
@@ -45,11 +45,11 @@ One streamed LLM call emits a hidden metadata header (`<<GC_META_V1>>...<<END_GC
 
 ### 2.3 Two-Step Recovery Route (Metadata + Reply)
 
-Two LLM calls: one compact metadata-only JSON call (token-trimmed payload), then one streamed tutor reply. Used when the controller mode is `two_step_recovery_route`, or `auto` mode degrades after repeated header parse failures.
+Two LLM calls: one compact metadata-only JSON call (token-trimmed payload), then one streamed tutor reply. In `auto` mode, this route runs in up to four rounds after a single-pass header parse failure.
 
 ### 2.4 Emergency Full-Hint Fallback (Local Last Resort)
 
-If both routes fail, the backend builds local emergency metadata: `programming_hint_level = 5`, `maths_hint_level = 5`, difficulty set to rounded effective levels, and `skip_next_ema_update_once = true` to prevent distorting the effective level. A visible tutor reply is still generated.
+If the single-pass route cannot parse metadata and all four recovery rounds fail, the backend builds local emergency metadata: `programming_hint_level = 5`, `maths_hint_level = 5`, difficulty set to rounded effective levels, and `skip_next_ema_update_once = true` to prevent distorting the effective level. A visible tutor reply is still generated.
 
 ### 2.5 Problem Difficulty and Hint Selection
 
@@ -62,8 +62,8 @@ Each dimension is updated independently: programming EMA uses `programming_diffi
 1. Build fast pedagogy signals from previous Q+A text.
 2. Build prompt + context using full history or the hidden rolling summary cache plus recent raw turns.
 3. Single-Pass Header Route: one streamed LLM call with hidden metadata header.
-4. On header failure: discard and run the Two-Step Recovery Route.
-5. On recovery failure: use Emergency Full-Hint Fallback.
+4. On single-pass header parse failure: discard output and run up to four Two-Step Recovery rounds.
+5. If those recovery rounds fail: use Emergency Full-Hint Fallback metadata and stream a visible reply.
 6. Send `meta` event, stream visible tokens, apply pedagogy metadata, persist the assistant turn.
 7. Refresh the hidden rolling summary cache asynchronously.
 
@@ -146,12 +146,12 @@ Hint levels are always computed by the backend via `compute_hint_levels()`. See 
 
 REST: `GET /api/chat/sessions` (list, newest first), `DELETE /api/chat/sessions/{id}`, `GET /api/chat/sessions/{id}/messages`.
 
-WebSocket `/ws/chat`: authenticates via JWT query parameter, initialises pedagogy services, and processes each message through the pipeline (parse, validate uploads, build enriched text, persist user turn, run pedagogy checks, build context, run LLM via route controller, send `meta`/`token`/`done` events, persist assistant turn, refresh summary cache). Stage execution uses layered recovery: same-target retries (up to 5), model failover candidates, and context refresh modes (`full_context` → `sanitised_context` → `fresh_turn_only`) for payload-invalid failures. If a turn still fails, the server emits a structured `error` event (`error_code`, `retryable`, `suggest_refresh_session`) and keeps the socket open for the next turn.
+WebSocket `/ws/chat`: authenticates via JWT query parameter, initialises pedagogy services, and processes each message through the pipeline (parse, validate uploads, build enriched text, persist user turn, run pedagogy checks, build context, run LLM via route controller, send `meta`/`token`/`done` events, persist assistant turn, refresh summary cache). Stage execution uses layered recovery: one single-pass header attempt, up to four two-step recovery rounds on header parse failure, emergency fallback metadata if those rounds fail, same-target retries (up to 5), model failover candidates, and context refresh modes (`full_context` → `sanitised_context` → `fresh_turn_only`) for payload-invalid failures. If a turn still fails, the server emits a structured `error` event (`error_code`, `retryable`, `suggest_refresh_session`) and keeps the socket open for the next turn.
 
 ### 4.9 Frontend: Chat Components
 
 - **`ws.ts`**: WebSocket helper forwarding `session`, `meta`, `token`, `done`, `error` events, with explicit close metadata.
-- **`useChatSocket.ts`**: Shared hook managing socket lifecycle, message list, streaming content, and `StreamingMeta` (separate `programmingHintLevel` and `mathsHintLevel`). It reconnects with exponential backoff (300 ms base, 3 s cap), retries one in-flight message only when no terminal event has been received yet, asks for manual resend when a disconnect happens after session acknowledgement, and flags when the backend recommends a fresh chat context after repeated payload failures.
+- **`useChatSocket.ts`**: Shared hook managing socket lifecycle, message list, streaming content, and `StreamingMeta` (separate `programmingHintLevel` and `mathsHintLevel`). It reconnects with exponential backoff (300 ms base, 3 s cap), retries one in-flight message only when no terminal event has been received yet, shows backend reconnect counters only for two-step round transitions (`Reconnecting 1/3`, `Reconnecting 2/3`, `Reconnecting 3/3`), asks for manual resend when a disconnect happens after session acknowledgement, and flags when the backend recommends a fresh chat context after repeated payload failures.
 - **`ChatPage.tsx`**: Full-page layout with collapsible sidebar, welcome greeting, streaming display, and disclaimer.
 - **`ChatSidebar.tsx`**: Session list (newest first), new chat button, delete with confirmation.
 - **`ChatMessageList.tsx`**: Auto-scrolling container rendering both persisted and streaming messages.

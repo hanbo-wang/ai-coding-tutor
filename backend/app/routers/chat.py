@@ -65,7 +65,8 @@ GENERIC_LLM_RETRY_EXHAUSTED_ERROR = (
     "AI service temporarily unavailable. Please try again in a moment."
 )
 SAME_MODEL_RETRY_LIMIT = 5
-SINGLE_PASS_PARSE_RETRY_LIMIT = 3
+TWO_STEP_RECOVERY_ROUND_LIMIT = 4
+TWO_STEP_RECOVERY_RECONNECT_STATUS_STAGE = "two_step_recovery_round_reconnect"
 CONTEXT_MODE_SEQUENCE: tuple[str, ...] = (
     "full_context",
     "sanitised_context",
@@ -1458,34 +1459,33 @@ async def websocket_chat(
                                     "visible_sent": visible_state["sent"],
                                 }
 
-                            for parse_retry_index in range(SINGLE_PASS_PARSE_RETRY_LIMIT + 1):
-                                single_pass_visible_state = {"sent": False}
-                                single_pass_result, single_pass_llm, _ = await _run_stage_with_failover(
-                                    stage_label="single_pass_header_route",
-                                    runner=lambda llm_for_stage, pedagogy_for_stage: _single_pass_stream_attempt(
-                                        llm_for_stage,
-                                        pedagogy_for_stage,
-                                        single_pass_visible_state,
-                                    ),
-                                    has_visible_output=lambda: single_pass_visible_state["sent"],
-                                    can_retry_with_clean_context=(
-                                        lambda: context_mode_index + 1 < len(CONTEXT_MODE_SEQUENCE)
-                                    ),
-                                )
-                                if (
-                                    not single_pass_result["parse_failed"]
-                                    and single_pass_result["meta"] is not None
-                                    and single_pass_result["meta_source"]
-                                    == "single_pass_header_route"
-                                ):
-                                    stream_meta = single_pass_result["meta"]
-                                    single_pass_meta_source = single_pass_result["meta_source"]
-                                    single_pass_parse_failed = False
-                                    full_response = list(single_pass_result["visible_chunks"])
-                                    final_reply_target = _llm_target_from_provider(single_pass_llm)
-                                    single_pass_success = True
-                                    break
-
+                            single_pass_visible_state = {"sent": False}
+                            single_pass_failed_without_visible_output = False
+                            single_pass_result, single_pass_llm, _ = await _run_stage_with_failover(
+                                stage_label="single_pass_header_route",
+                                runner=lambda llm_for_stage, pedagogy_for_stage: _single_pass_stream_attempt(
+                                    llm_for_stage,
+                                    pedagogy_for_stage,
+                                    single_pass_visible_state,
+                                ),
+                                has_visible_output=lambda: single_pass_visible_state["sent"],
+                                can_retry_with_clean_context=(
+                                    lambda: context_mode_index + 1 < len(CONTEXT_MODE_SEQUENCE)
+                                ),
+                            )
+                            if (
+                                not single_pass_result["parse_failed"]
+                                and single_pass_result["meta"] is not None
+                                and single_pass_result["meta_source"]
+                                == "single_pass_header_route"
+                            ):
+                                stream_meta = single_pass_result["meta"]
+                                single_pass_meta_source = single_pass_result["meta_source"]
+                                single_pass_parse_failed = False
+                                full_response = list(single_pass_result["visible_chunks"])
+                                final_reply_target = _llm_target_from_provider(single_pass_llm)
+                                single_pass_success = True
+                            else:
                                 single_pass_parse_failed = True
                                 single_pass_parse_failure_reason = single_pass_result[
                                     "parse_failure_reason"
@@ -1497,39 +1497,79 @@ async def websocket_chat(
                                         error_code="stream_visible_failure",
                                         suggest_refresh_session=True,
                                     )
+                                single_pass_failed_without_visible_output = True
 
-                                if parse_retry_index < SINGLE_PASS_PARSE_RETRY_LIMIT:
-                                    await websocket.send_json(
-                                        _status_event_payload(
-                                            stage="single_pass_header_meta",
-                                            attempt=parse_retry_index + 1,
-                                            max_attempts=SINGLE_PASS_PARSE_RETRY_LIMIT,
-                                            switched_model=False,
-                                            session_id=str(session.id),
-                                            context_mode=active_context_mode,
-                                            candidate_index=current_candidate_index,
+                            if not single_pass_success and single_pass_failed_without_visible_output:
+                                for two_step_round_index in range(TWO_STEP_RECOVERY_ROUND_LIMIT):
+                                    # Keep reconnect counters stable for the UI: 1/3, 2/3, 3/3.
+                                    if two_step_round_index > 0:
+                                        await websocket.send_json(
+                                            _status_event_payload(
+                                                stage=TWO_STEP_RECOVERY_RECONNECT_STATUS_STAGE,
+                                                attempt=two_step_round_index,
+                                                max_attempts=TWO_STEP_RECOVERY_ROUND_LIMIT - 1,
+                                                switched_model=False,
+                                                session_id=str(session.id),
+                                                context_mode=active_context_mode,
+                                                candidate_index=current_candidate_index,
+                                            )
                                         )
-                                    )
+                                    try:
+                                        stream_meta, _, _ = await _run_stage_with_failover(
+                                            stage_label="two_step_recovery_meta",
+                                            runner=lambda _llm, pedagogy: pedagogy.classify_two_step_recovery_meta(
+                                                enriched_user_message,
+                                                student_state=student_state,
+                                                fast_signals=fast_signals,
+                                            ),
+                                            has_visible_output=lambda: False,
+                                            can_retry_with_clean_context=(
+                                                lambda: context_mode_index + 1 < len(CONTEXT_MODE_SEQUENCE)
+                                            ),
+                                        )
+                                        await websocket.send_json(
+                                            _meta_event_payload(stream_meta, str(session.id))
+                                        )
+                                        single_pass_meta_source = stream_meta.source
+                                        visible_state = {"sent": False}
+                                        recovery_system_prompt = build_system_prompt(
+                                            programming_hint_level=stream_meta.programming_hint_level,
+                                            maths_hint_level=stream_meta.maths_hint_level,
+                                            programming_level=round(student_state.effective_programming_level),
+                                            maths_level=round(student_state.effective_maths_level),
+                                            notebook_context=notebook_context,
+                                        )
+                                        full_response, reply_llm, _ = await _run_stage_with_failover(
+                                            stage_label="two_step_recovery_reply",
+                                            runner=lambda llm_for_stage, _pedagogy: _stream_visible_reply(
+                                                llm_for_stage,
+                                                system_prompt=recovery_system_prompt,
+                                                visible_state=visible_state,
+                                            ),
+                                            has_visible_output=lambda: visible_state["sent"],
+                                            can_retry_with_clean_context=(
+                                                lambda: context_mode_index + 1 < len(CONTEXT_MODE_SEQUENCE)
+                                            ),
+                                        )
+                                        final_reply_target = _llm_target_from_provider(reply_llm)
+                                        single_pass_success = True
+                                        break
+                                    except _StageExecutionError as exc:
+                                        if exc.retry_with_clean_context:
+                                            raise
+                                        continue
 
-                            if not single_pass_success:
-                                stream_meta, _, _ = await _run_stage_with_failover(
-                                    stage_label="two_step_recovery_meta",
-                                    runner=lambda _llm, pedagogy: pedagogy.classify_two_step_recovery_meta(
-                                        enriched_user_message,
-                                        student_state=student_state,
-                                        fast_signals=fast_signals,
-                                    ),
-                                    has_visible_output=lambda: False,
-                                    can_retry_with_clean_context=(
-                                        lambda: context_mode_index + 1 < len(CONTEXT_MODE_SEQUENCE)
-                                    ),
+                            if not single_pass_success and single_pass_failed_without_visible_output:
+                                stream_meta = current_pedagogy_engine.build_emergency_full_hint_fallback_meta(
+                                    student_state,
+                                    fast_signals,
                                 )
                                 await websocket.send_json(
                                     _meta_event_payload(stream_meta, str(session.id))
                                 )
                                 single_pass_meta_source = stream_meta.source
                                 visible_state = {"sent": False}
-                                recovery_system_prompt = build_system_prompt(
+                                fallback_system_prompt = build_system_prompt(
                                     programming_hint_level=stream_meta.programming_hint_level,
                                     maths_hint_level=stream_meta.maths_hint_level,
                                     programming_level=round(student_state.effective_programming_level),
@@ -1537,10 +1577,10 @@ async def websocket_chat(
                                     notebook_context=notebook_context,
                                 )
                                 full_response, reply_llm, _ = await _run_stage_with_failover(
-                                    stage_label="two_step_recovery_reply",
+                                    stage_label="emergency_full_hint_fallback_reply",
                                     runner=lambda llm_for_stage, _pedagogy: _stream_visible_reply(
                                         llm_for_stage,
-                                        system_prompt=recovery_system_prompt,
+                                        system_prompt=fallback_system_prompt,
                                         visible_state=visible_state,
                                     ),
                                     has_visible_output=lambda: visible_state["sent"],
@@ -1549,6 +1589,7 @@ async def websocket_chat(
                                     ),
                                 )
                                 final_reply_target = _llm_target_from_provider(reply_llm)
+                                single_pass_success = True
                     except _StageExecutionError as exc:
                         if (
                             exc.retry_with_clean_context

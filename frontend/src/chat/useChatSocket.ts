@@ -37,6 +37,14 @@ const RECONNECT_BASE_DELAY_MS = 300;
 const RECONNECT_MAX_DELAY_MS = 3000;
 const MAX_AUTO_RESEND_ATTEMPTS = 1;
 const NON_RECONNECTABLE_CLOSE_CODES = new Set([4001, 4002]);
+const BACKEND_TWO_STEP_RECONNECT_STAGE = "two_step_recovery_round_reconnect";
+
+function formatBackendRetryStatus(event: Extract<WsEvent, { type: "status" }>): string | null {
+  if (event.stage !== BACKEND_TWO_STEP_RECONNECT_STAGE) {
+    return null;
+  }
+  return `Reconnecting ${event.attempt}/${event.max_attempts}`;
+}
 
 /**
  * Shared WebSocket chat state and event handling.
@@ -173,7 +181,7 @@ export function useChatSocket(onSessionCreated?: (sessionId: string) => void) {
           source: event.source,
         };
       } else if (event.type === "status") {
-        stream.retryStatus = event.message;
+        stream.retryStatus = formatBackendRetryStatus(event);
       } else if (event.type === "done" || event.type === "error") {
         // Safe to clear: loading next from history will fetch completely from DB
         delete backgroundStreamsRef.current[incomingSessionId];
@@ -266,7 +274,7 @@ export function useChatSocket(onSessionCreated?: (sessionId: string) => void) {
         setIsStreaming(false);
         break;
       case "status":
-        setRetryStatus(event.message);
+        setRetryStatus(formatBackendRetryStatus(event));
         break;
     }
   }, [appendSystemError, setSessionId]);
