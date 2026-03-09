@@ -54,3 +54,23 @@ Support modules:
 Answer keys:
   euler_and_rk2_test.ipynb
   rk4_and_ode_systems_test.ipynb
+
+
+3. Root-Finding Methods (root_finding/)
+----------------------------------------
+Root-finding algorithms for solving nonlinear equations, covering
+fixed-point iteration, Newton's method, and the Secant method.
+
+Notebooks:
+  newton_and_secant.ipynb
+    Classification of root-finding methods, fixed-point iteration and
+    cobweb diagrams, Newton's method with quadratic convergence,
+    Secant method with golden-ratio convergence order, convergence
+    comparison, and Newton's fractal visualisation.
+
+Support modules:
+  rootfinding_hints.py    Progressive hint boxes for each exercise.
+  rootfinding_verify.py   Automated test functions that check student answers.
+
+Answer keys:
+  newton_and_secant_test.ipynb
