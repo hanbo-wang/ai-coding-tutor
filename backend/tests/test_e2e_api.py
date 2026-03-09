@@ -99,14 +99,14 @@ async def test_e2e_auth_profile_refresh_logout_flow(e2e_client: AsyncClient) -> 
     """Registration, profile, refresh, and logout should work as a full flow."""
     register_payload = await _register_user(
         e2e_client,
-        email="learner@example.com",
+        email="learner.user.24@ucl.ac.uk",
         username="learner",
     )
     access_token = register_payload["access_token"]
 
     me_response = await e2e_client.get("/api/auth/me", headers=_auth_headers(access_token))
     assert me_response.status_code == 200
-    assert me_response.json()["email"] == "learner@example.com"
+    assert me_response.json()["email"] == "learner.user.24@ucl.ac.uk"
 
     refresh_response = await e2e_client.post("/api/auth/refresh")
     assert refresh_response.status_code == 200
@@ -125,7 +125,7 @@ async def test_e2e_usage_and_session_list_for_new_user(e2e_client: AsyncClient) 
     """A newly registered user should have zero usage and no sessions."""
     register_payload = await _register_user(
         e2e_client,
-        email="usage@example.com",
+        email="usage.user.24@ucl.ac.uk",
         username="usage_user",
     )
     headers = _auth_headers(register_payload["access_token"])
@@ -154,7 +154,7 @@ async def test_e2e_admin_usage_requires_admin_role(e2e_client: AsyncClient) -> N
     """Non-admin users should be denied admin usage access."""
     register_payload = await _register_user(
         e2e_client,
-        email="student@example.com",
+        email="student.user.24@ucl.ac.uk",
         username="student_user",
     )
     headers = _auth_headers(register_payload["access_token"])
@@ -304,7 +304,7 @@ async def test_e2e_upload_access_is_owner_scoped(e2e_client: AsyncClient) -> Non
     """Uploaded files should only be readable by their owner."""
     owner = await _register_user(
         e2e_client,
-        email="owner@example.com",
+        email="owner.user.24@ucl.ac.uk",
         username="owner_user",
     )
     owner_headers = _auth_headers(owner["access_token"])
@@ -327,7 +327,7 @@ async def test_e2e_upload_access_is_owner_scoped(e2e_client: AsyncClient) -> Non
 
     other_user = await _register_user(
         e2e_client,
-        email="other@example.com",
+        email="other.user.24@ucl.ac.uk",
         username="other_user",
     )
     other_headers = _auth_headers(other_user["access_token"])

@@ -100,7 +100,7 @@ async def test_profile_update_resets_only_updated_programming_effective_level(
     client, session_factory = auth_profile_client
     register = await _register_user(
         client,
-        email="learner@example.com",
+        email="learner.user.24@ucl.ac.uk",
         username="learner",
         programming_level=2,
         maths_level=4,
@@ -108,7 +108,11 @@ async def test_profile_update_resets_only_updated_programming_effective_level(
     headers = _auth_headers(register["access_token"])
 
     async with session_factory() as db:
-        user = (await db.execute(select(User).where(User.email == "learner@example.com"))).scalar_one()
+        user = (
+            await db.execute(
+                select(User).where(User.email == "learner.user.24@ucl.ac.uk")
+            )
+        ).scalar_one()
         user.effective_programming_level = 4.4
         user.effective_maths_level = 1.7
         await db.commit()
@@ -121,7 +125,7 @@ async def test_profile_update_resets_only_updated_programming_effective_level(
     assert "effective_programming_level" not in payload
     assert "effective_maths_level" not in payload
 
-    db_user = await _get_user_by_email(session_factory, "learner@example.com")
+    db_user = await _get_user_by_email(session_factory, "learner.user.24@ucl.ac.uk")
     assert db_user.programming_level == 5
     assert db_user.maths_level == 4
     assert db_user.effective_programming_level == pytest.approx(5.0)
@@ -136,7 +140,7 @@ async def test_profile_update_resets_both_effective_levels_when_both_levels_chan
     client, session_factory = auth_profile_client
     register = await _register_user(
         client,
-        email="both@example.com",
+        email="both.levels.24@ucl.ac.uk",
         username="both_levels",
         programming_level=3,
         maths_level=3,
@@ -144,7 +148,11 @@ async def test_profile_update_resets_both_effective_levels_when_both_levels_chan
     headers = _auth_headers(register["access_token"])
 
     async with session_factory() as db:
-        user = (await db.execute(select(User).where(User.email == "both@example.com"))).scalar_one()
+        user = (
+            await db.execute(
+                select(User).where(User.email == "both.levels.24@ucl.ac.uk")
+            )
+        ).scalar_one()
         user.effective_programming_level = 1.2
         user.effective_maths_level = 4.8
         await db.commit()
@@ -156,7 +164,7 @@ async def test_profile_update_resets_both_effective_levels_when_both_levels_chan
     )
     assert response.status_code == 200
 
-    db_user = await _get_user_by_email(session_factory, "both@example.com")
+    db_user = await _get_user_by_email(session_factory, "both.levels.24@ucl.ac.uk")
     assert db_user.programming_level == 4
     assert db_user.maths_level == 2
     assert db_user.effective_programming_level == pytest.approx(4.0)
@@ -171,13 +179,17 @@ async def test_profile_update_username_only_keeps_effective_levels(
     client, session_factory = auth_profile_client
     register = await _register_user(
         client,
-        email="nameonly@example.com",
+        email="name.only.24@ucl.ac.uk",
         username="name_only",
     )
     headers = _auth_headers(register["access_token"])
 
     async with session_factory() as db:
-        user = (await db.execute(select(User).where(User.email == "nameonly@example.com"))).scalar_one()
+        user = (
+            await db.execute(
+                select(User).where(User.email == "name.only.24@ucl.ac.uk")
+            )
+        ).scalar_one()
         user.effective_programming_level = 2.6
         user.effective_maths_level = 3.4
         await db.commit()
@@ -186,7 +198,7 @@ async def test_profile_update_username_only_keeps_effective_levels(
     assert response.status_code == 200
     assert response.json()["username"] == "renamed_user"
 
-    db_user = await _get_user_by_email(session_factory, "nameonly@example.com")
+    db_user = await _get_user_by_email(session_factory, "name.only.24@ucl.ac.uk")
     assert db_user.username == "renamed_user"
     assert db_user.effective_programming_level == pytest.approx(2.6)
     assert db_user.effective_maths_level == pytest.approx(3.4)
@@ -198,12 +210,12 @@ async def test_profile_update_rejects_duplicate_username(auth_profile_client) ->
     client, _ = auth_profile_client
     register = await _register_user(
         client,
-        email="rename-source@example.com",
+        email="rename.source.24@ucl.ac.uk",
         username="rename_source",
     )
     await _register_user(
         client,
-        email="rename-target@example.com",
+        email="rename.target.24@ucl.ac.uk",
         username="rename_target",
     )
     headers = _auth_headers(register["access_token"])

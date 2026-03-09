@@ -1,5 +1,6 @@
 """Authentication endpoints: register, login, refresh, profile."""
 
+import re
 import uuid
 from typing import Annotated
 
@@ -40,6 +41,15 @@ from app.services.email_verification_service import (
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
+# Non-admin registrations must match a UCL student-style local part ending in digits.
+UCL_STUDENT_REGISTRATION_EMAIL_PATTERN = re.compile(
+    r"^[a-z0-9]+(?:\.[a-z0-9]+)*\.[0-9]+@ucl\.ac\.uk$"
+)
+REGISTRATION_EMAIL_POLICY_DETAIL = (
+    "Registration is limited to UCL student emails in the format "
+    "name.name.<digits>@ucl.ac.uk. Configured admin emails are exempt."
+)
+
 
 def set_refresh_cookie(response: Response, refresh_token: str) -> None:
     """Set the refresh token as an httpOnly cookie."""
@@ -69,6 +79,18 @@ def _integrity_error_detail(exc: IntegrityError) -> str | None:
     return None
 
 
+def _validate_registration_email_or_raise(normalised_email: str) -> None:
+    """Enforce the registration email policy, with an admin-email exemption."""
+    if normalised_email in settings.admin_email_set:
+        return
+    if UCL_STUDENT_REGISTRATION_EMAIL_PATTERN.fullmatch(normalised_email):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=REGISTRATION_EMAIL_POLICY_DETAIL,
+    )
+
+
 @router.post("/register/send-code")
 async def send_register_code(
     payload: RegisterSendCodeRequest,
@@ -76,6 +98,7 @@ async def send_register_code(
 ):
     """Send a registration verification code by email."""
     normalised_email = payload.email.lower()
+    _validate_registration_email_or_raise(normalised_email)
     email_result = await db.execute(
         select(User).where(User.email == normalised_email)
     )
@@ -123,6 +146,7 @@ async def register(
 ):
     """Register a new user after verifying the email code."""
     normalised_email = user_data.email.lower()
+    _validate_registration_email_or_raise(normalised_email)
     result = await db.execute(select(User).where(User.email == normalised_email))
     if result.scalar_one_or_none():
         raise HTTPException(
