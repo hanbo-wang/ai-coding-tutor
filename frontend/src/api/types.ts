@@ -27,6 +27,10 @@ export interface RegisterData {
   maths_level?: number;
 }
 
+export interface RegistrationPolicy {
+  enable_ucl_registration_email_policy: boolean;
+}
+
 export interface ProfileUpdateData {
   username?: string;
   programming_level?: number;

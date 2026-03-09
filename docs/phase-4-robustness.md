@@ -222,6 +222,8 @@ The default offline run executes the full backend suite. External smoke tests ma
 
 Run from `backend/`: `PYTHONPATH=. pytest tests/ -q -s`
 
+Pytest cache is written under `.local-testing/python/`. Frontend Playwright reports, traces, screenshots, videos, and test results are written under `.local-testing/playwright/`.
+
 `external_ai` smoke tests are for optional live-provider verification and are not required for routine offline CI runs.
 
 ---
@@ -238,7 +240,7 @@ HTTP routes use FastAPI `HTTPException` and validation responses with a `detail`
 - `useChatManager` hook encapsulates duplicate WebSocket orchestration logic (`useChatSocket`, connection tracking, and payload preparation) shared between the standalone `ChatPage` and embedded `WorkspaceChatPanel`.
 - Unified network requests through an internal frontend `ChatAPI` SDK object (`src/api/chat.ts`).
 
-WebSocket disconnection shows a reconnect status with exponential backoff (300 ms base delay, capped at 3 seconds). If the socket drops before a terminal event, the frontend retries one in-flight message automatically when safe; otherwise it prompts for manual resend. Backend recovery banners are shown only for two-step round transitions, using `Reconnecting 1/3`, `Reconnecting 2/3`, and `Reconnecting 3/3`. LLM errors display as styled system messages in chat, and REST failures are shown inline in the relevant page panels/forms.
+WebSocket disconnection shows a reconnect status with exponential backoff (300 ms base delay, capped at 3 seconds). If the socket drops before a terminal event, the frontend retries one in-flight message automatically when safe; otherwise it prompts for manual resend. Backend recovery banners are shown only for two-step round transitions, using `Reconnecting 1/3`, `Reconnecting 2/3`, and `Reconnecting 3/3`. LLM errors display as styled system messages in chat, and REST failures are shown inline in the relevant page panels/forms. Auth and profile forms also surface recognised validation and business-rule failures directly on the affected field, using the same red visual language as the rest of the UI.
 
 ---
 

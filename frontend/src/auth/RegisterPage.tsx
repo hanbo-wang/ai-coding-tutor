@@ -1,24 +1,144 @@
-import { useEffect, useState, FormEvent } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { apiFetch } from "../api/http";
+import { RegistrationPolicy } from "../api/types";
+import {
+  FieldErrors,
+  TouchedFields,
+  getFieldErrorId,
+  getTextInputClass,
+  getVisibleFieldError,
+  hasAnyFieldError,
+  isValidEmail,
+  isValidVerificationCode,
+  touchFields,
+} from "../forms/fieldValidation";
 import { useAuth } from "./useAuth";
 
-const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const UCL_DOMAIN_PATTERN = /@ucl\.ac\.uk$/i;
 const UCL_STUDENT_EMAIL_PATTERN = /^[a-z0-9]+(?:\.[a-z0-9]+)*\.[0-9]+@ucl\.ac\.uk$/;
+const REGISTRATION_EMAIL_POLICY_DETAIL =
+  "Registration is limited to UCL student emails in the format " +
+  "name.name.<digits>@ucl.ac.uk. Configured admin emails are exempt.";
 
-function isValidEmail(value: string): boolean {
-  return EMAIL_PATTERN.test(value);
+type RegisterField =
+  | "email"
+  | "verificationCode"
+  | "username"
+  | "password"
+  | "confirmPassword";
+
+interface RegisterValues {
+  email: string;
+  verificationCode: string;
+  username: string;
+  password: string;
+  confirmPassword: string;
 }
 
-function getRegistrationEmailError(value: string): string | null {
+const registerFields: readonly RegisterField[] = [
+  "email",
+  "verificationCode",
+  "username",
+  "password",
+  "confirmPassword",
+];
+
+const registerSendCodeFields: readonly RegisterField[] = ["email", "username"];
+
+function getRegistrationEmailError(
+  value: string,
+  enableUclRegistrationEmailPolicy: boolean
+): string | null {
+  if (!enableUclRegistrationEmailPolicy) {
+    return null;
+  }
   if (!UCL_STUDENT_EMAIL_PATTERN.test(value.toLowerCase())) {
     if (UCL_DOMAIN_PATTERN.test(value)) {
       return null;
     }
-    return (
-      "Registration is limited to UCL student emails in the format " +
-      "name.name.<digits>@ucl.ac.uk. Configured admin emails are exempt."
+    return REGISTRATION_EMAIL_POLICY_DETAIL;
+  }
+  return null;
+}
+
+function getRegistrationEmailHint(
+  value: string,
+  enableUclRegistrationEmailPolicy: boolean
+): string {
+  if (
+    !enableUclRegistrationEmailPolicy ||
+    !value ||
+    UCL_STUDENT_EMAIL_PATTERN.test(value.toLowerCase()) ||
+    !UCL_DOMAIN_PATTERN.test(value)
+  ) {
+    return "";
+  }
+  return (
+    "This address is not in the student-format pattern. " +
+    "If it is an admin email, the server may still allow registration."
+  );
+}
+
+function validateRegisterValues(
+  values: RegisterValues,
+  enableUclRegistrationEmailPolicy: boolean
+): FieldErrors<RegisterField> {
+  const errors: FieldErrors<RegisterField> = {};
+  const normalisedEmail = values.email.trim();
+  const normalisedUsername = values.username.trim();
+
+  if (!normalisedEmail) {
+    errors.email = "Please enter your email first.";
+  } else if (!isValidEmail(normalisedEmail)) {
+    errors.email = "Please enter a valid email address.";
+  } else {
+    const registrationEmailError = getRegistrationEmailError(
+      normalisedEmail,
+      enableUclRegistrationEmailPolicy
     );
+    if (registrationEmailError) {
+      errors.email = registrationEmailError;
+    }
+  }
+
+  if (!values.verificationCode || !isValidVerificationCode(values.verificationCode)) {
+    errors.verificationCode = "Please enter a valid 6-digit verification code.";
+  }
+
+  if (!normalisedUsername) {
+    errors.username = "Please enter a username.";
+  } else if (normalisedUsername.length < 3 || normalisedUsername.length > 50) {
+    errors.username = "Username must be between 3 and 50 characters.";
+  }
+
+  if (!values.password) {
+    errors.password = "Please enter a password.";
+  } else if (values.password.length < 8) {
+    errors.password = "Password must be at least 8 characters.";
+  }
+
+  if (!values.confirmPassword) {
+    errors.confirmPassword = "Please confirm your password.";
+  } else if (values.password !== values.confirmPassword) {
+    errors.confirmPassword = "Passwords do not match.";
+  }
+
+  return errors;
+}
+
+function mapRegisterError(message: string): FieldErrors<RegisterField> | null {
+  if (
+    message === "Email already registered" ||
+    message === REGISTRATION_EMAIL_POLICY_DETAIL
+  ) {
+    return { email: message };
+  }
+  if (message === "Username already taken") {
+    return { username: message };
+  }
+  if (message === "Invalid or expired verification code") {
+    return { verificationCode: message };
   }
   return null;
 }
@@ -34,11 +154,44 @@ export function RegisterPage() {
   const [mathsLevel, setMathsLevel] = useState(3);
   const [error, setError] = useState("");
   const [emailHint, setEmailHint] = useState("");
+  const [enableUclRegistrationEmailPolicy, setEnableUclRegistrationEmailPolicy] =
+    useState(false);
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors<RegisterField>>(
+    {}
+  );
+  const [touchedFields, setTouchedFields] = useState<TouchedFields<RegisterField>>(
+    {}
+  );
   const [isSendingCode, setIsSendingCode] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
   const { register, sendRegisterCode } = useAuth();
   const navigate = useNavigate();
+
+  useEffect(() => {
+    let isActive = true;
+
+    apiFetch<RegistrationPolicy>("/api/auth/register/policy")
+      .then((policy) => {
+        if (!isActive) {
+          return;
+        }
+        setEnableUclRegistrationEmailPolicy(
+          policy.enable_ucl_registration_email_policy
+        );
+      })
+      .catch(() => {
+        if (!isActive) {
+          return;
+        }
+        // Fall back to generic client-side email checks; the backend stays authoritative.
+        setEnableUclRegistrationEmailPolicy(false);
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (resendCooldown <= 0) {
@@ -50,40 +203,73 @@ export function RegisterPage() {
     return () => window.clearInterval(timer);
   }, [resendCooldown]);
 
+  const getCurrentValues = (
+    overrides: Partial<RegisterValues> = {}
+  ): RegisterValues => ({
+    email,
+    verificationCode,
+    username,
+    password,
+    confirmPassword,
+    ...overrides,
+  });
+
+  const syncValidation = (nextValues: RegisterValues) => {
+    setFieldErrors(
+      validateRegisterValues(nextValues, enableUclRegistrationEmailPolicy)
+    );
+  };
+
+  const handleBlur = (field: RegisterField) => {
+    setTouchedFields((current) => touchFields(current, [field]));
+    syncValidation(getCurrentValues());
+  };
+
+  const handleFieldChange = (
+    field: RegisterField,
+    nextValue: string,
+    apply: () => void
+  ) => {
+    apply();
+    setError("");
+    const nextValues = getCurrentValues({ [field]: nextValue });
+
+    if (field === "email") {
+      setEmailHint(
+        getRegistrationEmailHint(
+          nextValues.email.trim(),
+          enableUclRegistrationEmailPolicy
+        )
+      );
+    }
+
+    if (touchedFields[field] || hasAnyFieldError(fieldErrors)) {
+      syncValidation(nextValues);
+    }
+  };
+
   const handleSendCode = async () => {
     setError("");
     setCodeMessage("");
-    setEmailHint("");
-    const normalisedEmail = email.trim();
-    const normalisedUsername = username.trim();
+    const nextValues = getCurrentValues();
+    const nextErrors = validateRegisterValues(
+      nextValues,
+      enableUclRegistrationEmailPolicy
+    );
+    setFieldErrors(nextErrors);
+    setTouchedFields((current) => touchFields(current, registerSendCodeFields));
+    if (hasAnyFieldError(nextErrors, registerSendCodeFields)) {
+      return;
+    }
 
-    if (!normalisedEmail) {
-      setError("Please enter your email first");
-      return;
-    }
-    if (!isValidEmail(normalisedEmail)) {
-      setError("Please enter a valid email address.");
-      return;
-    }
-    const registrationEmailError = getRegistrationEmailError(normalisedEmail);
-    if (registrationEmailError) {
-      setError(registrationEmailError);
-      return;
-    }
-    if (!UCL_STUDENT_EMAIL_PATTERN.test(normalisedEmail.toLowerCase())) {
-      setEmailHint(
-        "This address is not in the student-format pattern. " +
-          "If it is an admin email, the server may still allow registration."
-      );
-    }
-    if (!normalisedUsername) {
-      setError("Please enter your username first");
-      return;
-    }
-    if (normalisedUsername.length < 3 || normalisedUsername.length > 50) {
-      setError("Username must be between 3 and 50 characters.");
-      return;
-    }
+    const normalisedEmail = nextValues.email.trim();
+    const normalisedUsername = nextValues.username.trim();
+    setEmailHint(
+      getRegistrationEmailHint(
+        normalisedEmail,
+        enableUclRegistrationEmailPolicy
+      )
+    );
 
     setIsSendingCode(true);
     try {
@@ -91,62 +277,43 @@ export function RegisterPage() {
       setCodeMessage("Verification code sent. Please check your inbox.");
       setResendCooldown(60);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to send code");
+      const message = err instanceof Error ? err.message : "Failed to send code.";
+      const mappedErrors = mapRegisterError(message);
+      if (mappedErrors) {
+        const mappedFields = Object.keys(mappedErrors) as RegisterField[];
+        setFieldErrors(mappedErrors);
+        setTouchedFields((current) => touchFields(current, mappedFields));
+        return;
+      }
+      setError(message);
     } finally {
       setIsSendingCode(false);
     }
   };
 
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault();
     setError("");
     setCodeMessage("");
-    setEmailHint("");
-    const normalisedEmail = email.trim();
-    const normalisedUsername = username.trim();
-
-    if (!normalisedEmail) {
-      setError("Please enter your email first");
-      return;
-    }
-    if (!isValidEmail(normalisedEmail)) {
-      setError("Please enter a valid email address.");
-      return;
-    }
-    const registrationEmailError = getRegistrationEmailError(normalisedEmail);
-    if (registrationEmailError) {
-      setError(registrationEmailError);
-      return;
-    }
-    if (!UCL_STUDENT_EMAIL_PATTERN.test(normalisedEmail.toLowerCase())) {
-      setEmailHint(
-        "This address is not in the student-format pattern. " +
-          "If it is an admin email, the server may still allow registration."
-      );
-    }
-    if (!normalisedUsername) {
-      setError("Please enter a username");
-      return;
-    }
-    if (normalisedUsername.length < 3 || normalisedUsername.length > 50) {
-      setError("Username must be between 3 and 50 characters.");
+    const nextValues = getCurrentValues();
+    const nextErrors = validateRegisterValues(
+      nextValues,
+      enableUclRegistrationEmailPolicy
+    );
+    setFieldErrors(nextErrors);
+    setTouchedFields((current) => touchFields(current, registerFields));
+    if (hasAnyFieldError(nextErrors)) {
       return;
     }
 
-    if (password !== confirmPassword) {
-      setError("Passwords do not match");
-      return;
-    }
-
-    if (password.length < 8) {
-      setError("Password must be at least 8 characters");
-      return;
-    }
-    if (!/^\d{6}$/.test(verificationCode)) {
-      setError("Please enter a valid 6-digit verification code");
-      return;
-    }
-
+    const normalisedEmail = nextValues.email.trim();
+    const normalisedUsername = nextValues.username.trim();
+    setEmailHint(
+      getRegistrationEmailHint(
+        normalisedEmail,
+        enableUclRegistrationEmailPolicy
+      )
+    );
     setIsSubmitting(true);
 
     try {
@@ -160,13 +327,42 @@ export function RegisterPage() {
       });
       navigate("/chat");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Registration failed");
+      const message = err instanceof Error ? err.message : "Registration failed.";
+      const mappedErrors = mapRegisterError(message);
+      if (mappedErrors) {
+        const mappedFields = Object.keys(mappedErrors) as RegisterField[];
+        setFieldErrors(mappedErrors);
+        setTouchedFields((current) => touchFields(current, mappedFields));
+        return;
+      }
+      setError(message);
     } finally {
       setIsSubmitting(false);
     }
   };
 
   const levelLabels = ["Beginner", "Elementary", "Intermediate", "Advanced", "Expert"];
+  const emailError = getVisibleFieldError("email", fieldErrors, touchedFields);
+  const verificationCodeError = getVisibleFieldError(
+    "verificationCode",
+    fieldErrors,
+    touchedFields
+  );
+  const usernameError = getVisibleFieldError(
+    "username",
+    fieldErrors,
+    touchedFields
+  );
+  const passwordError = getVisibleFieldError(
+    "password",
+    fieldErrors,
+    touchedFields
+  );
+  const confirmPasswordError = getVisibleFieldError(
+    "confirmPassword",
+    fieldErrors,
+    touchedFields
+  );
 
   return (
     <div className="h-full overflow-y-auto">
@@ -185,7 +381,7 @@ export function RegisterPage() {
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} noValidate className="space-y-4">
             <div>
               <div className="mb-1 flex items-center justify-between gap-3">
                 <label
@@ -211,14 +407,27 @@ export function RegisterPage() {
                 type="email"
                 id="email"
                 value={email}
-                onChange={(e) => {
-                  setEmail(e.target.value);
-                  setEmailHint("");
-                }}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-accent"
-                required
+                onBlur={() => handleBlur("email")}
+                onChange={(event) =>
+                  handleFieldChange("email", event.target.value, () => {
+                    setEmail(event.target.value);
+                  })
+                }
+                className={getTextInputClass(Boolean(emailError))}
+                aria-invalid={Boolean(emailError)}
+                aria-describedby={
+                  emailError ? getFieldErrorId("register", "email") : undefined
+                }
               />
-              {emailHint && (
+              {emailError && (
+                <p
+                  id={getFieldErrorId("register", "email")}
+                  className="mt-1 text-sm text-red-600"
+                >
+                  {emailError}
+                </p>
+              )}
+              {!emailError && emailHint && (
                 <p className="mt-2 rounded border border-blue-300 bg-blue-50 px-2 py-1 text-xs text-blue-700">
                   {emailHint}
                 </p>
@@ -242,16 +451,38 @@ export function RegisterPage() {
                 type="text"
                 id="verificationCode"
                 value={verificationCode}
-                onChange={(e) =>
-                  setVerificationCode(e.target.value.replace(/\D/g, "").slice(0, 6))
+                onBlur={() => handleBlur("verificationCode")}
+                onChange={(event) =>
+                  handleFieldChange(
+                    "verificationCode",
+                    event.target.value.replace(/\D/g, "").slice(0, 6),
+                    () => {
+                      setVerificationCode(
+                        event.target.value.replace(/\D/g, "").slice(0, 6)
+                      );
+                    }
+                  )
                 }
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-accent"
-                required
+                className={getTextInputClass(Boolean(verificationCodeError))}
+                aria-invalid={Boolean(verificationCodeError)}
+                aria-describedby={
+                  verificationCodeError
+                    ? getFieldErrorId("register", "verificationCode")
+                    : undefined
+                }
                 maxLength={6}
                 inputMode="numeric"
                 pattern="\d{6}"
                 placeholder="Enter 6-digit code"
               />
+              {verificationCodeError && (
+                <p
+                  id={getFieldErrorId("register", "verificationCode")}
+                  className="mt-1 text-sm text-red-600"
+                >
+                  {verificationCodeError}
+                </p>
+              )}
             </div>
 
             <div>
@@ -265,12 +496,30 @@ export function RegisterPage() {
                 type="text"
                 id="username"
                 value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-accent"
-                required
+                onBlur={() => handleBlur("username")}
+                onChange={(event) =>
+                  handleFieldChange("username", event.target.value, () => {
+                    setUsername(event.target.value);
+                  })
+                }
+                className={getTextInputClass(Boolean(usernameError))}
+                aria-invalid={Boolean(usernameError)}
+                aria-describedby={
+                  usernameError
+                    ? getFieldErrorId("register", "username")
+                    : undefined
+                }
                 minLength={3}
                 maxLength={50}
               />
+              {usernameError && (
+                <p
+                  id={getFieldErrorId("register", "username")}
+                  className="mt-1 text-sm text-red-600"
+                >
+                  {usernameError}
+                </p>
+              )}
             </div>
 
             <div>
@@ -284,11 +533,29 @@ export function RegisterPage() {
                 type="password"
                 id="password"
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-accent"
-                required
+                onBlur={() => handleBlur("password")}
+                onChange={(event) =>
+                  handleFieldChange("password", event.target.value, () => {
+                    setPassword(event.target.value);
+                  })
+                }
+                className={getTextInputClass(Boolean(passwordError))}
+                aria-invalid={Boolean(passwordError)}
+                aria-describedby={
+                  passwordError
+                    ? getFieldErrorId("register", "password")
+                    : undefined
+                }
                 minLength={8}
               />
+              {passwordError && (
+                <p
+                  id={getFieldErrorId("register", "password")}
+                  className="mt-1 text-sm text-red-600"
+                >
+                  {passwordError}
+                </p>
+              )}
             </div>
 
             <div>
@@ -302,10 +569,28 @@ export function RegisterPage() {
                 type="password"
                 id="confirmPassword"
                 value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-accent"
-                required
+                onBlur={() => handleBlur("confirmPassword")}
+                onChange={(event) =>
+                  handleFieldChange("confirmPassword", event.target.value, () => {
+                    setConfirmPassword(event.target.value);
+                  })
+                }
+                className={getTextInputClass(Boolean(confirmPasswordError))}
+                aria-invalid={Boolean(confirmPasswordError)}
+                aria-describedby={
+                  confirmPasswordError
+                    ? getFieldErrorId("register", "confirmPassword")
+                    : undefined
+                }
               />
+              {confirmPasswordError && (
+                <p
+                  id={getFieldErrorId("register", "confirmPassword")}
+                  className="mt-1 text-sm text-red-600"
+                >
+                  {confirmPasswordError}
+                </p>
+              )}
             </div>
 
             <div>
@@ -321,7 +606,9 @@ export function RegisterPage() {
                 min="1"
                 max="5"
                 value={programmingLevel}
-                onChange={(e) => setProgrammingLevel(parseInt(e.target.value))}
+                onChange={(event) =>
+                  setProgrammingLevel(parseInt(event.target.value, 10))
+                }
                 className="w-full accent-accent"
               />
               <div className="flex justify-between text-xs text-gray-500">
@@ -343,7 +630,9 @@ export function RegisterPage() {
                 min="1"
                 max="5"
                 value={mathsLevel}
-                onChange={(e) => setMathsLevel(parseInt(e.target.value))}
+                onChange={(event) =>
+                  setMathsLevel(parseInt(event.target.value, 10))
+                }
                 className="w-full accent-accent"
               />
               <div className="flex justify-between text-xs text-gray-500">

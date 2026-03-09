@@ -1,11 +1,81 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import {
+  FieldErrors,
+  TouchedFields,
+  getFieldErrorId,
+  getTextInputClass,
+  getVisibleFieldError,
+  hasAnyFieldError,
+  isValidEmail,
+  isValidVerificationCode,
+  touchFields,
+} from "../forms/fieldValidation";
 import { useAuth } from "./useAuth";
 
-const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+type ForgotPasswordField =
+  | "email"
+  | "verificationCode"
+  | "newPassword"
+  | "confirmNewPassword";
 
-function isValidEmail(value: string): boolean {
-  return EMAIL_PATTERN.test(value);
+interface ForgotPasswordValues {
+  email: string;
+  verificationCode: string;
+  newPassword: string;
+  confirmNewPassword: string;
+}
+
+const forgotPasswordFields: readonly ForgotPasswordField[] = [
+  "email",
+  "verificationCode",
+  "newPassword",
+  "confirmNewPassword",
+];
+
+const forgotPasswordSendCodeFields: readonly ForgotPasswordField[] = ["email"];
+
+function validateForgotPasswordValues(
+  values: ForgotPasswordValues
+): FieldErrors<ForgotPasswordField> {
+  const errors: FieldErrors<ForgotPasswordField> = {};
+  const normalisedEmail = values.email.trim();
+
+  if (!normalisedEmail) {
+    errors.email = "Please enter your email first.";
+  } else if (!isValidEmail(normalisedEmail)) {
+    errors.email = "Please enter a valid email address.";
+  }
+
+  if (!values.verificationCode || !isValidVerificationCode(values.verificationCode)) {
+    errors.verificationCode = "Please enter a valid 6-digit verification code.";
+  }
+
+  if (!values.newPassword) {
+    errors.newPassword = "Please enter a new password.";
+  } else if (values.newPassword.length < 8) {
+    errors.newPassword = "Password must be at least 8 characters.";
+  }
+
+  if (!values.confirmNewPassword) {
+    errors.confirmNewPassword = "Please confirm your new password.";
+  } else if (values.newPassword !== values.confirmNewPassword) {
+    errors.confirmNewPassword = "Passwords do not match.";
+  }
+
+  return errors;
+}
+
+function mapForgotPasswordError(
+  message: string
+): FieldErrors<ForgotPasswordField> | null {
+  if (message === "Email is not registered.") {
+    return { email: message };
+  }
+  if (message === "Invalid or expired verification code") {
+    return { verificationCode: message };
+  }
+  return null;
 }
 
 export function ForgotPasswordPage() {
@@ -18,6 +88,12 @@ export function ForgotPasswordPage() {
   const [confirmNewPassword, setConfirmNewPassword] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [fieldErrors, setFieldErrors] = useState<
+    FieldErrors<ForgotPasswordField>
+  >({});
+  const [touchedFields, setTouchedFields] = useState<
+    TouchedFields<ForgotPasswordField>
+  >({});
   const [isSendingCode, setIsSendingCode] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
@@ -32,65 +108,89 @@ export function ForgotPasswordPage() {
     return () => window.clearInterval(timer);
   }, [resendCooldown]);
 
+  const getCurrentValues = (
+    overrides: Partial<ForgotPasswordValues> = {}
+  ): ForgotPasswordValues => ({
+    email,
+    verificationCode,
+    newPassword,
+    confirmNewPassword,
+    ...overrides,
+  });
+
+  const syncValidation = (nextValues: ForgotPasswordValues) => {
+    setFieldErrors(validateForgotPasswordValues(nextValues));
+  };
+
+  const handleBlur = (field: ForgotPasswordField) => {
+    setTouchedFields((current) => touchFields(current, [field]));
+    syncValidation(getCurrentValues());
+  };
+
+  const handleFieldChange = (
+    field: ForgotPasswordField,
+    nextValue: string,
+    apply: () => void
+  ) => {
+    apply();
+    setError("");
+    const nextValues = getCurrentValues({ [field]: nextValue });
+    if (touchedFields[field] || hasAnyFieldError(fieldErrors)) {
+      syncValidation(nextValues);
+    }
+  };
+
   const handleSendCode = async () => {
     setError("");
     setMessage("");
-    const normalisedEmail = email.trim();
-    if (!normalisedEmail) {
-      setError("Please enter your email first");
-      return;
-    }
-    if (!isValidEmail(normalisedEmail)) {
-      setError("Please enter a valid email address.");
+    const nextValues = getCurrentValues();
+    const nextErrors = validateForgotPasswordValues(nextValues);
+    setFieldErrors(nextErrors);
+    setTouchedFields((current) =>
+      touchFields(current, forgotPasswordSendCodeFields)
+    );
+    if (hasAnyFieldError(nextErrors, forgotPasswordSendCodeFields)) {
       return;
     }
 
     setIsSendingCode(true);
     try {
-      await sendPasswordResetCode(normalisedEmail);
+      await sendPasswordResetCode(nextValues.email.trim());
       setMessage("Verification code sent. Please check your inbox.");
       setResendCooldown(60);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to send code.");
+      const message = err instanceof Error ? err.message : "Failed to send code.";
+      const mappedErrors = mapForgotPasswordError(message);
+      if (mappedErrors) {
+        const mappedFields = Object.keys(mappedErrors) as ForgotPasswordField[];
+        setFieldErrors(mappedErrors);
+        setTouchedFields((current) => touchFields(current, mappedFields));
+        return;
+      }
+      setError(message);
     } finally {
       setIsSendingCode(false);
     }
   };
 
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault();
     setError("");
     setMessage("");
-    const normalisedEmail = email.trim();
-
-    if (!normalisedEmail) {
-      setError("Please enter your email first");
-      return;
-    }
-    if (!isValidEmail(normalisedEmail)) {
-      setError("Please enter a valid email address.");
-      return;
-    }
-
-    if (!/^\d{6}$/.test(verificationCode)) {
-      setError("Please enter a valid 6-digit verification code.");
-      return;
-    }
-    if (newPassword.length < 8) {
-      setError("Password must be at least 8 characters.");
-      return;
-    }
-    if (newPassword !== confirmNewPassword) {
-      setError("Passwords do not match.");
+    const nextValues = getCurrentValues();
+    const nextErrors = validateForgotPasswordValues(nextValues);
+    setFieldErrors(nextErrors);
+    setTouchedFields((current) => touchFields(current, forgotPasswordFields));
+    if (hasAnyFieldError(nextErrors)) {
       return;
     }
 
     setIsSubmitting(true);
     try {
       await resetPassword({
-        email: normalisedEmail,
-        verification_code: verificationCode,
-        new_password: newPassword,
+        email: nextValues.email.trim(),
+        verification_code: nextValues.verificationCode,
+        new_password: nextValues.newPassword,
       });
       setMessage("Password reset successfully. You can now log in.");
       setVerificationCode("");
@@ -98,11 +198,37 @@ export function ForgotPasswordPage() {
       setConfirmNewPassword("");
       window.setTimeout(() => navigate("/login"), 1200);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Password reset failed.");
+      const message =
+        err instanceof Error ? err.message : "Password reset failed.";
+      const mappedErrors = mapForgotPasswordError(message);
+      if (mappedErrors) {
+        const mappedFields = Object.keys(mappedErrors) as ForgotPasswordField[];
+        setFieldErrors(mappedErrors);
+        setTouchedFields((current) => touchFields(current, mappedFields));
+        return;
+      }
+      setError(message);
     } finally {
       setIsSubmitting(false);
     }
   };
+
+  const emailError = getVisibleFieldError("email", fieldErrors, touchedFields);
+  const verificationCodeError = getVisibleFieldError(
+    "verificationCode",
+    fieldErrors,
+    touchedFields
+  );
+  const newPasswordError = getVisibleFieldError(
+    "newPassword",
+    fieldErrors,
+    touchedFields
+  );
+  const confirmNewPasswordError = getVisibleFieldError(
+    "confirmNewPassword",
+    fieldErrors,
+    touchedFields
+  );
 
   return (
     <div className="h-full overflow-y-auto">
@@ -126,7 +252,7 @@ export function ForgotPasswordPage() {
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} noValidate className="space-y-4">
             <div>
               <div className="mb-1 flex items-center justify-between gap-3">
                 <label
@@ -152,10 +278,28 @@ export function ForgotPasswordPage() {
                 type="email"
                 id="email"
                 value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-accent"
-                required
+                onBlur={() => handleBlur("email")}
+                onChange={(event) =>
+                  handleFieldChange("email", event.target.value, () => {
+                    setEmail(event.target.value);
+                  })
+                }
+                className={getTextInputClass(Boolean(emailError))}
+                aria-invalid={Boolean(emailError)}
+                aria-describedby={
+                  emailError
+                    ? getFieldErrorId("forgot-password", "email")
+                    : undefined
+                }
               />
+              {emailError && (
+                <p
+                  id={getFieldErrorId("forgot-password", "email")}
+                  className="mt-1 text-sm text-red-600"
+                >
+                  {emailError}
+                </p>
+              )}
             </div>
 
             <div>
@@ -169,16 +313,38 @@ export function ForgotPasswordPage() {
                 type="text"
                 id="verificationCode"
                 value={verificationCode}
-                onChange={(e) =>
-                  setVerificationCode(e.target.value.replace(/\D/g, "").slice(0, 6))
+                onBlur={() => handleBlur("verificationCode")}
+                onChange={(event) =>
+                  handleFieldChange(
+                    "verificationCode",
+                    event.target.value.replace(/\D/g, "").slice(0, 6),
+                    () => {
+                      setVerificationCode(
+                        event.target.value.replace(/\D/g, "").slice(0, 6)
+                      );
+                    }
+                  )
                 }
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-accent"
-                required
+                className={getTextInputClass(Boolean(verificationCodeError))}
+                aria-invalid={Boolean(verificationCodeError)}
+                aria-describedby={
+                  verificationCodeError
+                    ? getFieldErrorId("forgot-password", "verificationCode")
+                    : undefined
+                }
                 maxLength={6}
                 inputMode="numeric"
                 pattern="\d{6}"
                 placeholder="Enter 6-digit code"
               />
+              {verificationCodeError && (
+                <p
+                  id={getFieldErrorId("forgot-password", "verificationCode")}
+                  className="mt-1 text-sm text-red-600"
+                >
+                  {verificationCodeError}
+                </p>
+              )}
             </div>
 
             <div>
@@ -192,11 +358,29 @@ export function ForgotPasswordPage() {
                 type="password"
                 id="newPassword"
                 value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-accent"
-                required
+                onBlur={() => handleBlur("newPassword")}
+                onChange={(event) =>
+                  handleFieldChange("newPassword", event.target.value, () => {
+                    setNewPassword(event.target.value);
+                  })
+                }
+                className={getTextInputClass(Boolean(newPasswordError))}
+                aria-invalid={Boolean(newPasswordError)}
+                aria-describedby={
+                  newPasswordError
+                    ? getFieldErrorId("forgot-password", "newPassword")
+                    : undefined
+                }
                 minLength={8}
               />
+              {newPasswordError && (
+                <p
+                  id={getFieldErrorId("forgot-password", "newPassword")}
+                  className="mt-1 text-sm text-red-600"
+                >
+                  {newPasswordError}
+                </p>
+              )}
             </div>
 
             <div>
@@ -210,10 +394,32 @@ export function ForgotPasswordPage() {
                 type="password"
                 id="confirmNewPassword"
                 value={confirmNewPassword}
-                onChange={(e) => setConfirmNewPassword(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-accent"
-                required
+                onBlur={() => handleBlur("confirmNewPassword")}
+                onChange={(event) =>
+                  handleFieldChange(
+                    "confirmNewPassword",
+                    event.target.value,
+                    () => {
+                      setConfirmNewPassword(event.target.value);
+                    }
+                  )
+                }
+                className={getTextInputClass(Boolean(confirmNewPasswordError))}
+                aria-invalid={Boolean(confirmNewPasswordError)}
+                aria-describedby={
+                  confirmNewPasswordError
+                    ? getFieldErrorId("forgot-password", "confirmNewPassword")
+                    : undefined
+                }
               />
+              {confirmNewPasswordError && (
+                <p
+                  id={getFieldErrorId("forgot-password", "confirmNewPassword")}
+                  className="mt-1 text-sm text-red-600"
+                >
+                  {confirmNewPasswordError}
+                </p>
+              )}
             </div>
 
             <button

@@ -2,6 +2,7 @@ import { defineConfig, devices } from "playwright/test";
 
 export default defineConfig({
   testDir: "./e2e",
+  outputDir: "../.local-testing/playwright/test-results",
   timeout: 180_000,
   expect: {
     timeout: 15_000,
@@ -9,7 +10,10 @@ export default defineConfig({
   workers: 1,
   fullyParallel: false,
   retries: 1,
-  reporter: [["list"], ["html", { open: "never" }]],
+  reporter: [
+    ["list"],
+    ["html", { open: "never", outputFolder: "../.local-testing/playwright/report" }],
+  ],
   use: {
     baseURL: "http://127.0.0.1:4173",
     trace: "on-first-retry",

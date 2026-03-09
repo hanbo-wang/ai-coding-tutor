@@ -35,6 +35,7 @@ The **pedagogy engine** controls every AI response:
 - **Admin dashboard**: zone management, bulk asset import, runtime LLM model switching (password-confirmed), model input/output pricing visibility, total usage plus selected-model usage tracking (today / this week / this month), a full audit log, and a direct link to the `/system-health` diagnostics page.
 - **Rate limiting and cost control**: per-user and global request limits, weekly token budgets, concurrent connection caps. All configurable via `.env`.
 - **Precise token and cost tracking**: counts come from each provider's API response and are stored per message.
+- **Auth and profile form feedback**: login, registration, password reset, and profile update flows use inline field validation with consistent red error states and mapped server-side form errors.
 
 ## Tech Stack
 
@@ -50,7 +51,7 @@ The **pedagogy engine** controls every AI response:
 
 ```
 Frontend (React + Vite + Tailwind)
-  ├── Auth (email verification, login, register, password reset, profile)
+  ├── Auth (email verification, login, register, password reset, profile, inline field validation)
   ├── Chat (WebSocket streaming, session sidebar)
   ├── Notebook workspace (JupyterLite + scoped chat)
   ├── Learning Hub (zone browse + zone workspace)
@@ -99,6 +100,7 @@ cp .github/workflows/templates/env.dev.example .env
      - `GOOGLE_API_KEY` (AI Studio) / Vertex credentials.
    - Optional: additional provider keys for failover.
    - Optional: `ADMIN_EMAIL` for admin dashboard access.
+   - Optional: `ENABLE_UCL_REGISTRATION_EMAIL_POLICY=true` to restrict registration to UCL student-format emails.
 
 3. **Build JupyterLite assets** (required once for notebook workspace):
 
@@ -114,6 +116,8 @@ cd frontend && npm install && npm run dev  # Terminal 2
 ```
 
 5. Open **http://localhost:5173**.
+
+Local test artefacts and local-only test helper files should live under `.local-testing/`.
 
 ### One-Click Start (Windows)
 
@@ -133,6 +137,7 @@ Production runs on Docker Compose + Nginx reverse proxy + HTTPS, deployed via Gi
 - **Local backup pull**: run `bash scripts/ops/pull_backup_to_local.sh` manually when you want to copy snapshots to your local machine.
 - **Rollback**: re-run the deploy workflow with an earlier image tag.
 - **Config**: create `.env` from `.github/workflows/templates/env.prod.example`. Set API keys for desired providers.
+- **Registration policy**: set `ENABLE_UCL_REGISTRATION_EMAIL_POLICY=true` when production registration should be limited to UCL student-format emails.
 - **Health**: `/health` (JSON liveness), `/system-health` (authenticated frontend diagnostics), `/api/health/ai` for LLM provider verification, `/api/health/ai/models` for model-level smoke checks plus the current running model snapshot.
 
 ## Documentation

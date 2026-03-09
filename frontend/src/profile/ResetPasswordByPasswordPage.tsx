@@ -1,6 +1,65 @@
 import { FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
+import {
+  FieldErrors,
+  TouchedFields,
+  getFieldErrorId,
+  getTextInputClass,
+  getVisibleFieldError,
+  hasAnyFieldError,
+  touchFields,
+} from "../forms/fieldValidation";
 import { useAuth } from "../auth/useAuth";
+
+type ResetByPasswordField =
+  | "currentPassword"
+  | "newPassword"
+  | "confirmNewPassword";
+
+interface ResetByPasswordValues {
+  currentPassword: string;
+  newPassword: string;
+  confirmNewPassword: string;
+}
+
+const resetByPasswordFields: readonly ResetByPasswordField[] = [
+  "currentPassword",
+  "newPassword",
+  "confirmNewPassword",
+];
+
+function validateResetByPasswordValues(
+  values: ResetByPasswordValues
+): FieldErrors<ResetByPasswordField> {
+  const errors: FieldErrors<ResetByPasswordField> = {};
+
+  if (!values.currentPassword) {
+    errors.currentPassword = "Please enter your current password.";
+  }
+
+  if (!values.newPassword) {
+    errors.newPassword = "Please enter a new password.";
+  } else if (values.newPassword.length < 8) {
+    errors.newPassword = "Password must be at least 8 characters.";
+  }
+
+  if (!values.confirmNewPassword) {
+    errors.confirmNewPassword = "Please confirm your new password.";
+  } else if (values.newPassword !== values.confirmNewPassword) {
+    errors.confirmNewPassword = "Passwords do not match.";
+  }
+
+  return errors;
+}
+
+function mapResetByPasswordError(
+  message: string
+): FieldErrors<ResetByPasswordField> | null {
+  if (message === "Current password is incorrect.") {
+    return { currentPassword: message };
+  }
+  return null;
+}
 
 export function ResetPasswordByPasswordPage() {
   const { changePassword } = useAuth();
@@ -9,38 +68,101 @@ export function ResetPasswordByPasswordPage() {
   const [confirmNewPassword, setConfirmNewPassword] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [fieldErrors, setFieldErrors] = useState<
+    FieldErrors<ResetByPasswordField>
+  >({});
+  const [touchedFields, setTouchedFields] = useState<
+    TouchedFields<ResetByPasswordField>
+  >({});
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const getCurrentValues = (
+    overrides: Partial<ResetByPasswordValues> = {}
+  ): ResetByPasswordValues => ({
+    currentPassword,
+    newPassword,
+    confirmNewPassword,
+    ...overrides,
+  });
+
+  const syncValidation = (nextValues: ResetByPasswordValues) => {
+    setFieldErrors(validateResetByPasswordValues(nextValues));
+  };
+
+  const handleBlur = (field: ResetByPasswordField) => {
+    setTouchedFields((current) => touchFields(current, [field]));
+    syncValidation(getCurrentValues());
+  };
+
+  const handleFieldChange = (
+    field: ResetByPasswordField,
+    nextValue: string,
+    apply: () => void
+  ) => {
+    apply();
+    setError("");
+    setMessage("");
+    const nextValues = getCurrentValues({ [field]: nextValue });
+    if (touchedFields[field] || hasAnyFieldError(fieldErrors)) {
+      syncValidation(nextValues);
+    }
+  };
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setError("");
     setMessage("");
-
-    if (newPassword.length < 8) {
-      setError("Password must be at least 8 characters.");
-      return;
-    }
-    if (newPassword !== confirmNewPassword) {
-      setError("Passwords do not match.");
+    const nextValues = getCurrentValues();
+    const nextErrors = validateResetByPasswordValues(nextValues);
+    setFieldErrors(nextErrors);
+    setTouchedFields((current) =>
+      touchFields(current, resetByPasswordFields)
+    );
+    if (hasAnyFieldError(nextErrors)) {
       return;
     }
 
     setIsSubmitting(true);
     try {
       await changePassword({
-        current_password: currentPassword,
-        new_password: newPassword,
+        current_password: nextValues.currentPassword,
+        new_password: nextValues.newPassword,
       });
       setMessage("Password reset successfully.");
       setCurrentPassword("");
       setNewPassword("");
       setConfirmNewPassword("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Password reset failed.");
+      const message =
+        err instanceof Error ? err.message : "Password reset failed.";
+      const mappedErrors = mapResetByPasswordError(message);
+      if (mappedErrors) {
+        const mappedFields = Object.keys(mappedErrors) as ResetByPasswordField[];
+        setFieldErrors(mappedErrors);
+        setTouchedFields((current) => touchFields(current, mappedFields));
+        return;
+      }
+      setError(message);
     } finally {
       setIsSubmitting(false);
     }
   };
+
+  const currentPasswordError = getVisibleFieldError(
+    "currentPassword",
+    fieldErrors,
+    touchedFields
+  );
+  const newPasswordError = getVisibleFieldError(
+    "newPassword",
+    fieldErrors,
+    touchedFields
+  );
+  const confirmNewPasswordError = getVisibleFieldError(
+    "confirmNewPassword",
+    fieldErrors,
+    touchedFields
+  );
 
   return (
     <div className="h-full overflow-y-auto">
@@ -64,7 +186,7 @@ export function ResetPasswordByPasswordPage() {
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} noValidate className="space-y-4">
             <div>
               <label
                 htmlFor="currentPassword"
@@ -76,10 +198,28 @@ export function ResetPasswordByPasswordPage() {
                 type="password"
                 id="currentPassword"
                 value={currentPassword}
-                onChange={(event) => setCurrentPassword(event.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-accent"
-                required
+                onBlur={() => handleBlur("currentPassword")}
+                onChange={(event) =>
+                  handleFieldChange("currentPassword", event.target.value, () => {
+                    setCurrentPassword(event.target.value);
+                  })
+                }
+                className={getTextInputClass(Boolean(currentPasswordError))}
+                aria-invalid={Boolean(currentPasswordError)}
+                aria-describedby={
+                  currentPasswordError
+                    ? getFieldErrorId("reset-password", "currentPassword")
+                    : undefined
+                }
               />
+              {currentPasswordError && (
+                <p
+                  id={getFieldErrorId("reset-password", "currentPassword")}
+                  className="mt-1 text-sm text-red-600"
+                >
+                  {currentPasswordError}
+                </p>
+              )}
             </div>
 
             <div>
@@ -93,11 +233,29 @@ export function ResetPasswordByPasswordPage() {
                 type="password"
                 id="newPassword"
                 value={newPassword}
-                onChange={(event) => setNewPassword(event.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-accent"
-                required
+                onBlur={() => handleBlur("newPassword")}
+                onChange={(event) =>
+                  handleFieldChange("newPassword", event.target.value, () => {
+                    setNewPassword(event.target.value);
+                  })
+                }
+                className={getTextInputClass(Boolean(newPasswordError))}
+                aria-invalid={Boolean(newPasswordError)}
+                aria-describedby={
+                  newPasswordError
+                    ? getFieldErrorId("reset-password", "newPassword")
+                    : undefined
+                }
                 minLength={8}
               />
+              {newPasswordError && (
+                <p
+                  id={getFieldErrorId("reset-password", "newPassword")}
+                  className="mt-1 text-sm text-red-600"
+                >
+                  {newPasswordError}
+                </p>
+              )}
             </div>
 
             <div>
@@ -111,10 +269,32 @@ export function ResetPasswordByPasswordPage() {
                 type="password"
                 id="confirmNewPassword"
                 value={confirmNewPassword}
-                onChange={(event) => setConfirmNewPassword(event.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-accent"
-                required
+                onBlur={() => handleBlur("confirmNewPassword")}
+                onChange={(event) =>
+                  handleFieldChange(
+                    "confirmNewPassword",
+                    event.target.value,
+                    () => {
+                      setConfirmNewPassword(event.target.value);
+                    }
+                  )
+                }
+                className={getTextInputClass(Boolean(confirmNewPasswordError))}
+                aria-invalid={Boolean(confirmNewPasswordError)}
+                aria-describedby={
+                  confirmNewPasswordError
+                    ? getFieldErrorId("reset-password", "confirmNewPassword")
+                    : undefined
+                }
               />
+              {confirmNewPasswordError && (
+                <p
+                  id={getFieldErrorId("reset-password", "confirmNewPassword")}
+                  className="mt-1 text-sm text-red-600"
+                >
+                  {confirmNewPasswordError}
+                </p>
+              )}
             </div>
 
             <button

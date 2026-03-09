@@ -26,7 +26,7 @@
 ### 2. Configuration
 
 **`backend/app/config.py`** loads settings from environment files.  
-Auth and verification-related settings include JWT keys and expiry, email provider settings (`EMAIL_PROVIDER`, `BREVO_*`), and verification code controls (`EMAIL_CODE_*`).
+Auth and verification-related settings include JWT keys and expiry, email provider settings (`EMAIL_PROVIDER`, `BREVO_*`), verification code controls (`EMAIL_CODE_*`), and the optional registration email-policy toggle (`ENABLE_UCL_REGISTRATION_EMAIL_POLICY`).
 
 ### 3. Database Setup
 
@@ -99,6 +99,7 @@ Auth and verification-related settings include JWT keys and expiry, email provid
 | Endpoint | Method | Behaviour |
 |----------|--------|-----------|
 | `/api/auth/register/send-code` | POST | Send registration code; rejects already-registered email or existing username |
+| `/api/auth/register/policy` | GET | Return whether the optional UCL registration email policy is enabled |
 | `/api/auth/register` | POST | Verify code, create user, return token, set refresh cookie |
 | `/api/auth/login` | POST | Validate credentials and return token |
 | `/api/auth/refresh` | POST | Rotate refresh token and return new access token |
@@ -154,15 +155,15 @@ Vite + React + TypeScript + Tailwind CSS, with API and WebSocket proxy settings 
 
 ### 15. Auth Pages
 
-- **`LoginPage.tsx`**: sign-in form and forgot-password entry.
-- **`RegisterPage.tsx`**: onboarding with email code send, code entry, username, password, and skill sliders.
-- **`ForgotPasswordPage.tsx`**: unauthenticated email-code reset flow with client-side email format validation before API calls.
+- **`LoginPage.tsx`**: sign-in form and forgot-password entry, with field-level validation on blur and submit.
+- **`RegisterPage.tsx`**: onboarding with email code send, code entry, username, password, and skill sliders, plus inline validation for required fields, password confirmation, verification code, email format checks, and the optional UCL registration email policy.
+- **`ForgotPasswordPage.tsx`**: unauthenticated email-code reset flow with inline email, verification-code, and password validation, plus field mapping for recognised API errors.
 
 ### 16. Profile Password Pages
 
-- **`ProfilePage.tsx`**: read-only email, editable username/levels, and one `Reset Password` entry that opens the current-password reset page.
-- **`ResetPasswordByPasswordPage.tsx`**: signed-in reset by current password.
-- **`ResetPasswordByEmailPage.tsx`**: signed-in reset by email code, using the current account email in read-only mode.
+- **`ProfilePage.tsx`**: read-only email, editable username/levels, inline username validation, and one `Reset Password` entry that opens the current-password reset page.
+- **`ResetPasswordByPasswordPage.tsx`**: signed-in reset by current password, with inline validation and current-password error mapping.
+- **`ResetPasswordByEmailPage.tsx`**: signed-in reset by email code, using the current account email in read-only mode, with inline verification-code and password validation.
 
 ### 17. Routing
 
@@ -189,11 +190,16 @@ Vite + React + TypeScript + Tailwind CSS, with API and WebSocket proxy settings 
 ## Verification Checklist
 
 - [ ] Register flow requires a valid 6-digit email code.
+- [ ] Required auth/profile fields show inline red validation states after blur or submit, and clear once corrected.
+- [ ] `GET /api/auth/register/policy` returns the active `ENABLE_UCL_REGISTRATION_EMAIL_POLICY` value.
+- [ ] When `ENABLE_UCL_REGISTRATION_EMAIL_POLICY=false`, registration accepts non-UCL email domains if the address is otherwise valid and available.
+- [ ] When `ENABLE_UCL_REGISTRATION_EMAIL_POLICY=true`, non-UCL registrations are rejected unless the address is listed in `ADMIN_EMAIL`.
 - [ ] `/api/auth/password-reset/send-code` returns `404` and `Email is not registered.` for unknown email.
 - [ ] Unknown-email forgot-password requests do not create a reset token record.
 - [ ] `/api/auth/password-reset/confirm` returns `404` and `Email is not registered.` for unknown email.
 - [ ] Signed-in password reset verifies current password and rejects incorrect current password.
 - [ ] Profile update accepts username and level changes and rejects unsupported fields such as `email`.
+- [ ] Known auth/profile API form errors highlight the relevant field instead of falling back to a generic banner.
 - [ ] Password reset by email code remains single-use and respects expiry/attempt limits.
 - [ ] Verification emails contain a full `<html>` document and render correctly in Outlook clients.
 - [ ] Refresh endpoint rotates tokens and preserves authenticated browser sessions.

@@ -1,6 +1,67 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import {
+  FieldErrors,
+  TouchedFields,
+  getFieldErrorId,
+  getReadOnlyInputClass,
+  getTextInputClass,
+  getVisibleFieldError,
+  hasAnyFieldError,
+  isValidVerificationCode,
+  touchFields,
+} from "../forms/fieldValidation";
 import { useAuth } from "../auth/useAuth";
+
+type ResetByEmailField =
+  | "verificationCode"
+  | "newPassword"
+  | "confirmNewPassword";
+
+interface ResetByEmailValues {
+  verificationCode: string;
+  newPassword: string;
+  confirmNewPassword: string;
+}
+
+const resetByEmailFields: readonly ResetByEmailField[] = [
+  "verificationCode",
+  "newPassword",
+  "confirmNewPassword",
+];
+
+function validateResetByEmailValues(
+  values: ResetByEmailValues
+): FieldErrors<ResetByEmailField> {
+  const errors: FieldErrors<ResetByEmailField> = {};
+
+  if (!values.verificationCode || !isValidVerificationCode(values.verificationCode)) {
+    errors.verificationCode = "Please enter a valid 6-digit verification code.";
+  }
+
+  if (!values.newPassword) {
+    errors.newPassword = "Please enter a new password.";
+  } else if (values.newPassword.length < 8) {
+    errors.newPassword = "Password must be at least 8 characters.";
+  }
+
+  if (!values.confirmNewPassword) {
+    errors.confirmNewPassword = "Please confirm your new password.";
+  } else if (values.newPassword !== values.confirmNewPassword) {
+    errors.confirmNewPassword = "Passwords do not match.";
+  }
+
+  return errors;
+}
+
+function mapResetByEmailError(
+  message: string
+): FieldErrors<ResetByEmailField> | null {
+  if (message === "Invalid or expired verification code") {
+    return { verificationCode: message };
+  }
+  return null;
+}
 
 export function ResetPasswordByEmailPage() {
   const { user, sendPasswordResetCode, resetPassword } = useAuth();
@@ -9,6 +70,12 @@ export function ResetPasswordByEmailPage() {
   const [confirmNewPassword, setConfirmNewPassword] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors<ResetByEmailField>>(
+    {}
+  );
+  const [touchedFields, setTouchedFields] = useState<TouchedFields<ResetByEmailField>>(
+    {}
+  );
   const [isSendingCode, setIsSendingCode] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
@@ -26,6 +93,37 @@ export function ResetPasswordByEmailPage() {
   if (!user) {
     return null;
   }
+
+  const getCurrentValues = (
+    overrides: Partial<ResetByEmailValues> = {}
+  ): ResetByEmailValues => ({
+    verificationCode,
+    newPassword,
+    confirmNewPassword,
+    ...overrides,
+  });
+
+  const syncValidation = (nextValues: ResetByEmailValues) => {
+    setFieldErrors(validateResetByEmailValues(nextValues));
+  };
+
+  const handleBlur = (field: ResetByEmailField) => {
+    setTouchedFields((current) => touchFields(current, [field]));
+    syncValidation(getCurrentValues());
+  };
+
+  const handleFieldChange = (
+    field: ResetByEmailField,
+    nextValue: string,
+    apply: () => void
+  ) => {
+    apply();
+    setError("");
+    const nextValues = getCurrentValues({ [field]: nextValue });
+    if (touchedFields[field] || hasAnyFieldError(fieldErrors)) {
+      syncValidation(nextValues);
+    }
+  };
 
   const handleSendCode = async () => {
     setError("");
@@ -46,17 +144,11 @@ export function ResetPasswordByEmailPage() {
     event.preventDefault();
     setError("");
     setMessage("");
-
-    if (!/^\d{6}$/.test(verificationCode)) {
-      setError("Please enter a valid 6-digit verification code.");
-      return;
-    }
-    if (newPassword.length < 8) {
-      setError("Password must be at least 8 characters.");
-      return;
-    }
-    if (newPassword !== confirmNewPassword) {
-      setError("Passwords do not match.");
+    const nextValues = getCurrentValues();
+    const nextErrors = validateResetByEmailValues(nextValues);
+    setFieldErrors(nextErrors);
+    setTouchedFields((current) => touchFields(current, resetByEmailFields));
+    if (hasAnyFieldError(nextErrors)) {
       return;
     }
 
@@ -64,19 +156,44 @@ export function ResetPasswordByEmailPage() {
     try {
       await resetPassword({
         email: user.email,
-        verification_code: verificationCode,
-        new_password: newPassword,
+        verification_code: nextValues.verificationCode,
+        new_password: nextValues.newPassword,
       });
       setMessage("Password reset successfully.");
       setVerificationCode("");
       setNewPassword("");
       setConfirmNewPassword("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Password reset failed.");
+      const message =
+        err instanceof Error ? err.message : "Password reset failed.";
+      const mappedErrors = mapResetByEmailError(message);
+      if (mappedErrors) {
+        const mappedFields = Object.keys(mappedErrors) as ResetByEmailField[];
+        setFieldErrors(mappedErrors);
+        setTouchedFields((current) => touchFields(current, mappedFields));
+        return;
+      }
+      setError(message);
     } finally {
       setIsSubmitting(false);
     }
   };
+
+  const verificationCodeError = getVisibleFieldError(
+    "verificationCode",
+    fieldErrors,
+    touchedFields
+  );
+  const newPasswordError = getVisibleFieldError(
+    "newPassword",
+    fieldErrors,
+    touchedFields
+  );
+  const confirmNewPasswordError = getVisibleFieldError(
+    "confirmNewPassword",
+    fieldErrors,
+    touchedFields
+  );
 
   return (
     <div className="h-full overflow-y-auto">
@@ -100,7 +217,7 @@ export function ResetPasswordByEmailPage() {
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} noValidate className="space-y-4">
             <div>
               <div className="mb-1 flex items-center justify-between gap-3">
                 <label
@@ -126,7 +243,7 @@ export function ResetPasswordByEmailPage() {
                 type="email"
                 id="email"
                 value={user.email}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md bg-gray-100 text-gray-700"
+                className={getReadOnlyInputClass()}
                 readOnly
               />
             </div>
@@ -142,16 +259,38 @@ export function ResetPasswordByEmailPage() {
                 type="text"
                 id="verificationCode"
                 value={verificationCode}
+                onBlur={() => handleBlur("verificationCode")}
                 onChange={(event) =>
-                  setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, 6))
+                  handleFieldChange(
+                    "verificationCode",
+                    event.target.value.replace(/\D/g, "").slice(0, 6),
+                    () => {
+                      setVerificationCode(
+                        event.target.value.replace(/\D/g, "").slice(0, 6)
+                      );
+                    }
+                  )
                 }
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-accent"
-                required
+                className={getTextInputClass(Boolean(verificationCodeError))}
+                aria-invalid={Boolean(verificationCodeError)}
+                aria-describedby={
+                  verificationCodeError
+                    ? getFieldErrorId("reset-email", "verificationCode")
+                    : undefined
+                }
                 maxLength={6}
                 inputMode="numeric"
                 pattern="\d{6}"
                 placeholder="Enter 6-digit code"
               />
+              {verificationCodeError && (
+                <p
+                  id={getFieldErrorId("reset-email", "verificationCode")}
+                  className="mt-1 text-sm text-red-600"
+                >
+                  {verificationCodeError}
+                </p>
+              )}
             </div>
 
             <div>
@@ -165,11 +304,29 @@ export function ResetPasswordByEmailPage() {
                 type="password"
                 id="newPassword"
                 value={newPassword}
-                onChange={(event) => setNewPassword(event.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-accent"
-                required
+                onBlur={() => handleBlur("newPassword")}
+                onChange={(event) =>
+                  handleFieldChange("newPassword", event.target.value, () => {
+                    setNewPassword(event.target.value);
+                  })
+                }
+                className={getTextInputClass(Boolean(newPasswordError))}
+                aria-invalid={Boolean(newPasswordError)}
+                aria-describedby={
+                  newPasswordError
+                    ? getFieldErrorId("reset-email", "newPassword")
+                    : undefined
+                }
                 minLength={8}
               />
+              {newPasswordError && (
+                <p
+                  id={getFieldErrorId("reset-email", "newPassword")}
+                  className="mt-1 text-sm text-red-600"
+                >
+                  {newPasswordError}
+                </p>
+              )}
             </div>
 
             <div>
@@ -183,10 +340,32 @@ export function ResetPasswordByEmailPage() {
                 type="password"
                 id="confirmNewPassword"
                 value={confirmNewPassword}
-                onChange={(event) => setConfirmNewPassword(event.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-accent"
-                required
+                onBlur={() => handleBlur("confirmNewPassword")}
+                onChange={(event) =>
+                  handleFieldChange(
+                    "confirmNewPassword",
+                    event.target.value,
+                    () => {
+                      setConfirmNewPassword(event.target.value);
+                    }
+                  )
+                }
+                className={getTextInputClass(Boolean(confirmNewPasswordError))}
+                aria-invalid={Boolean(confirmNewPasswordError)}
+                aria-describedby={
+                  confirmNewPasswordError
+                    ? getFieldErrorId("reset-email", "confirmNewPassword")
+                    : undefined
+                }
               />
+              {confirmNewPasswordError && (
+                <p
+                  id={getFieldErrorId("reset-email", "confirmNewPassword")}
+                  className="mt-1 text-sm text-red-600"
+                >
+                  {confirmNewPasswordError}
+                </p>
+              )}
             </div>
 
             <button

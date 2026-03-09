@@ -81,6 +81,8 @@ def _integrity_error_detail(exc: IntegrityError) -> str | None:
 
 def _validate_registration_email_or_raise(normalised_email: str) -> None:
     """Enforce the registration email policy, with an admin-email exemption."""
+    if not settings.enable_ucl_registration_email_policy:
+        return
     if normalised_email in settings.admin_email_set:
         return
     if UCL_STUDENT_REGISTRATION_EMAIL_PATTERN.fullmatch(normalised_email):
@@ -89,6 +91,14 @@ def _validate_registration_email_or_raise(normalised_email: str) -> None:
         status_code=status.HTTP_400_BAD_REQUEST,
         detail=REGISTRATION_EMAIL_POLICY_DETAIL,
     )
+
+
+@router.get("/register/policy")
+async def get_registration_policy():
+    """Return the active registration email-policy settings."""
+    return {
+        "enable_ucl_registration_email_policy": settings.enable_ucl_registration_email_policy
+    }
 
 
 @router.post("/register/send-code")

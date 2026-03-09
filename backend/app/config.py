@@ -84,6 +84,7 @@ class Settings(BaseSettings):
     email_code_resend_cooldown_seconds: int = 60
     email_code_max_attempts: int = 5
     email_code_hmac_secret: str = ""
+    enable_ucl_registration_email_policy: bool = False
 
     # LLM providers
     # Provider/model choices are supplied via environment variables (.env / deploy env).
