@@ -15,7 +15,7 @@ from app.ai.pricing import estimate_llm_cost_usd
 from app.ai.pricing import get_model_pricing
 from app.config import LLM_PRICING, settings
 from app.dependencies import get_admin_user, get_db
-from app.models.chat import ChatMessage, DailyTokenUsage
+from app.models.chat import ChatMessage, RetainedModelUsage
 from app.models.user import User
 from app.routers.health import ai_model_catalog_health_check, invalidate_ai_model_catalog_cache
 from app.schemas.zone import (
@@ -169,19 +169,11 @@ def _estimate_cost(input_tokens: int, output_tokens: int) -> float:
 
 async def _aggregate_usage(db: AsyncSession, start_date: date) -> dict:
     """Sum token usage from start_date to today."""
-    result = await db.execute(
-        select(
-            func.coalesce(func.sum(DailyTokenUsage.input_tokens_used), 0),
-            func.coalesce(func.sum(DailyTokenUsage.output_tokens_used), 0),
-        ).where(DailyTokenUsage.date >= start_date)
-    )
-    row = result.one()
-    input_tokens = int(row[0])
-    output_tokens = int(row[1])
-
     start_dt = datetime.combine(start_date, time.min)
-    cost_result = await db.execute(
+    active_result = await db.execute(
         select(
+            func.coalesce(func.sum(ChatMessage.input_tokens), 0),
+            func.coalesce(func.sum(ChatMessage.output_tokens), 0),
             func.coalesce(func.sum(ChatMessage.estimated_cost_usd), 0.0),
             func.count(ChatMessage.id),
             func.count(ChatMessage.estimated_cost_usd),
@@ -190,10 +182,28 @@ async def _aggregate_usage(db: AsyncSession, start_date: date) -> dict:
             ChatMessage.created_at >= start_dt,
         )
     )
-    cost_row = cost_result.one()
-    estimated_cost_usd = round(float(cost_row[0] or 0.0), 4)
-    assistant_count = int(cost_row[1] or 0)
-    cost_count = int(cost_row[2] or 0)
+    active_row = active_result.one()
+    retained_result = await db.execute(
+        select(
+            func.coalesce(func.sum(RetainedModelUsage.input_tokens), 0),
+            func.coalesce(func.sum(RetainedModelUsage.output_tokens), 0),
+            func.coalesce(func.sum(RetainedModelUsage.estimated_cost_usd), 0.0),
+            func.coalesce(func.sum(RetainedModelUsage.assistant_message_count), 0),
+            func.coalesce(func.sum(RetainedModelUsage.cost_metadata_count), 0),
+        ).where(
+            RetainedModelUsage.date >= start_date,
+        )
+    )
+    retained_row = retained_result.one()
+
+    input_tokens = int(active_row[0] or 0) + int(retained_row[0] or 0)
+    output_tokens = int(active_row[1] or 0) + int(retained_row[1] or 0)
+    estimated_cost_usd = round(
+        float(active_row[2] or 0.0) + float(retained_row[2] or 0.0),
+        4,
+    )
+    assistant_count = int(active_row[3] or 0) + int(retained_row[3] or 0)
+    cost_count = int(active_row[4] or 0) + int(retained_row[4] or 0)
     coverage = 1.0 if assistant_count == 0 else round(cost_count / assistant_count, 4)
 
     return {
@@ -202,6 +212,16 @@ async def _aggregate_usage(db: AsyncSession, start_date: date) -> dict:
         "estimated_cost_usd": estimated_cost_usd,
         "estimated_cost_coverage": coverage,
     }
+
+
+def _provider_usage_filter(column, *, selected_provider_id: str, canonical_provider_id: str):
+    if selected_provider_id in {GOOGLE_AI_STUDIO_PROVIDER, GOOGLE_VERTEX_PROVIDER}:
+        # Include legacy rows stored as plain `google` before provider split.
+        return or_(
+            column == selected_provider_id,
+            column == canonical_provider_id,
+        )
+    return column == canonical_provider_id
 
 
 def _configured_llm_models_by_provider() -> dict[str, str]:
@@ -262,16 +282,8 @@ async def _aggregate_usage_for_model(
     model_id: str,
 ) -> dict:
     """Aggregate usage scoped to a specific provider/model pair."""
-    provider_filter = ChatMessage.llm_provider == canonical_provider_id
-    if selected_provider_id in {GOOGLE_AI_STUDIO_PROVIDER, GOOGLE_VERTEX_PROVIDER}:
-        # Include legacy rows stored as plain `google` before provider split.
-        provider_filter = or_(
-            ChatMessage.llm_provider == selected_provider_id,
-            ChatMessage.llm_provider == canonical_provider_id,
-        )
-
     start_dt = datetime.combine(start_date, time.min)
-    result = await db.execute(
+    active_result = await db.execute(
         select(
             func.coalesce(func.sum(ChatMessage.input_tokens), 0),
             func.coalesce(func.sum(ChatMessage.output_tokens), 0),
@@ -281,16 +293,41 @@ async def _aggregate_usage_for_model(
         ).where(
             ChatMessage.role == "assistant",
             ChatMessage.created_at >= start_dt,
-            provider_filter,
+            _provider_usage_filter(
+                ChatMessage.llm_provider,
+                selected_provider_id=selected_provider_id,
+                canonical_provider_id=canonical_provider_id,
+            ),
             ChatMessage.llm_model == model_id,
         )
     )
-    row = result.one()
-    input_tokens = int(row[0] or 0)
-    output_tokens = int(row[1] or 0)
-    estimated_cost_usd = round(float(row[2] or 0.0), 4)
-    assistant_count = int(row[3] or 0)
-    cost_count = int(row[4] or 0)
+    active_row = active_result.one()
+    retained_result = await db.execute(
+        select(
+            func.coalesce(func.sum(RetainedModelUsage.input_tokens), 0),
+            func.coalesce(func.sum(RetainedModelUsage.output_tokens), 0),
+            func.coalesce(func.sum(RetainedModelUsage.estimated_cost_usd), 0.0),
+            func.coalesce(func.sum(RetainedModelUsage.assistant_message_count), 0),
+            func.coalesce(func.sum(RetainedModelUsage.cost_metadata_count), 0),
+        ).where(
+            RetainedModelUsage.date >= start_date,
+            _provider_usage_filter(
+                RetainedModelUsage.llm_provider,
+                selected_provider_id=selected_provider_id,
+                canonical_provider_id=canonical_provider_id,
+            ),
+            RetainedModelUsage.llm_model == model_id,
+        )
+    )
+    retained_row = retained_result.one()
+    input_tokens = int(active_row[0] or 0) + int(retained_row[0] or 0)
+    output_tokens = int(active_row[1] or 0) + int(retained_row[1] or 0)
+    estimated_cost_usd = round(
+        float(active_row[2] or 0.0) + float(retained_row[2] or 0.0),
+        4,
+    )
+    assistant_count = int(active_row[3] or 0) + int(retained_row[3] or 0)
+    cost_count = int(active_row[4] or 0) + int(retained_row[4] or 0)
     coverage = 1.0 if assistant_count == 0 else round(cost_count / assistant_count, 4)
     return {
         "input_tokens": input_tokens,

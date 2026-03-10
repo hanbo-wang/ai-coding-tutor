@@ -16,10 +16,10 @@ from app.routers.admin import (
 
 
 class _FakeAggregateResult:
-    def __init__(self, row: tuple[int, int]) -> None:
+    def __init__(self, row: tuple) -> None:
         self._row = row
 
-    def one(self) -> tuple[int, int]:
+    def one(self) -> tuple:
         return self._row
 
 
@@ -64,17 +64,17 @@ async def test_aggregate_usage_returns_totals_and_cost(monkeypatch) -> None:
     """Usage aggregation should include summed tokens and estimated cost."""
     monkeypatch.setattr("app.routers.admin.settings.llm_provider", "anthropic")
     db = _FakeAsyncSession([
-        (1234, 5678),        # daily_token_usage totals
-        (0.1234, 10, 8),     # cost sum, assistant count, cost count
+        (1234, 5678, 0.1234, 10, 8),  # active assistant message totals
+        (111, 222, 0.05, 2, 1),       # retained deleted-account totals
     ])
 
     usage = await _aggregate_usage(db, start_date=date(2026, 1, 1))
 
     assert len(db.executed) == 2
-    assert usage["input_tokens"] == 1234
-    assert usage["output_tokens"] == 5678
-    assert usage["estimated_cost_usd"] == 0.1234
-    assert usage["estimated_cost_coverage"] == 0.8
+    assert usage["input_tokens"] == 1345
+    assert usage["output_tokens"] == 5900
+    assert usage["estimated_cost_usd"] == 0.1734
+    assert usage["estimated_cost_coverage"] == 0.75
 
 
 @pytest.mark.asyncio
@@ -82,6 +82,7 @@ async def test_aggregate_usage_for_model_filters_and_returns_cost() -> None:
     """Model-scoped aggregation should return token totals, cost, and coverage."""
     db = _FakeAsyncSession([
         (321, 654, 0.4321, 12, 9),
+        (79, 46, 0.0679, 3, 2),
     ])
 
     usage = await _aggregate_usage_for_model(
@@ -92,11 +93,11 @@ async def test_aggregate_usage_for_model_filters_and_returns_cost() -> None:
         model_id="gpt-5-mini",
     )
 
-    assert len(db.executed) == 1
-    assert usage["input_tokens"] == 321
-    assert usage["output_tokens"] == 654
-    assert usage["estimated_cost_usd"] == 0.4321
-    assert usage["estimated_cost_coverage"] == 0.75
+    assert len(db.executed) == 2
+    assert usage["input_tokens"] == 400
+    assert usage["output_tokens"] == 700
+    assert usage["estimated_cost_usd"] == 0.5
+    assert usage["estimated_cost_coverage"] == 0.7333
 
 
 @pytest.mark.asyncio

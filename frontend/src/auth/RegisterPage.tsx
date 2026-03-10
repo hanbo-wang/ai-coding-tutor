@@ -13,6 +13,7 @@ import {
   isValidVerificationCode,
   touchFields,
 } from "../forms/fieldValidation";
+import { UserNoticeDialog } from "./UserNoticeDialog";
 import { useAuth } from "./useAuth";
 
 const UCL_DOMAIN_PATTERN = /@ucl\.ac\.uk$/i;
@@ -20,13 +21,16 @@ const UCL_STUDENT_EMAIL_PATTERN = /^[a-z0-9]+(?:\.[a-z0-9]+)*\.[0-9]+@ucl\.ac\.u
 const REGISTRATION_EMAIL_POLICY_DETAIL =
   "Registration is limited to UCL student emails in the format " +
   "name.name.<digits>@ucl.ac.uk. Configured admin emails are exempt.";
+const USER_NOTICE_ACCEPTANCE_DETAIL =
+  "Please accept the Guided Cursor user notice.";
 
 type RegisterField =
   | "email"
   | "verificationCode"
   | "username"
   | "password"
-  | "confirmPassword";
+  | "confirmPassword"
+  | "acceptedUserNotice";
 
 interface RegisterValues {
   email: string;
@@ -34,6 +38,7 @@ interface RegisterValues {
   username: string;
   password: string;
   confirmPassword: string;
+  acceptedUserNotice: boolean;
 }
 
 const registerFields: readonly RegisterField[] = [
@@ -42,6 +47,7 @@ const registerFields: readonly RegisterField[] = [
   "username",
   "password",
   "confirmPassword",
+  "acceptedUserNotice",
 ];
 
 const registerSendCodeFields: readonly RegisterField[] = ["email", "username"];
@@ -124,6 +130,10 @@ function validateRegisterValues(
     errors.confirmPassword = "Passwords do not match.";
   }
 
+  if (!values.acceptedUserNotice) {
+    errors.acceptedUserNotice = USER_NOTICE_ACCEPTANCE_DETAIL;
+  }
+
   return errors;
 }
 
@@ -140,6 +150,9 @@ function mapRegisterError(message: string): FieldErrors<RegisterField> | null {
   if (message === "Invalid or expired verification code") {
     return { verificationCode: message };
   }
+  if (message === USER_NOTICE_ACCEPTANCE_DETAIL) {
+    return { acceptedUserNotice: message };
+  }
   return null;
 }
 
@@ -149,6 +162,7 @@ export function RegisterPage() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [verificationCode, setVerificationCode] = useState("");
+  const [acceptedUserNotice, setAcceptedUserNotice] = useState(false);
   const [codeMessage, setCodeMessage] = useState("");
   const [programmingLevel, setProgrammingLevel] = useState(3);
   const [mathsLevel, setMathsLevel] = useState(3);
@@ -165,6 +179,7 @@ export function RegisterPage() {
   const [isSendingCode, setIsSendingCode] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
+  const [isUserNoticeOpen, setIsUserNoticeOpen] = useState(false);
   const { register, sendRegisterCode } = useAuth();
   const navigate = useNavigate();
 
@@ -211,6 +226,7 @@ export function RegisterPage() {
     username,
     password,
     confirmPassword,
+    acceptedUserNotice,
     ...overrides,
   });
 
@@ -291,6 +307,18 @@ export function RegisterPage() {
     }
   };
 
+  const handleAcceptedUserNoticeChange = (nextAcceptedUserNotice: boolean) => {
+    setAcceptedUserNotice(nextAcceptedUserNotice);
+    setError("");
+    const nextValues = getCurrentValues({
+      acceptedUserNotice: nextAcceptedUserNotice,
+    });
+
+    if (touchedFields.acceptedUserNotice || hasAnyFieldError(fieldErrors)) {
+      syncValidation(nextValues);
+    }
+  };
+
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setError("");
@@ -322,6 +350,7 @@ export function RegisterPage() {
         username: normalisedUsername,
         password,
         verification_code: verificationCode,
+        accepted_user_notice: nextValues.acceptedUserNotice,
         programming_level: programmingLevel,
         maths_level: mathsLevel,
       });
@@ -360,6 +389,11 @@ export function RegisterPage() {
   );
   const confirmPasswordError = getVisibleFieldError(
     "confirmPassword",
+    fieldErrors,
+    touchedFields
+  );
+  const acceptedUserNoticeError = getVisibleFieldError(
+    "acceptedUserNotice",
     fieldErrors,
     touchedFields
   );
@@ -641,6 +675,63 @@ export function RegisterPage() {
               </div>
             </div>
 
+            <div
+              className={`rounded-md border px-4 py-3 ${
+                acceptedUserNoticeError
+                  ? "border-red-300 bg-red-50/70"
+                  : "border-gray-200 bg-gray-50"
+              }`}
+            >
+              <div className="flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  id="acceptedUserNotice"
+                  checked={acceptedUserNotice}
+                  onBlur={() => handleBlur("acceptedUserNotice")}
+                  onChange={(event) =>
+                    handleAcceptedUserNoticeChange(event.target.checked)
+                  }
+                  className="mt-1 h-4 w-4 rounded border-gray-300 text-accent focus:ring-accent"
+                  aria-invalid={Boolean(acceptedUserNoticeError)}
+                  aria-describedby={
+                    acceptedUserNoticeError
+                      ? getFieldErrorId("register", "acceptedUserNotice")
+                      : undefined
+                  }
+                />
+                <div className="space-y-2">
+                  <div className="text-sm text-gray-700">
+                    <label
+                      htmlFor="acceptedUserNotice"
+                      className="font-medium text-gray-900"
+                    >
+                      I have read and agree to the
+                    </label>{" "}
+                    <button
+                      type="button"
+                      onClick={() => setIsUserNoticeOpen(true)}
+                      className="font-medium text-accent-dark hover:underline"
+                    >
+                      User Notice
+                    </button>
+                    .
+                  </div>
+                  <p className="text-xs text-gray-600">
+                    Open the notice to review privacy, data retention, and
+                    contact details.
+                  </p>
+                  {acceptedUserNoticeError && (
+                    <p
+                      id={getFieldErrorId("register", "acceptedUserNotice")}
+                      className="text-sm text-red-600"
+                    >
+                      {acceptedUserNoticeError}
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+
             <button
               type="submit"
               disabled={isSubmitting}
@@ -663,6 +754,11 @@ export function RegisterPage() {
             </Link>
           </p>
         </div>
+
+        <UserNoticeDialog
+          isOpen={isUserNoticeOpen}
+          onClose={() => setIsUserNoticeOpen(false)}
+        />
       </div>
     </div>
   );

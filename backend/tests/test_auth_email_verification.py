@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime, timedelta, timezone
+
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
@@ -12,12 +14,25 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 import app.models  # noqa: F401
 from app.config import settings
 from app.dependencies import get_db
+from app.models.audit import AdminAuditLog
+from app.models.chat import (
+    ChatMessage,
+    ChatSession,
+    DailyTokenUsage,
+    RetainedDailyTokenUsage,
+    UploadedFile,
+)
 from app.models.email_verification import EmailVerificationToken
+from app.models.notebook import UserNotebook
 from app.models.user import Base, User
+from app.models.zone import LearningZone, ZoneNotebook, ZoneNotebookProgress
+from app.routers.admin import router as admin_router
 from app.routers.auth import (
     REGISTRATION_EMAIL_POLICY_DETAIL,
+    USER_NOTICE_ACCEPTANCE_DETAIL,
     router as auth_router,
 )
+from app.routers.chat import router as chat_router
 from app.services.auth_service import hash_password, verify_password
 
 
@@ -60,6 +75,8 @@ async def auth_email_client(tmp_path, monkeypatch: pytest.MonkeyPatch):
 
     app = FastAPI(title="auth-email-test-app")
     app.include_router(auth_router)
+    app.include_router(chat_router)
+    app.include_router(admin_router)
 
     async def override_get_db():
         async with session_factory() as session:
@@ -96,6 +113,35 @@ async def _create_user(
         await db.commit()
 
 
+async def _register_user(
+    client: AsyncClient,
+    *,
+    email: str,
+    username: str,
+    password: str = "StrongPass123",
+) -> str:
+    send_code = await client.post(
+        "/api/auth/register/send-code",
+        json={"email": email, "username": username},
+    )
+    assert send_code.status_code == 200
+
+    register = await client.post(
+        "/api/auth/register",
+        json={
+            "email": email,
+            "username": username,
+            "password": password,
+            "verification_code": "123456",
+            "accepted_user_notice": True,
+            "programming_level": 3,
+            "maths_level": 3,
+        },
+    )
+    assert register.status_code == 200
+    return register.json()["access_token"]
+
+
 @pytest.mark.asyncio
 async def test_register_send_code_success_and_duplicate_email_rejected(auth_email_client) -> None:
     client, _, _ = auth_email_client
@@ -113,6 +159,7 @@ async def test_register_send_code_success_and_duplicate_email_rejected(auth_emai
             "username": "new_user",
             "password": "StrongPass123",
             "verification_code": "123456",
+            "accepted_user_notice": True,
             "programming_level": 3,
             "maths_level": 3,
         },
@@ -216,6 +263,7 @@ async def test_register_allows_admin_email_exemption_when_policy_enabled(
             "username": "admin_user",
             "password": "StrongPass123",
             "verification_code": "123456",
+            "accepted_user_notice": True,
             "programming_level": 3,
             "maths_level": 3,
         },
@@ -281,6 +329,7 @@ async def test_register_rejects_duplicate_username_after_code_issue(auth_email_c
             "username": "taken_name",
             "password": "StrongPass123",
             "verification_code": "123456",
+            "accepted_user_notice": True,
             "programming_level": 3,
             "maths_level": 3,
         },
@@ -295,6 +344,7 @@ async def test_register_rejects_duplicate_username_after_code_issue(auth_email_c
             "username": "new_name",
             "password": "StrongPass123",
             "verification_code": "123456",
+            "accepted_user_notice": True,
             "programming_level": 3,
             "maths_level": 3,
         },
@@ -319,6 +369,7 @@ async def test_register_rejects_invalid_code(auth_email_client) -> None:
             "username": "wrong_user",
             "password": "StrongPass123",
             "verification_code": "999999",
+            "accepted_user_notice": True,
             "programming_level": 3,
             "maths_level": 3,
         },
@@ -355,6 +406,7 @@ async def test_register_rejects_expired_code(auth_email_client) -> None:
             "username": "expired_user",
             "password": "StrongPass123",
             "verification_code": "123456",
+            "accepted_user_notice": True,
             "programming_level": 3,
             "maths_level": 3,
         },
@@ -381,6 +433,7 @@ async def test_register_rejects_after_max_failed_attempts(auth_email_client) -> 
                 "username": "attempts_user",
                 "password": "StrongPass123",
                 "verification_code": "999999",
+                "accepted_user_notice": True,
                 "programming_level": 3,
                 "maths_level": 3,
             },
@@ -394,12 +447,53 @@ async def test_register_rejects_after_max_failed_attempts(auth_email_client) -> 
             "username": "attempts_user",
             "password": "StrongPass123",
             "verification_code": "123456",
+            "accepted_user_notice": True,
             "programming_level": 3,
             "maths_level": 3,
         },
     )
     assert final_try.status_code == 400
     assert final_try.json()["detail"] == "Invalid or expired verification code"
+
+
+@pytest.mark.asyncio
+async def test_register_requires_user_notice_acceptance(auth_email_client) -> None:
+    client, _, _ = auth_email_client
+
+    send_code = await client.post(
+        "/api/auth/register/send-code",
+        json={"email": "notice.user@example.com", "username": "notice_user"},
+    )
+    assert send_code.status_code == 200
+
+    rejected = await client.post(
+        "/api/auth/register",
+        json={
+            "email": "notice.user@example.com",
+            "username": "notice_user",
+            "password": "StrongPass123",
+            "verification_code": "123456",
+            "accepted_user_notice": False,
+            "programming_level": 3,
+            "maths_level": 3,
+        },
+    )
+    assert rejected.status_code == 400
+    assert rejected.json()["detail"] == USER_NOTICE_ACCEPTANCE_DETAIL
+
+    retry = await client.post(
+        "/api/auth/register",
+        json={
+            "email": "notice.user@example.com",
+            "username": "notice_user",
+            "password": "StrongPass123",
+            "verification_code": "123456",
+            "accepted_user_notice": True,
+            "programming_level": 3,
+            "maths_level": 3,
+        },
+    )
+    assert retry.status_code == 200
 
 
 @pytest.mark.asyncio
@@ -587,3 +681,418 @@ async def test_profile_update_rejects_email_field(auth_email_client) -> None:
         json={"email": "new@example.com"},
     )
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_delete_account_removes_owned_data_and_files(
+    auth_email_client,
+    tmp_path,
+) -> None:
+    client, session_factory, _ = auth_email_client
+    token = await _register_user(
+        client,
+        email="delete.user@example.com",
+        username="delete_user",
+    )
+    headers = _auth_headers(token)
+
+    notebook_dir = tmp_path / "notebooks"
+    upload_dir = tmp_path / "uploads"
+    notebook_dir.mkdir(parents=True, exist_ok=True)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    notebook_path = notebook_dir / "owned.ipynb"
+    upload_path = upload_dir / "owned.txt"
+    notebook_path.write_text('{"cells":[]}', encoding="utf-8")
+    upload_path.write_text("owned upload", encoding="utf-8")
+
+    async with session_factory() as db:
+        user = (
+            await db.execute(select(User).where(User.email == "delete.user@example.com"))
+        ).scalar_one()
+
+        session = ChatSession(user_id=user.id, session_type="general")
+        zone = LearningZone(title="Zone", description="Delete test", order=1)
+        db.add_all([session, zone])
+        await db.flush()
+
+        zone_notebook = ZoneNotebook(
+            zone_id=zone.id,
+            title="Zone Notebook",
+            description="Delete test notebook",
+            original_filename="zone.ipynb",
+            stored_filename="zone.ipynb",
+            storage_path=str(tmp_path / "zone.ipynb"),
+            notebook_json='{"cells":[]}',
+            extracted_text=None,
+            size_bytes=12,
+            order=1,
+        )
+        db.add(zone_notebook)
+        await db.flush()
+
+        db.add_all(
+            [
+                ChatMessage(session_id=session.id, role="user", content="hello"),
+                DailyTokenUsage(
+                    user_id=user.id,
+                    date=datetime(2026, 3, 10, tzinfo=timezone.utc).date(),
+                    input_tokens_used=12,
+                    output_tokens_used=8,
+                ),
+                UploadedFile(
+                    user_id=user.id,
+                    original_filename="owned.txt",
+                    stored_filename="owned.txt",
+                    content_type="text/plain",
+                    file_type="document",
+                    size_bytes=11,
+                    storage_path=str(upload_path),
+                    extracted_text="owned upload",
+                    expires_at=datetime.now(timezone.utc).replace(tzinfo=None)
+                    + timedelta(hours=1),
+                ),
+                UserNotebook(
+                    user_id=user.id,
+                    title="Owned Notebook",
+                    original_filename="owned.ipynb",
+                    stored_filename="owned.ipynb",
+                    storage_path=str(notebook_path),
+                    notebook_json='{"cells":[]}',
+                    extracted_text="owned notebook",
+                    size_bytes=12,
+                ),
+                ZoneNotebookProgress(
+                    user_id=user.id,
+                    zone_notebook_id=zone_notebook.id,
+                    notebook_state='{"cells":[]}',
+                ),
+                EmailVerificationToken(
+                    email=user.email,
+                    purpose="reset_password",
+                    code_hash="hash",
+                    expires_at=datetime.now(timezone.utc).replace(tzinfo=None)
+                    + timedelta(minutes=10),
+                    resend_available_at=datetime.now(timezone.utc).replace(
+                        tzinfo=None
+                    ),
+                ),
+                AdminAuditLog(
+                    admin_email=user.email,
+                    action="delete",
+                    resource_type="zone",
+                    details="owned audit row",
+                ),
+            ]
+        )
+        await db.commit()
+
+    deleted = await client.delete("/api/auth/me", headers=headers)
+    assert deleted.status_code == 200
+    assert deleted.json()["message"] == "Account deleted successfully."
+    cookie_header = deleted.headers.get("set-cookie", "").lower()
+    assert "refresh_token=" in cookie_header
+    assert "max-age=0" in cookie_header
+
+    me_after_delete = await client.get("/api/auth/me", headers=headers)
+    assert me_after_delete.status_code == 401
+    assert me_after_delete.json()["detail"] == "User not found"
+
+    async with session_factory() as db:
+        assert (
+            await db.execute(select(User).where(User.email == "delete.user@example.com"))
+        ).scalar_one_or_none() is None
+        assert (await db.execute(select(ChatSession))).scalars().all() == []
+        assert (await db.execute(select(ChatMessage))).scalars().all() == []
+        assert (await db.execute(select(DailyTokenUsage))).scalars().all() == []
+        retained_rows = (
+            await db.execute(select(RetainedDailyTokenUsage))
+        ).scalars().all()
+        assert len(retained_rows) == 1
+        assert retained_rows[0].input_tokens_used == 12
+        assert retained_rows[0].output_tokens_used == 8
+        assert (await db.execute(select(UploadedFile))).scalars().all() == []
+        assert (await db.execute(select(UserNotebook))).scalars().all() == []
+        assert (await db.execute(select(ZoneNotebookProgress))).scalars().all() == []
+        assert (await db.execute(select(EmailVerificationToken))).scalars().all() == []
+        audit_rows = (await db.execute(select(AdminAuditLog))).scalars().all()
+        assert len(audit_rows) == 1
+        assert audit_rows[0].admin_email == "delete.user@example.com"
+        assert (await db.execute(select(LearningZone))).scalars().all() != []
+        assert (await db.execute(select(ZoneNotebook))).scalars().all() != []
+
+    assert not notebook_path.exists()
+    assert not upload_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_register_restores_retained_usage_for_same_email_in_current_week(
+    auth_email_client,
+) -> None:
+    client, session_factory, _ = auth_email_client
+    token = await _register_user(
+        client,
+        email="restore.user@example.com",
+        username="restore_user",
+    )
+    headers = _auth_headers(token)
+    today = date.today()
+
+    async with session_factory() as db:
+        user = (
+            await db.execute(select(User).where(User.email == "restore.user@example.com"))
+        ).scalar_one()
+        db.add(
+            DailyTokenUsage(
+                user_id=user.id,
+                date=today,
+                input_tokens_used=50,
+                output_tokens_used=20,
+            )
+        )
+        await db.commit()
+
+    deleted = await client.delete("/api/auth/me", headers=headers)
+    assert deleted.status_code == 200
+
+    replacement_token = await _register_user(
+        client,
+        email="restore.user@example.com",
+        username="restore_user_again",
+    )
+    replacement_headers = _auth_headers(replacement_token)
+
+    usage_response = await client.get("/api/chat/usage", headers=replacement_headers)
+    assert usage_response.status_code == 200
+    usage = usage_response.json()
+    week_start = today - timedelta(days=today.weekday())
+    week_end = week_start + timedelta(days=6)
+    assert usage["week_start"] == week_start.isoformat()
+    assert usage["week_end"] == week_end.isoformat()
+    assert usage["input_tokens_used"] == 50
+    assert usage["output_tokens_used"] == 20
+    assert usage["weighted_tokens_used"] == 30.0
+
+    async with session_factory() as db:
+        restored_user = (
+            await db.execute(select(User).where(User.email == "restore.user@example.com"))
+        ).scalar_one()
+        restored_rows = (
+            await db.execute(
+                select(DailyTokenUsage).where(DailyTokenUsage.user_id == restored_user.id)
+            )
+        ).scalars().all()
+        assert len(restored_rows) == 1
+        assert restored_rows[0].date == today
+        assert restored_rows[0].input_tokens_used == 50
+        assert restored_rows[0].output_tokens_used == 20
+        assert (await db.execute(select(RetainedDailyTokenUsage))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_register_does_not_restore_retained_usage_for_different_email(
+    auth_email_client,
+) -> None:
+    client, session_factory, _ = auth_email_client
+    token = await _register_user(
+        client,
+        email="archive.only@example.com",
+        username="archive_only",
+    )
+    headers = _auth_headers(token)
+    today = date.today()
+
+    async with session_factory() as db:
+        user = (
+            await db.execute(select(User).where(User.email == "archive.only@example.com"))
+        ).scalar_one()
+        db.add(
+            DailyTokenUsage(
+                user_id=user.id,
+                date=today,
+                input_tokens_used=25,
+                output_tokens_used=10,
+            )
+        )
+        await db.commit()
+
+    deleted = await client.delete("/api/auth/me", headers=headers)
+    assert deleted.status_code == 200
+
+    replacement_token = await _register_user(
+        client,
+        email="different.user@example.com",
+        username="different_user",
+    )
+    usage_response = await client.get(
+        "/api/chat/usage",
+        headers=_auth_headers(replacement_token),
+    )
+    assert usage_response.status_code == 200
+    usage = usage_response.json()
+    assert usage["input_tokens_used"] == 0
+    assert usage["output_tokens_used"] == 0
+    assert usage["weighted_tokens_used"] == 0.0
+
+    async with session_factory() as db:
+        retained_rows = (
+            await db.execute(select(RetainedDailyTokenUsage))
+        ).scalars().all()
+        assert len(retained_rows) == 1
+        assert retained_rows[0].input_tokens_used == 25
+        assert retained_rows[0].output_tokens_used == 10
+
+
+@pytest.mark.asyncio
+async def test_register_restores_previous_week_usage_without_counting_it_in_current_week(
+    auth_email_client,
+) -> None:
+    client, session_factory, _ = auth_email_client
+    token = await _register_user(
+        client,
+        email="week.boundary@example.com",
+        username="week_boundary",
+    )
+    headers = _auth_headers(token)
+    today = date.today()
+    current_week_start = today - timedelta(days=today.weekday())
+    previous_week_day = current_week_start - timedelta(days=1)
+
+    async with session_factory() as db:
+        user = (
+            await db.execute(select(User).where(User.email == "week.boundary@example.com"))
+        ).scalar_one()
+        db.add(
+            DailyTokenUsage(
+                user_id=user.id,
+                date=previous_week_day,
+                input_tokens_used=70,
+                output_tokens_used=35,
+            )
+        )
+        await db.commit()
+
+    deleted = await client.delete("/api/auth/me", headers=headers)
+    assert deleted.status_code == 200
+
+    replacement_token = await _register_user(
+        client,
+        email="week.boundary@example.com",
+        username="week_boundary_again",
+    )
+    replacement_headers = _auth_headers(replacement_token)
+
+    usage_response = await client.get("/api/chat/usage", headers=replacement_headers)
+    assert usage_response.status_code == 200
+    usage = usage_response.json()
+    week_end = current_week_start + timedelta(days=6)
+    assert usage["week_start"] == current_week_start.isoformat()
+    assert usage["week_end"] == week_end.isoformat()
+    assert usage["input_tokens_used"] == 0
+    assert usage["output_tokens_used"] == 0
+    assert usage["weighted_tokens_used"] == 0.0
+
+    async with session_factory() as db:
+        restored_user = (
+            await db.execute(
+                select(User).where(User.email == "week.boundary@example.com")
+            )
+        ).scalar_one()
+        restored_rows = (
+            await db.execute(
+                select(DailyTokenUsage).where(DailyTokenUsage.user_id == restored_user.id)
+            )
+        ).scalars().all()
+        assert len(restored_rows) == 1
+        assert restored_rows[0].date == previous_week_day
+        assert restored_rows[0].input_tokens_used == 70
+        assert restored_rows[0].output_tokens_used == 35
+        assert (await db.execute(select(RetainedDailyTokenUsage))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_admin_usage_totals_and_model_stats_remain_after_user_deletion(
+    auth_email_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, session_factory, _ = auth_email_client
+    monkeypatch.setattr(settings, "admin_email", "admin@example.com")
+
+    admin_token = await _register_user(
+        client,
+        email="admin@example.com",
+        username="admin_user",
+    )
+    student_token = await _register_user(
+        client,
+        email="tracked.user@example.com",
+        username="tracked_user",
+    )
+    admin_headers = _auth_headers(admin_token)
+    student_headers = _auth_headers(student_token)
+    created_at = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    async with session_factory() as db:
+        student = (
+            await db.execute(select(User).where(User.email == "tracked.user@example.com"))
+        ).scalar_one()
+        session = ChatSession(
+            user_id=student.id,
+            session_type="general",
+        )
+        db.add(session)
+        await db.flush()
+        db.add(
+            ChatMessage(
+                session_id=session.id,
+                role="assistant",
+                content="Tracked assistant reply",
+                input_tokens=120,
+                output_tokens=80,
+                llm_provider="openai",
+                llm_model="gpt-5-mini",
+                estimated_cost_usd=0.0456,
+                created_at=created_at,
+            )
+        )
+        db.add(
+            DailyTokenUsage(
+                user_id=student.id,
+                date=created_at.date(),
+                input_tokens_used=120,
+                output_tokens_used=80,
+            )
+        )
+        await db.commit()
+
+    usage_before = await client.get("/api/admin/usage", headers=admin_headers)
+    assert usage_before.status_code == 200
+    usage_by_model_before = await client.get(
+        "/api/admin/usage/by-model",
+        headers=admin_headers,
+        params={"provider": "openai", "model": "gpt-5-mini"},
+    )
+    assert usage_by_model_before.status_code == 200
+
+    deleted = await client.delete("/api/auth/me", headers=student_headers)
+    assert deleted.status_code == 200
+
+    usage_after = await client.get("/api/admin/usage", headers=admin_headers)
+    assert usage_after.status_code == 200
+    usage_by_model_after = await client.get(
+        "/api/admin/usage/by-model",
+        headers=admin_headers,
+        params={"provider": "openai", "model": "gpt-5-mini"},
+    )
+    assert usage_by_model_after.status_code == 200
+
+    before_totals = usage_before.json()
+    after_totals = usage_after.json()
+    assert after_totals["today"] == before_totals["today"]
+    assert after_totals["this_week"] == before_totals["this_week"]
+    assert after_totals["this_month"] == before_totals["this_month"]
+
+    before_model = usage_by_model_before.json()
+    after_model = usage_by_model_after.json()
+    assert after_model["today"] == before_model["today"]
+    assert after_model["this_week"] == before_model["this_week"]
+    assert after_model["this_month"] == before_model["this_month"]

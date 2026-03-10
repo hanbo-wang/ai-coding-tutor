@@ -21,6 +21,7 @@ interface AuthContextType {
   sendRegisterCode: (email: string, username: string) => Promise<void>;
   register: (data: RegisterData) => Promise<void>;
   logout: () => Promise<void>;
+  deleteAccount: () => Promise<void>;
   updateProfile: (data: ProfileUpdateData) => Promise<void>;
   changePassword: (data: ChangePasswordData) => Promise<void>;
   sendPasswordResetCode: (email: string) => Promise<void>;
@@ -90,6 +91,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   };
 
+  const deleteAccount = async () => {
+    await apiFetch<{ message: string }>("/api/auth/me", {
+      method: "DELETE",
+    });
+    setAccessToken(null);
+    setUser(null);
+  };
+
   const updateProfile = async (data: ProfileUpdateData) => {
     const updatedUser = await apiFetch<User>("/api/auth/me", {
       method: "PUT",
@@ -128,6 +137,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         sendRegisterCode,
         register,
         logout,
+        deleteAccount,
         updateProfile,
         changePassword,
         sendPasswordResetCode,

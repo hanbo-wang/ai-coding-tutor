@@ -26,6 +26,8 @@ interface AuthMockState {
 const registrationEmailPolicyDetail =
   "Registration is limited to UCL student emails in the format " +
   "name.name.<digits>@ucl.ac.uk. Configured admin emails are exempt.";
+const userNoticeAcceptanceDetail =
+  "Please accept the Guided Cursor user notice.";
 
 function createAuthMockState(): AuthMockState {
   return {
@@ -194,6 +196,12 @@ async function installAuthApiMocks(
       return;
     }
 
+    if (path === "/api/auth/me" && method === "DELETE") {
+      state.authenticated = false;
+      await respondJson({ message: "Account deleted successfully." });
+      return;
+    }
+
     if (path === "/api/chat/usage" && method === "GET") {
       await respondJson({
         week_start: "2026-03-02",
@@ -323,6 +331,7 @@ test.describe("Auth and profile validation", () => {
     await page.locator("#username").fill("taken_name");
     await page.locator("#password").fill("StrongPass123");
     await page.locator("#confirmPassword").fill("StrongPass123");
+    await page.locator("#acceptedUserNotice").check();
     await page.getByRole("button", { name: "Create Account" }).click();
 
     await expectInvalidField(
@@ -331,6 +340,39 @@ test.describe("Auth and profile validation", () => {
       "#register-username-error",
       "Username already taken"
     );
+  });
+
+  test("register requires accepting the user notice before account creation", async ({
+    page,
+  }) => {
+    const state = createAuthMockState();
+    await installAuthApiMocks(page, state);
+
+    await page.goto("/register");
+    await page.locator("#email").fill("learner@example.com");
+    await page.locator("#verificationCode").fill("123456");
+    await page.locator("#username").fill("new_user");
+    await page.locator("#password").fill("StrongPass123");
+    await page.locator("#confirmPassword").fill("StrongPass123");
+    await page.getByRole("button", { name: "Create Account" }).click();
+
+    await expect(page.locator("#acceptedUserNotice")).not.toBeChecked();
+    await expect(
+      page.locator("#register-acceptedUserNotice-error")
+    ).toHaveText(userNoticeAcceptanceDetail);
+  });
+
+  test("register opens the user notice dialog on demand", async ({ page }) => {
+    const state = createAuthMockState();
+    await installAuthApiMocks(page, state);
+
+    await page.goto("/register");
+    await page.getByRole("button", { name: "User Notice" }).click();
+
+    await expect(page.getByRole("dialog")).toBeVisible();
+    await expect(page.getByText("Welcome to Guided Cursor")).toBeVisible();
+    await page.getByRole("button", { name: "Close" }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
   });
 
   test("forgot-password maps unknown emails back to the email field", async ({
@@ -414,5 +456,28 @@ test.describe("Auth and profile validation", () => {
       "#profile-username-error",
       "Username already taken"
     );
+  });
+
+  test("profile deletes the account after confirmation and redirects to register", async ({
+    page,
+  }) => {
+    const state = createAuthMockState();
+    state.authenticated = true;
+    await installAuthApiMocks(page, state);
+
+    page.once("dialog", async (dialog) => {
+      expect(dialog.message()).toContain("permanently removes");
+      await dialog.accept();
+    });
+
+    await page.goto("/profile");
+    await expect(
+      page.getByText(
+        "Deleting your account permanently removes your profile, chats, uploads, personal notebooks, and Learning Hub progress."
+      )
+    ).toBeVisible();
+
+    await page.getByRole("button", { name: "Delete Account" }).click();
+    await expect(page).toHaveURL(/\/register$/);
   });
 });

@@ -1,15 +1,26 @@
 """Chat session and message persistence."""
 
-import uuid
+import hmac
 import json
+import uuid
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from hashlib import sha256
 
 from sqlalchemy import and_, delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.chat import ChatSession, ChatMessage, DailyTokenUsage, UploadedFile
+from app.models.chat import (
+    ChatSession,
+    ChatMessage,
+    DailyTokenUsage,
+    RetainedDailyTokenUsage,
+    RetainedModelUsage,
+    UploadedFile,
+)
 from app.config import settings
 from app.services.upload_service import attachment_payload
 
@@ -17,6 +28,32 @@ from app.services.upload_service import attachment_payload
 def _utc_now_naive() -> datetime:
     """Return a naive UTC datetime without deprecated utcnow()."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _normalise_usage_email(email: str) -> str:
+    return email.strip().lower()
+
+
+def _usage_email_hash(email: str) -> str:
+    secret = settings.email_code_hmac_secret.strip() or settings.jwt_secret_key
+    payload = _normalise_usage_email(email).encode("utf-8")
+    return hmac.new(secret.encode("utf-8"), payload, sha256).hexdigest()
+
+
+def _build_upsert_insert(
+    db: AsyncSession,
+    model,
+    *,
+    values: dict,
+    index_elements: list,
+    set_: dict,
+):
+    dialect_name = (db.bind.dialect.name if db.bind is not None else "").lower()
+    if dialect_name == "sqlite":
+        stmt = sqlite_insert(model).values(**values)
+    else:
+        stmt = pg_insert(model).values(**values)
+    return stmt.on_conflict_do_update(index_elements=index_elements, set_=set_)
 
 
 @dataclass(frozen=True)
@@ -406,6 +443,163 @@ async def delete_sessions_for_modules(
     return len(session_ids)
 
 
+async def archive_token_usage_for_deleted_user(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    email: str,
+) -> int:
+    """Move a user's daily usage rows into retained storage before account deletion."""
+    usage_rows = list(
+        (
+            await db.execute(
+                select(DailyTokenUsage).where(DailyTokenUsage.user_id == user_id)
+            )
+        ).scalars()
+    )
+    if not usage_rows:
+        return 0
+
+    email_hash = _usage_email_hash(email)
+    archived_at = _utc_now_naive()
+    for row in usage_rows:
+        stmt = _build_upsert_insert(
+            db,
+            RetainedDailyTokenUsage,
+            values={
+                "email_hash": email_hash,
+                "date": row.date,
+                "input_tokens_used": row.input_tokens_used,
+                "output_tokens_used": row.output_tokens_used,
+                "archived_at": archived_at,
+            },
+            index_elements=[
+                RetainedDailyTokenUsage.email_hash,
+                RetainedDailyTokenUsage.date,
+            ],
+            set_={
+                "input_tokens_used": row.input_tokens_used,
+                "output_tokens_used": row.output_tokens_used,
+                "archived_at": archived_at,
+            },
+        )
+        await db.execute(stmt)
+
+    await db.execute(delete(DailyTokenUsage).where(DailyTokenUsage.user_id == user_id))
+    return len(usage_rows)
+
+
+async def archive_model_usage_for_deleted_sessions(
+    db: AsyncSession,
+    *,
+    session_ids: list[uuid.UUID],
+) -> int:
+    """Persist model-scoped assistant usage before deleting chat history."""
+    if not session_ids:
+        return 0
+
+    assistant_rows = list(
+        (
+            await db.execute(
+                select(ChatMessage).where(
+                    ChatMessage.session_id.in_(session_ids),
+                    ChatMessage.role == "assistant",
+                )
+            )
+        ).scalars()
+    )
+    if not assistant_rows:
+        return 0
+
+    archived_at = _utc_now_naive()
+    grouped_usage: dict[tuple[date, str | None, str | None], dict[str, int | float]] = (
+        defaultdict(
+            lambda: {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "estimated_cost_usd": 0.0,
+                "assistant_message_count": 0,
+                "cost_metadata_count": 0,
+            }
+        )
+    )
+    for row in assistant_rows:
+        if row.created_at is None:
+            continue
+        key = (row.created_at.date(), row.llm_provider, row.llm_model)
+        bucket = grouped_usage[key]
+        bucket["input_tokens"] += int(row.input_tokens or 0)
+        bucket["output_tokens"] += int(row.output_tokens or 0)
+        bucket["estimated_cost_usd"] += float(row.estimated_cost_usd or 0.0)
+        bucket["assistant_message_count"] += 1
+        if row.estimated_cost_usd is not None:
+            bucket["cost_metadata_count"] += 1
+
+    for (usage_date, llm_provider, llm_model), bucket in grouped_usage.items():
+        db.add(
+            RetainedModelUsage(
+                date=usage_date,
+                llm_provider=llm_provider,
+                llm_model=llm_model,
+                input_tokens=int(bucket["input_tokens"]),
+                output_tokens=int(bucket["output_tokens"]),
+                estimated_cost_usd=round(float(bucket["estimated_cost_usd"]), 4),
+                assistant_message_count=int(bucket["assistant_message_count"]),
+                cost_metadata_count=int(bucket["cost_metadata_count"]),
+                archived_at=archived_at,
+            )
+        )
+
+    await db.flush()
+    return len(grouped_usage)
+
+
+async def restore_retained_token_usage_for_email(
+    db: AsyncSession,
+    *,
+    email: str,
+    user_id: uuid.UUID,
+) -> int:
+    """Restore retained daily usage rows to a newly re-registered user."""
+    email_hash = _usage_email_hash(email)
+    retained_rows = list(
+        (
+            await db.execute(
+                select(RetainedDailyTokenUsage).where(
+                    RetainedDailyTokenUsage.email_hash == email_hash
+                )
+            )
+        ).scalars()
+    )
+    if not retained_rows:
+        return 0
+
+    for row in retained_rows:
+        stmt = _build_upsert_insert(
+            db,
+            DailyTokenUsage,
+            values={
+                "user_id": user_id,
+                "date": row.date,
+                "input_tokens_used": row.input_tokens_used,
+                "output_tokens_used": row.output_tokens_used,
+            },
+            index_elements=[DailyTokenUsage.user_id, DailyTokenUsage.date],
+            set_={
+                "input_tokens_used": row.input_tokens_used,
+                "output_tokens_used": row.output_tokens_used,
+            },
+        )
+        await db.execute(stmt)
+
+    await db.execute(
+        delete(RetainedDailyTokenUsage).where(
+            RetainedDailyTokenUsage.email_hash == email_hash
+        )
+    )
+    return len(retained_rows)
+
+
 async def get_daily_usage(db: AsyncSession, user_id: uuid.UUID) -> DailyTokenUsage:
     """Get or create today's token usage record."""
     today = date.today()
@@ -480,21 +674,19 @@ async def record_token_usage(
     reported by the provider.
     """
     today = date.today()
-    stmt = (
-        pg_insert(DailyTokenUsage)
-        .values(
-            user_id=user_id,
-            date=today,
-            input_tokens_used=input_tokens,
-            output_tokens_used=output_tokens,
-        )
-        .on_conflict_do_update(
-            index_elements=[DailyTokenUsage.user_id, DailyTokenUsage.date],
-            set_={
-                "input_tokens_used": DailyTokenUsage.input_tokens_used + input_tokens,
-                "output_tokens_used": DailyTokenUsage.output_tokens_used + output_tokens,
-            },
-        )
+    stmt = _build_upsert_insert(
+        db,
+        DailyTokenUsage,
+        values={
+            "user_id": user_id,
+            "date": today,
+            "input_tokens_used": input_tokens,
+            "output_tokens_used": output_tokens,
+        },
+        index_elements=[DailyTokenUsage.user_id, DailyTokenUsage.date],
+        set_={
+            "input_tokens_used": DailyTokenUsage.input_tokens_used + input_tokens,
+            "output_tokens_used": DailyTokenUsage.output_tokens_used + output_tokens,
+        },
     )
     await db.execute(stmt)
-

@@ -79,3 +79,6 @@ docker-compose.override.yml
 # Logs and databases
 *.log
 *.sqlite3
+
+# Local backups
+/backup/

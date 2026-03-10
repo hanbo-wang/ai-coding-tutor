@@ -109,6 +109,61 @@ class DailyTokenUsage(Base):
     )
 
 
+class RetainedDailyTokenUsage(Base):
+    __tablename__ = "retained_daily_token_usage"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    email_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    date: Mapped[date] = mapped_column(Date, nullable=False)
+    input_tokens_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    output_tokens_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    archived_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_retained_daily_token_usage_email_date",
+            "email_hash",
+            "date",
+            unique=True,
+        ),
+    )
+
+
+class RetainedModelUsage(Base):
+    __tablename__ = "retained_model_usage"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    date: Mapped[date] = mapped_column(Date, nullable=False)
+    llm_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    llm_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    estimated_cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    assistant_message_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    cost_metadata_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    archived_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_retained_model_usage_date", "date"),
+        Index(
+            "ix_retained_model_usage_provider_model_date",
+            "llm_provider",
+            "llm_model",
+            "date",
+        ),
+    )
+
+
 class UploadedFile(Base):
     __tablename__ = "uploaded_files"
 

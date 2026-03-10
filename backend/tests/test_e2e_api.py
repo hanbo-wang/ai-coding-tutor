@@ -45,6 +45,7 @@ async def _register_user(
             "username": username,
             "password": password,
             "verification_code": verification_code,
+            "accepted_user_notice": True,
             "programming_level": programming_level,
             "maths_level": maths_level,
         },

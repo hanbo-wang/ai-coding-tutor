@@ -51,7 +51,7 @@ For a single process deployment, in-memory data structures are sufficient and av
 
 ### 3.1 Token Accounting Data Model
 
-`chat_messages` stores per-message `input_tokens` and `output_tokens` (both nullable integers). `daily_token_usage` stores per-user daily totals (`input_tokens_used`, `output_tokens_used`) with a unique index on `(user_id, date)`. Weekly budget calculation sums the current Monday-to-Sunday rows for each user.
+`chat_messages` stores per-message `input_tokens` and `output_tokens` (both nullable integers). `daily_token_usage` stores per-user daily totals (`input_tokens_used`, `output_tokens_used`) with a unique index on `(user_id, date)`. `retained_daily_token_usage` stores archived daily totals for deleted accounts, keyed by an HMAC hash of the normalised email plus `date`, so the same email can regain its personal weekly budget history on re-registration. `retained_model_usage` stores deleted-account assistant usage as immutable date/provider/model aggregates for admin reporting. Weekly budget calculation still sums only the current Monday-to-Sunday rows in `daily_token_usage` for the active account.
 
 ### 3.2 Usage API Contract
 
@@ -87,6 +87,8 @@ For each `/ws/chat` message:
 10. Persist usage through `record_token_usage()` with an atomic upsert into `daily_token_usage`.
 11. Schedule an asynchronous hidden summary-cache refresh task for the session.
 
+There is no separate weekly reset job. A user who re-registers in a later week keeps the historical daily rows, but the new week's budget is fresh because previous-week rows sit outside the current Monday-to-Sunday query window.
+
 ### 3.6A Two-Step Recovery Route (Auto Degradation)
 
 If metadata-header compliance degrades, the recovery route uses one metadata JSON call and one streamed tutor reply:
@@ -105,7 +107,7 @@ If metadata-header compliance degrades, the recovery route uses one metadata JSO
 
 ### 3.7 Profile Display Behaviour
 
-The profile page shows a weekly budget card with the billing week range (Monday to Sunday), a progress bar with capped percentage, and a percentage used label.
+The profile page shows a weekly budget card with the billing week range (Monday to Sunday), a progress bar with capped percentage, a percentage used label, and a bottom `Delete Account` danger section explaining that profile data, chats, uploads, personal notebooks, and Learning Hub progress are permanently removed. The UI keeps the warning focused on those main data categories; retained token-usage history and immutable admin audit history remain internal backend behaviours.
 
 ### 3.8 Migration Ownership
 
@@ -123,7 +125,9 @@ Model pricing constants in `backend/app/ai/pricing.py` are used for estimated ru
 
 `GET /api/admin/usage` (requires admin authentication) returns aggregated usage data across all users for today, this week, and this month. Each period includes `input_tokens`, `output_tokens`, `estimated_cost_usd`, and `estimated_cost_coverage` (the fraction of messages with stored cost metadata). This is a visibility tool, not a billing system.
 
-`GET /api/admin/usage/by-model?provider=...&model=...` returns the same period breakdown for one selected provider/model pair, using per-message provider/model metadata in `chat_messages`.
+`GET /api/admin/usage/by-model?provider=...&model=...` returns the same period breakdown for one selected provider/model pair, using active `chat_messages` plus retained deleted-account model aggregates.
+
+These admin usage endpoints combine active assistant-message metrics from `chat_messages` with archived deleted-account rows from `retained_model_usage`. As a result, deleting an account does not reduce admin total token statistics or model-scoped usage statistics, even though the underlying chat history is removed.
 
 ### 4.3 Runtime Model Switching (Admin)
 
@@ -152,7 +156,7 @@ In the admin dashboard, `Select LLM model` and `Selected Model Usage` default to
 
 ### 5.2 What Gets Logged
 
-Every admin endpoint that modifies Learning Hub content automatically records an audit entry: zone create/update/delete, zone notebook create/update/delete.
+Every admin endpoint that modifies Learning Hub content automatically records an audit entry: zone create/update/delete, zone notebook create/update/delete. These entries are treated as system history and are not removed when a user deletes their own account.
 
 ### 5.3 Admin Audit Log Endpoint
 
@@ -264,6 +268,9 @@ Python `logging` is configured in `backend/app/main.py` at startup with a consis
 - [ ] When the LLM API key is deliberately invalidated, the user sees a clear error message.
 - [ ] `GET /api/chat/usage` returns weekly usage fields and a capped `usage_percentage`.
 - [ ] The profile page shows a weekly budget card with the billing week range, a progress bar, and a percentage used label.
+- [ ] The profile page shows a bottom `Delete Account` section with a confirmation warning about permanent data removal.
+- [ ] Deleting an account moves that user's daily token usage into retained storage, restores it automatically on same-email re-registration, and still gives a fresh weekly budget after a week boundary.
+- [ ] Deleting an account does not reduce admin total usage or admin by-model usage for the same historical period.
 - [ ] The admin usage endpoint returns accurate token totals and cost estimates.
 - [ ] The admin audit log shows recent Learning Hub changes with admin emails and timestamps.
 - [ ] Exceeding the weekly budget shows a friendly usage limit notice.

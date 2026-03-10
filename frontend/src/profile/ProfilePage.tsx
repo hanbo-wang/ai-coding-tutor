@@ -44,15 +44,17 @@ function mapProfileError(message: string): FieldErrors<ProfileField> | null {
 }
 
 export function ProfilePage() {
-  const { user, updateProfile } = useAuth();
+  const { user, updateProfile, deleteAccount } = useAuth();
   const [username, setUsername] = useState(user?.username ?? "");
   const [programmingLevel, setProgrammingLevel] = useState(
     user?.programming_level ?? 3
   );
   const [mathsLevel, setMathsLevel] = useState(user?.maths_level ?? 3);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
   const [error, setError] = useState("");
+  const [deleteAccountError, setDeleteAccountError] = useState("");
   const [fieldErrors, setFieldErrors] = useState<FieldErrors<ProfileField>>({});
   const [touchedFields, setTouchedFields] = useState<TouchedFields<ProfileField>>(
     {}
@@ -92,6 +94,7 @@ export function ProfilePage() {
   const handleUsernameChange = (nextUsername: string) => {
     setUsername(nextUsername);
     setError("");
+    setDeleteAccountError("");
     setSuccessMessage("");
     if (touchedFields.username || hasAnyFieldError(fieldErrors)) {
       syncValidation({ username: nextUsername });
@@ -101,6 +104,7 @@ export function ProfilePage() {
   const handleProfileSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setError("");
+    setDeleteAccountError("");
     setSuccessMessage("");
     const nextValues = { username };
     const nextErrors = validateProfileValues(nextValues);
@@ -129,6 +133,30 @@ export function ProfilePage() {
       setError(message);
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleDeleteAccount = async () => {
+    setError("");
+    setDeleteAccountError("");
+    setSuccessMessage("");
+
+    const confirmed = window.confirm(
+      "Deleting your account permanently removes your profile, chats, uploads, personal notebooks, and Learning Hub progress. You will need to register again to use Guided Cursor."
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setIsDeletingAccount(true);
+    try {
+      await deleteAccount();
+      window.location.replace("/register");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Account deletion failed.";
+      setDeleteAccountError(message);
+    } finally {
+      setIsDeletingAccount(false);
     }
   };
 
@@ -304,6 +332,31 @@ export function ProfilePage() {
             </p>
           </div>
         )}
+
+        <div className="bg-white rounded-lg shadow-md border border-red-200 p-6">
+          <h2 className="text-lg font-bold text-red-700 mb-2">Delete Account</h2>
+          <p className="text-sm text-gray-700">
+            Deleting your account permanently removes your profile, chats,
+            uploads, personal notebooks, and Learning Hub progress.
+          </p>
+          <p className="mt-2 text-sm text-gray-700">
+            After deletion, you will need to register again before you can use
+            Guided Cursor.
+          </p>
+          {deleteAccountError && (
+            <div className="mt-4 rounded border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {deleteAccountError}
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={handleDeleteAccount}
+            disabled={isDeletingAccount}
+            className="mt-5 w-full rounded-md bg-red-600 px-4 py-2 text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-300 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isDeletingAccount ? "Deleting account..." : "Delete Account"}
+          </button>
+        </div>
       </div>
     </div>
   );

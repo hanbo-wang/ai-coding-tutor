@@ -23,6 +23,7 @@ export interface RegisterData {
   username: string;
   password: string;
   verification_code: string;
+  accepted_user_notice: boolean;
   programming_level?: number;
   maths_level?: number;
 }

@@ -10,6 +10,7 @@ from app.services.email_verification_service import (
     issue_email_verification_code,
     verify_email_verification_code,
 )
+from app.services.account_service import delete_user_account
 
 __all__ = [
     "hash_password",
@@ -21,4 +22,5 @@ __all__ = [
     "EmailDeliveryError",
     "issue_email_verification_code",
     "verify_email_verification_code",
+    "delete_user_account",
 ]

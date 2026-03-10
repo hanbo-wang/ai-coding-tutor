@@ -30,6 +30,7 @@ from app.services.auth_service import (
     hash_password,
     verify_password,
 )
+from app.services.account_service import delete_user_account
 from app.services.email_service import EmailDeliveryError
 from app.services.email_verification_service import (
     REGISTER_PURPOSE,
@@ -38,6 +39,8 @@ from app.services.email_verification_service import (
     issue_email_verification_code,
     verify_email_verification_code,
 )
+from app.services.chat_service import restore_retained_token_usage_for_email
+from app.services.notebook_utils import safe_delete_file
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -49,6 +52,7 @@ REGISTRATION_EMAIL_POLICY_DETAIL = (
     "Registration is limited to UCL student emails in the format "
     "name.name.<digits>@ucl.ac.uk. Configured admin emails are exempt."
 )
+USER_NOTICE_ACCEPTANCE_DETAIL = "Please accept the Guided Cursor user notice."
 
 
 def set_refresh_cookie(response: Response, refresh_token: str) -> None:
@@ -107,7 +111,7 @@ async def send_register_code(
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """Send a registration verification code by email."""
-    normalised_email = payload.email.lower()
+    normalised_email = payload.email.strip().lower()
     _validate_registration_email_or_raise(normalised_email)
     email_result = await db.execute(
         select(User).where(User.email == normalised_email)
@@ -155,7 +159,13 @@ async def register(
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """Register a new user after verifying the email code."""
-    normalised_email = user_data.email.lower()
+    if not user_data.accepted_user_notice:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=USER_NOTICE_ACCEPTANCE_DETAIL,
+        )
+
+    normalised_email = user_data.email.strip().lower()
     _validate_registration_email_or_raise(normalised_email)
     result = await db.execute(select(User).where(User.email == normalised_email))
     if result.scalar_one_or_none():
@@ -194,6 +204,12 @@ async def register(
     )
     db.add(user)
     try:
+        await db.flush()
+        await restore_retained_token_usage_for_email(
+            db,
+            email=normalised_email,
+            user_id=user.id,
+        )
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
@@ -220,7 +236,7 @@ async def login(
 ):
     """Authenticate user and return tokens."""
     result = await db.execute(
-        select(User).where(User.email == credentials.email.lower())
+        select(User).where(User.email == credentials.email.strip().lower())
     )
     user = result.scalar_one_or_none()
     if not user or not verify_password(credentials.password, user.password_hash):
@@ -293,7 +309,7 @@ async def send_password_reset_code(
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """Send a password reset verification code for a registered email."""
-    normalised_email = payload.email.lower()
+    normalised_email = payload.email.strip().lower()
     result = await db.execute(select(User).where(User.email == normalised_email))
     user = result.scalar_one_or_none()
     if user is None:
@@ -329,7 +345,7 @@ async def confirm_password_reset(
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """Reset a password using a verified email code."""
-    normalised_email = payload.email.lower()
+    normalised_email = payload.email.strip().lower()
     result = await db.execute(select(User).where(User.email == normalised_email))
     user = result.scalar_one_or_none()
     if user is None:
@@ -410,3 +426,20 @@ async def change_password(
     current_user.password_hash = hash_password(payload.new_password)
     await db.commit()
     return {"message": "Password reset successfully."}
+
+
+@router.delete("/me")
+async def delete_me(
+    response: Response,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Delete the current user's account and owned data."""
+    file_paths = await delete_user_account(db, current_user)
+    await db.commit()
+
+    response.delete_cookie(key="refresh_token", path="/api/auth")
+    for path in file_paths:
+        safe_delete_file(path)
+
+    return {"message": "Account deleted successfully."}

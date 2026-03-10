@@ -1,6 +1,6 @@
 # Phase 1: Project Scaffolding and User Authentication
 
-**Visible result:** A user can register with email verification, log in, reset a password either by current password (signed-in) or by email code, and manage profile details. Email is the unique login identifier and is not editable from profile updates. Username is a separate display field, can be changed, and must be unique.
+**Visible result:** A user can register with email verification after accepting the User Notice, log in, reset a password either by current password (signed-in) or by email code, manage profile details, and delete their account. Account deletion removes the user's main data, retains token-usage history for same-email re-registration, and leaves admin audit history intact. Email is the unique login identifier and is not editable from profile updates. Username is a separate display field, can be changed, and must be unique.
 
 ---
 
@@ -9,10 +9,11 @@
 - Docker Compose stack with FastAPI + PostgreSQL.
 - User authentication with access tokens and refresh cookies.
 - Email verification for registration and password reset code flows.
+- Registration gated by an accepted User Notice.
 - Two reset-password modes:
   - Signed-in reset using current password.
   - Email-code reset flow.
-- React pages for login, registration, forgot-password, and profile password reset actions.
+- React pages for login, registration, forgot-password, profile management, and profile password reset actions.
 
 ---
 
@@ -64,7 +65,7 @@ Auth and verification-related settings include JWT keys and expiry, email provid
 **`backend/app/schemas/user.py`** includes:
 
 - `RegisterSendCodeRequest` to pre-check email and username before sending a registration code.
-- `RegisterWithCode` for registration with `verification_code`.
+- `RegisterWithCode` for registration with `verification_code` and `accepted_user_notice`.
 - `SendCodeRequest` and `PasswordResetConfirmRequest` for email-code reset.
 - `ChangePassword` for signed-in reset with current password.
 - `UserProfileUpdate` with `extra="forbid"` so unsupported fields (for example `email`) are rejected.
@@ -108,6 +109,7 @@ Auth and verification-related settings include JWT keys and expiry, email provid
 | `/api/auth/password-reset/confirm` | POST | Verify reset code and update password; returns `404` if email is not registered |
 | `/api/auth/me` | GET | Return current user profile |
 | `/api/auth/me` | PUT | Update username and skill levels |
+| `/api/auth/me` | DELETE | Delete the current account, clear the refresh cookie, remove owned user data, retain token-usage history for same-email re-registration, and leave admin audit history intact |
 | `/api/auth/me/password` | PUT | Signed-in password reset using current password |
 
 ### 9. FastAPI App
@@ -147,6 +149,7 @@ Vite + React + TypeScript + Tailwind CSS, with API and WebSocket proxy settings 
 **`frontend/src/auth/AuthContext.tsx`** provides:
 
 - `login`, `register`, `logout`,
+- `deleteAccount`,
 - `sendRegisterCode`,
 - `sendPasswordResetCode`, `resetPassword`,
 - `changePassword` (signed-in mode),
@@ -156,12 +159,12 @@ Vite + React + TypeScript + Tailwind CSS, with API and WebSocket proxy settings 
 ### 15. Auth Pages
 
 - **`LoginPage.tsx`**: sign-in form and forgot-password entry, with field-level validation on blur and submit.
-- **`RegisterPage.tsx`**: onboarding with email code send, code entry, username, password, and skill sliders, plus inline validation for required fields, password confirmation, verification code, email format checks, and the optional UCL registration email policy.
+- **`RegisterPage.tsx`**: onboarding with email code send, code entry, username, password, skill sliders, and a click-to-open `User Notice` dialog. Account creation requires the `User Notice` checkbox to be accepted, alongside inline validation for required fields, password confirmation, verification code, email format checks, and the optional UCL registration email policy.
 - **`ForgotPasswordPage.tsx`**: unauthenticated email-code reset flow with inline email, verification-code, and password validation, plus field mapping for recognised API errors.
 
 ### 16. Profile Password Pages
 
-- **`ProfilePage.tsx`**: read-only email, editable username/levels, inline username validation, and one `Reset Password` entry that opens the current-password reset page.
+- **`ProfilePage.tsx`**: read-only email, editable username/levels, inline username validation, one `Reset Password` entry that opens the current-password reset page, and a bottom `Delete Account` danger section with explicit data-removal warnings and confirmation. The UI warning lists the main data categories that are permanently removed.
 - **`ResetPasswordByPasswordPage.tsx`**: signed-in reset by current password, with inline validation and current-password error mapping.
 - **`ResetPasswordByEmailPage.tsx`**: signed-in reset by email code, using the current account email in read-only mode, with inline verification-code and password validation.
 
@@ -190,6 +193,7 @@ Vite + React + TypeScript + Tailwind CSS, with API and WebSocket proxy settings 
 ## Verification Checklist
 
 - [ ] Register flow requires a valid 6-digit email code.
+- [ ] Register flow requires the `User Notice` checkbox to be accepted before the account can be created.
 - [ ] Required auth/profile fields show inline red validation states after blur or submit, and clear once corrected.
 - [ ] `GET /api/auth/register/policy` returns the active `ENABLE_UCL_REGISTRATION_EMAIL_POLICY` value.
 - [ ] When `ENABLE_UCL_REGISTRATION_EMAIL_POLICY=false`, registration accepts non-UCL email domains if the address is otherwise valid and available.
@@ -199,6 +203,7 @@ Vite + React + TypeScript + Tailwind CSS, with API and WebSocket proxy settings 
 - [ ] `/api/auth/password-reset/confirm` returns `404` and `Email is not registered.` for unknown email.
 - [ ] Signed-in password reset verifies current password and rejects incorrect current password.
 - [ ] Profile update accepts username and level changes and rejects unsupported fields such as `email`.
+- [ ] `DELETE /api/auth/me` removes the user account, clears the refresh cookie, retains token-usage history for same-email re-registration, leaves admin audit history intact, and requires a fresh registration before the same person can use the platform again.
 - [ ] Known auth/profile API form errors highlight the relevant field instead of falling back to a generic banner.
 - [ ] Password reset by email code remains single-use and respects expiry/attempt limits.
 - [ ] Verification emails contain a full `<html>` document and render correctly in Outlook clients.

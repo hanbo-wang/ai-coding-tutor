@@ -16,6 +16,7 @@
 - A JupyterLite bridge (`postMessage`) for loading notebooks and reading live cell context.
 - Scoped chat sessions per notebook, so notebook chats do not mix with general chats.
 - Layered save behaviour: in-browser autosave, dirty-checked backend sync, and a final keepalive flush on page leave.
+- Personal notebook files and zone progress are removed when a user deletes their account from Profile. Token-usage retention is handled separately and does not preserve workspace data.
 
 ### Part B: Admin Learning Hub
 
@@ -27,6 +28,7 @@
 - Public zone browsing for all authenticated users.
 - Per-user zone notebook progress (`zone_notebook_progress`) with reset-to-original.
 - Scoped chat sessions per zone notebook.
+- A user account deletion removes that user's zone progress without affecting shared zone content. Retained token usage does not change any Learning Hub ownership or progress rules.
 
 ---
 

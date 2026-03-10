@@ -14,6 +14,7 @@ class UserCreate(BaseModel):
 
 class RegisterWithCode(UserCreate):
     verification_code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+    accepted_user_notice: bool = False
 
 
 class RegisterSendCodeRequest(BaseModel):
