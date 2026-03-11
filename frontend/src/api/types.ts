@@ -32,6 +32,11 @@ export interface RegistrationPolicy {
   enable_ucl_registration_email_policy: boolean;
 }
 
+export interface VerificationCodeSendResponse {
+  message: string;
+  resend_cooldown_seconds: number;
+}
+
 export interface ProfileUpdateData {
   username?: string;
   programming_level?: number;

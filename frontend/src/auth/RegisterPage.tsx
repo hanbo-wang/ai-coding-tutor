@@ -289,9 +289,13 @@ export function RegisterPage() {
 
     setIsSendingCode(true);
     try {
-      await sendRegisterCode(normalisedEmail, normalisedUsername);
-      setCodeMessage("Verification code sent. Please check your inbox.");
-      setResendCooldown(60);
+      const sendCodeResponse = await sendRegisterCode(
+        normalisedEmail,
+        normalisedUsername
+      );
+      setCodeMessage(`${sendCodeResponse.message} Please check your inbox.`);
+      // Keep the UI countdown aligned with the backend cooldown rule.
+      setResendCooldown(sendCodeResponse.resend_cooldown_seconds);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to send code.";
       const mappedErrors = mapRegisterError(message);

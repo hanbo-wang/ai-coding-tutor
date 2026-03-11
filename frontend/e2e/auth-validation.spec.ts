@@ -28,6 +28,10 @@ const registrationEmailPolicyDetail =
   "name.name.<digits>@ucl.ac.uk. Configured admin emails are exempt.";
 const userNoticeAcceptanceDetail =
   "Please accept the Guided Cursor user notice.";
+const verificationCodeSendResponse = {
+  message: "Verification code sent.",
+  resend_cooldown_seconds: 120,
+};
 
 function createAuthMockState(): AuthMockState {
   return {
@@ -122,7 +126,7 @@ async function installAuthApiMocks(
         await respondError(state.registerSendCodeError);
         return;
       }
-      await respondJson({ message: "Verification code sent." });
+      await respondJson(verificationCodeSendResponse);
       return;
     }
 
@@ -154,7 +158,7 @@ async function installAuthApiMocks(
         await respondError(state.passwordResetSendCodeError);
         return;
       }
-      await respondJson({ message: "Verification code sent." });
+      await respondJson(verificationCodeSendResponse);
       return;
     }
 
@@ -342,6 +346,22 @@ test.describe("Auth and profile validation", () => {
     );
   });
 
+  test("register shows a two-minute resend countdown after sending a code", async ({
+    page,
+  }) => {
+    const state = createAuthMockState();
+    await installAuthApiMocks(page, state);
+
+    await page.goto("/register");
+    await page.locator("#email").fill("learner@example.com");
+    await page.locator("#username").fill("new_learner");
+    await page.getByRole("button", { name: "Send code" }).click();
+
+    await expect(
+      page.getByRole("button", { name: "Resend in 120s" })
+    ).toBeDisabled();
+  });
+
   test("register requires accepting the user notice before account creation", async ({
     page,
   }) => {
@@ -394,6 +414,21 @@ test.describe("Auth and profile validation", () => {
     );
   });
 
+  test("forgot-password shows a two-minute resend countdown after sending a code", async ({
+    page,
+  }) => {
+    const state = createAuthMockState();
+    await installAuthApiMocks(page, state);
+
+    await page.goto("/forgot-password");
+    await page.locator("#email").fill("learner@example.com");
+    await page.getByRole("button", { name: "Send code" }).click();
+
+    await expect(
+      page.getByRole("button", { name: "Resend in 120s" })
+    ).toBeDisabled();
+  });
+
   test("signed-in email reset maps invalid codes to the verification field", async ({
     page,
   }) => {
@@ -414,6 +449,21 @@ test.describe("Auth and profile validation", () => {
       "#reset-email-verificationCode-error",
       "Invalid or expired verification code"
     );
+  });
+
+  test("signed-in email reset shows a two-minute resend countdown after sending a code", async ({
+    page,
+  }) => {
+    const state = createAuthMockState();
+    state.authenticated = true;
+    await installAuthApiMocks(page, state);
+
+    await page.goto("/profile/reset-password/email");
+    await page.getByRole("button", { name: "Send code" }).click();
+
+    await expect(
+      page.getByRole("button", { name: "Resend in 120s" })
+    ).toBeDisabled();
   });
 
   test("signed-in password reset maps wrong current passwords to the current-password field", async ({

@@ -22,6 +22,7 @@ from app.schemas.user import (
     UserLogin,
     UserProfile,
     UserProfileUpdate,
+    VerificationCodeSendResponse,
 )
 from app.services.auth_service import (
     create_access_token,
@@ -105,7 +106,7 @@ async def get_registration_policy():
     }
 
 
-@router.post("/register/send-code")
+@router.post("/register/send-code", response_model=VerificationCodeSendResponse)
 async def send_register_code(
     payload: RegisterSendCodeRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -149,7 +150,10 @@ async def send_register_code(
             detail="Failed to send verification email. Please try again.",
         )
 
-    return {"message": "Verification code sent."}
+    return VerificationCodeSendResponse(
+        message="Verification code sent.",
+        resend_cooldown_seconds=settings.email_code_resend_cooldown_seconds,
+    )
 
 
 @router.post("/register", response_model=TokenResponse)
@@ -303,7 +307,10 @@ async def logout(response: Response):
     return {"message": "Logged out successfully"}
 
 
-@router.post("/password-reset/send-code")
+@router.post(
+    "/password-reset/send-code",
+    response_model=VerificationCodeSendResponse,
+)
 async def send_password_reset_code(
     payload: SendCodeRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -336,7 +343,10 @@ async def send_password_reset_code(
             detail="Failed to send verification email. Please try again.",
         )
 
-    return {"message": "Verification code sent."}
+    return VerificationCodeSendResponse(
+        message="Verification code sent.",
+        resend_cooldown_seconds=settings.email_code_resend_cooldown_seconds,
+    )
 
 
 @router.post("/password-reset/confirm")

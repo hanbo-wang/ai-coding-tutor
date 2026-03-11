@@ -130,9 +130,9 @@ export function ResetPasswordByEmailPage() {
     setMessage("");
     setIsSendingCode(true);
     try {
-      await sendPasswordResetCode(user.email);
-      setMessage("Verification code sent. Please check your inbox.");
-      setResendCooldown(60);
+      const sendCodeResponse = await sendPasswordResetCode(user.email);
+      setMessage(`${sendCodeResponse.message} Please check your inbox.`);
+      setResendCooldown(sendCodeResponse.resend_cooldown_seconds);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to send code.");
     } finally {

@@ -22,6 +22,11 @@ class RegisterSendCodeRequest(BaseModel):
     username: str = Field(min_length=3, max_length=50)
 
 
+class VerificationCodeSendResponse(BaseModel):
+    message: str
+    resend_cooldown_seconds: int = Field(ge=1)
+
+
 class UserLogin(BaseModel):
     email: EmailStr
     password: str

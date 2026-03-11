@@ -1,6 +1,6 @@
 # Phase 1: Project Scaffolding and User Authentication
 
-**Visible result:** A user can register with email verification after accepting the User Notice, log in, reset a password either by current password (signed-in) or by email code, manage profile details, and delete their account. Account deletion removes the user's main data, retains token-usage history for same-email re-registration, and leaves admin audit history intact. Email is the unique login identifier and is not editable from profile updates. Username is a separate display field, can be changed, and must be unique.
+**Visible result:** A user can register with email verification after accepting the User Notice, log in, reset a password either by current password (signed-in) or by email code, manage profile details, and delete their account. Email-code flows use a two-minute resend cooldown surfaced directly in the UI. Account deletion removes the user's main data, retains token-usage history for same-email re-registration, and leaves admin audit history intact. Email is the unique login identifier and is not editable from profile updates. Username is a separate display field, can be changed, and must be unique.
 
 ---
 
@@ -8,7 +8,7 @@
 
 - Docker Compose stack with FastAPI + PostgreSQL.
 - User authentication with access tokens and refresh cookies.
-- Email verification for registration and password reset code flows.
+- Email verification for registration and password reset code flows, with a two-minute resend cooldown.
 - Registration gated by an accepted User Notice.
 - Two reset-password modes:
   - Signed-in reset using current password.
@@ -27,7 +27,7 @@
 ### 2. Configuration
 
 **`backend/app/config.py`** loads settings from environment files.  
-Auth and verification-related settings include JWT keys and expiry, email provider settings (`EMAIL_PROVIDER`, `BREVO_*`), verification code controls (`EMAIL_CODE_*`), and the optional registration email-policy toggle (`ENABLE_UCL_REGISTRATION_EMAIL_POLICY`).
+Auth and verification-related settings include JWT keys and expiry, email provider settings (`EMAIL_PROVIDER`, `BREVO_*`), verification code controls (`EMAIL_CODE_*`, including the two-minute resend cooldown), and the optional registration email-policy toggle (`ENABLE_UCL_REGISTRATION_EMAIL_POLICY`).
 
 ### 3. Database Setup
 
@@ -57,7 +57,7 @@ Auth and verification-related settings include JWT keys and expiry, email provid
 | `code_hash` | HMAC hash (no plain code stored) |
 | `expires_at` | Hard expiry |
 | `failed_attempts` | Invalid entry counter |
-| `resend_available_at` | Cooldown gate |
+| `resend_available_at` | Two-minute cooldown gate |
 | `consumed_at` | Single-use marker |
 
 ### 5. Schemas
@@ -84,7 +84,7 @@ Auth and verification-related settings include JWT keys and expiry, email provid
 
 - generates 6-digit codes,
 - stores HMAC hashes,
-- applies cooldown, expiry, max-attempt, and single-use rules,
+- applies a two-minute resend cooldown, expiry, max-attempt, and single-use rules,
 - builds transactional HTML emails with a full `<html>` document and Outlook-friendly table layout.
 
 **`backend/app/services/email_service.py`**:
@@ -99,13 +99,13 @@ Auth and verification-related settings include JWT keys and expiry, email provid
 
 | Endpoint | Method | Behaviour |
 |----------|--------|-----------|
-| `/api/auth/register/send-code` | POST | Send registration code; rejects already-registered email or existing username |
+| `/api/auth/register/send-code` | POST | Send registration code; rejects already-registered email or existing username, and returns `message` plus `resend_cooldown_seconds` |
 | `/api/auth/register/policy` | GET | Return whether the optional UCL registration email policy is enabled |
 | `/api/auth/register` | POST | Verify code, create user, return token, set refresh cookie |
 | `/api/auth/login` | POST | Validate credentials and return token |
 | `/api/auth/refresh` | POST | Rotate refresh token and return new access token |
 | `/api/auth/logout` | POST | Clear refresh cookie |
-| `/api/auth/password-reset/send-code` | POST | Send reset code for registered email; returns `404` if email is not registered |
+| `/api/auth/password-reset/send-code` | POST | Send reset code for registered email; returns `message` plus `resend_cooldown_seconds`, or `404` if email is not registered |
 | `/api/auth/password-reset/confirm` | POST | Verify reset code and update password; returns `404` if email is not registered |
 | `/api/auth/me` | GET | Return current user profile |
 | `/api/auth/me` | PUT | Update username and skill levels |
@@ -159,14 +159,14 @@ Vite + React + TypeScript + Tailwind CSS, with API and WebSocket proxy settings 
 ### 15. Auth Pages
 
 - **`LoginPage.tsx`**: sign-in form and forgot-password entry, with field-level validation on blur and submit.
-- **`RegisterPage.tsx`**: onboarding with email code send, code entry, username, password, skill sliders, and a click-to-open `User Notice` dialog. Account creation requires the `User Notice` checkbox to be accepted, alongside inline validation for required fields, password confirmation, verification code, email format checks, and the optional UCL registration email policy.
-- **`ForgotPasswordPage.tsx`**: unauthenticated email-code reset flow with inline email, verification-code, and password validation, plus field mapping for recognised API errors.
+- **`RegisterPage.tsx`**: onboarding with email code send, code entry, username, password, skill sliders, and a click-to-open `User Notice` dialog. Account creation requires the `User Notice` checkbox to be accepted, alongside inline validation for required fields, password confirmation, verification code, email format checks, the optional UCL registration email policy, and a two-minute resend countdown driven by the API response.
+- **`ForgotPasswordPage.tsx`**: unauthenticated email-code reset flow with inline email, verification-code, and password validation, plus field mapping for recognised API errors and the same API-driven two-minute resend countdown.
 
 ### 16. Profile Password Pages
 
 - **`ProfilePage.tsx`**: read-only email, editable username/levels, inline username validation, one `Reset Password` entry that opens the current-password reset page, and a bottom `Delete Account` danger section with explicit data-removal warnings and confirmation. The UI warning lists the main data categories that are permanently removed.
 - **`ResetPasswordByPasswordPage.tsx`**: signed-in reset by current password, with inline validation and current-password error mapping.
-- **`ResetPasswordByEmailPage.tsx`**: signed-in reset by email code, using the current account email in read-only mode, with inline verification-code and password validation.
+- **`ResetPasswordByEmailPage.tsx`**: signed-in reset by email code, using the current account email in read-only mode, with inline verification-code and password validation plus the same API-driven two-minute resend countdown.
 
 ### 17. Routing
 
@@ -193,6 +193,7 @@ Vite + React + TypeScript + Tailwind CSS, with API and WebSocket proxy settings 
 ## Verification Checklist
 
 - [ ] Register flow requires a valid 6-digit email code.
+- [ ] Verification-code send endpoints return `message` and `resend_cooldown_seconds`, and auth pages show a two-minute resend countdown after a successful send.
 - [ ] Register flow requires the `User Notice` checkbox to be accepted before the account can be created.
 - [ ] Required auth/profile fields show inline red validation states after blur or submit, and clear once corrected.
 - [ ] `GET /api/auth/register/policy` returns the active `ENABLE_UCL_REGISTRATION_EMAIL_POLICY` value.

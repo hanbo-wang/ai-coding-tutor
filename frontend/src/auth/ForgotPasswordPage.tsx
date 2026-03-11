@@ -155,9 +155,11 @@ export function ForgotPasswordPage() {
 
     setIsSendingCode(true);
     try {
-      await sendPasswordResetCode(nextValues.email.trim());
-      setMessage("Verification code sent. Please check your inbox.");
-      setResendCooldown(60);
+      const sendCodeResponse = await sendPasswordResetCode(
+        nextValues.email.trim()
+      );
+      setMessage(`${sendCodeResponse.message} Please check your inbox.`);
+      setResendCooldown(sendCodeResponse.resend_cooldown_seconds);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to send code.";
       const mappedErrors = mapForgotPasswordError(message);

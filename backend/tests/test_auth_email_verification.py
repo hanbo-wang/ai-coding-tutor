@@ -49,6 +49,7 @@ async def auth_email_client(tmp_path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(settings, "email_provider", "noop")
     monkeypatch.setattr(settings, "admin_email", "")
     monkeypatch.setattr(settings, "email_code_max_attempts", 5)
+    monkeypatch.setattr(settings, "email_code_resend_cooldown_seconds", 120)
     monkeypatch.setattr(settings, "enable_ucl_registration_email_policy", False)
     monkeypatch.setattr(
         "app.services.email_verification_service._generate_code",
@@ -151,6 +152,10 @@ async def test_register_send_code_success_and_duplicate_email_rejected(auth_emai
         json={"email": "new.user@example.com", "username": "new_user"},
     )
     assert send_code.status_code == 200
+    assert send_code.json() == {
+        "message": "Verification code sent.",
+        "resend_cooldown_seconds": 120,
+    }
 
     register = await client.post(
         "/api/auth/register",
@@ -172,6 +177,36 @@ async def test_register_send_code_success_and_duplicate_email_rejected(auth_emai
     )
     assert duplicate.status_code == 400
     assert duplicate.json()["detail"] == "Email already registered"
+
+
+@pytest.mark.asyncio
+async def test_register_send_code_rejects_immediate_resend_with_retry_after_header(
+    auth_email_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _, _ = auth_email_client
+    fixed_now = datetime(2026, 3, 11, 12, 0, 0)
+    monkeypatch.setattr(
+        "app.services.email_verification_service._now_utc",
+        lambda: fixed_now,
+    )
+
+    first = await client.post(
+        "/api/auth/register/send-code",
+        json={"email": "new.user@example.com", "username": "new_user"},
+    )
+    assert first.status_code == 200
+
+    retry = await client.post(
+        "/api/auth/register/send-code",
+        json={"email": "new.user@example.com", "username": "new_user"},
+    )
+    assert retry.status_code == 429
+    assert retry.headers["Retry-After"] == "120"
+    assert (
+        retry.json()["detail"]
+        == "Please wait 120s before requesting another code."
+    )
 
 
 @pytest.mark.asyncio
@@ -510,7 +545,10 @@ async def test_password_reset_send_code_returns_registered_and_missing_responses
         json={"email": "existing@example.com"},
     )
     assert existing.status_code == 200
-    assert existing.json()["message"] == "Verification code sent."
+    assert existing.json() == {
+        "message": "Verification code sent.",
+        "resend_cooldown_seconds": 120,
+    }
 
     missing = await client.post(
         "/api/auth/password-reset/send-code",
@@ -531,6 +569,41 @@ async def test_password_reset_send_code_returns_registered_and_missing_responses
         assert missing_token is None
 
     assert "missing@example.com" not in sent_emails
+
+
+@pytest.mark.asyncio
+async def test_password_reset_send_code_rejects_immediate_resend_with_retry_after_header(
+    auth_email_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, session_factory, _ = auth_email_client
+    fixed_now = datetime(2026, 3, 11, 12, 0, 0)
+    monkeypatch.setattr(
+        "app.services.email_verification_service._now_utc",
+        lambda: fixed_now,
+    )
+    await _create_user(
+        session_factory,
+        email="existing@example.com",
+        username="existing_user",
+    )
+
+    first = await client.post(
+        "/api/auth/password-reset/send-code",
+        json={"email": "existing@example.com"},
+    )
+    assert first.status_code == 200
+
+    retry = await client.post(
+        "/api/auth/password-reset/send-code",
+        json={"email": "existing@example.com"},
+    )
+    assert retry.status_code == 429
+    assert retry.headers["Retry-After"] == "120"
+    assert (
+        retry.json()["detail"]
+        == "Please wait 120s before requesting another code."
+    )
 
 
 @pytest.mark.asyncio

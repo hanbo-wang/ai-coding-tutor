@@ -127,7 +127,7 @@ Start the renewal service profile: `docker compose -f docker-compose.prod.yml --
 
 1. Prepare a Linux server with Docker and Docker Compose.
 2. Create a deploy directory (e.g. `/opt/ai-coding-tutor`).
-3. Create the production `.env` file from `.github/workflows/templates/env.prod.example`. Fill in `GHCR_OWNER`, `WEBSITE_DOMAIN`, optional `WEBSITE_ALT_DOMAINS`, PostgreSQL credentials, `DATABASE_URL`, `JWT_SECRET_KEY`, and at least one LLM provider key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or Google credentials/API key). Set `ENABLE_UCL_REGISTRATION_EMAIL_POLICY=true` only when production registration should be limited to UCL student-format emails.
+3. Create the production `.env` file from `.github/workflows/templates/env.prod.example`. Fill in `GHCR_OWNER`, `WEBSITE_DOMAIN`, optional `WEBSITE_ALT_DOMAINS`, PostgreSQL credentials, `DATABASE_URL`, `JWT_SECRET_KEY`, and at least one LLM provider key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or Google credentials/API key). The provided template sets `EMAIL_CODE_RESEND_COOLDOWN_SECONDS=120`, which keeps the verification email resend wait at two minutes. Set `ENABLE_UCL_REGISTRATION_EMAIL_POLICY=true` only when production registration should be limited to UCL student-format emails.
 4. If using Google Vertex AI, place the Google service account JSON file on the server at the configured host path and set permissions to 600.
 5. Configure GitHub Actions repository secrets for SSH and GHCR access.
 6. Ensure `CERTBOT_EMAIL` (or `ADMIN_EMAIL`) is configured so the workflow can issue certificates automatically when needed.

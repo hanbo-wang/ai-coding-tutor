@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     brevo_sender_email: str = ""
     brevo_sender_name: str = "AI Coding Tutor"
     email_code_ttl_seconds: int = 600
-    email_code_resend_cooldown_seconds: int = 60
+    email_code_resend_cooldown_seconds: int = 120
     email_code_max_attempts: int = 5
     email_code_hmac_secret: str = ""
     enable_ucl_registration_email_policy: bool = False

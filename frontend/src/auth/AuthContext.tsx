@@ -11,6 +11,7 @@ import {
   RegisterData,
   PasswordResetConfirmData,
   ProfileUpdateData,
+  VerificationCodeSendResponse,
 } from "../api/types";
 import { apiFetch, setAccessToken } from "../api/http";
 
@@ -18,13 +19,18 @@ interface AuthContextType {
   user: User | null;
   isLoading: boolean;
   login: (credentials: LoginCredentials) => Promise<void>;
-  sendRegisterCode: (email: string, username: string) => Promise<void>;
+  sendRegisterCode: (
+    email: string,
+    username: string
+  ) => Promise<VerificationCodeSendResponse>;
   register: (data: RegisterData) => Promise<void>;
   logout: () => Promise<void>;
   deleteAccount: () => Promise<void>;
   updateProfile: (data: ProfileUpdateData) => Promise<void>;
   changePassword: (data: ChangePasswordData) => Promise<void>;
-  sendPasswordResetCode: (email: string) => Promise<void>;
+  sendPasswordResetCode: (
+    email: string
+  ) => Promise<VerificationCodeSendResponse>;
   resetPassword: (data: PasswordResetConfirmData) => Promise<void>;
 }
 
@@ -69,7 +75,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const sendRegisterCode = async (email: string, username: string) => {
-    await apiFetch<{ message: string }>("/api/auth/register/send-code", {
+    return apiFetch<VerificationCodeSendResponse>("/api/auth/register/send-code", {
       method: "POST",
       body: JSON.stringify({ email, username }),
     });
@@ -115,7 +121,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const sendPasswordResetCode = async (email: string) => {
-    await apiFetch<{ message: string }>("/api/auth/password-reset/send-code", {
+    return apiFetch<VerificationCodeSendResponse>("/api/auth/password-reset/send-code", {
       method: "POST",
       body: JSON.stringify({ email }),
     });
