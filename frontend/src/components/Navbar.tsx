@@ -102,11 +102,16 @@ export function Navbar() {
               </>
             ) : (
               <>
-                <Link to="/login" className={desktopLinkClass("/login")}>
+                <Link
+                  to="/login"
+                  state={location.state}
+                  className={desktopLinkClass("/login")}
+                >
                   Login
                 </Link>
                 <Link
                   to="/register"
+                  state={location.state}
                   className={`${primaryActionClass} ${
                     isRouteActive("/register")
                       ? "ring-2 ring-inset ring-white/15"
@@ -205,12 +210,14 @@ export function Navbar() {
                 <>
                   <Link
                     to="/login"
+                    state={location.state}
                     className={mobileLinkClass("/login")}
                   >
                     Login
                   </Link>
                   <Link
                     to="/register"
+                    state={location.state}
                     className={`${primaryActionClass} ${
                       isRouteActive("/register")
                         ? "ring-2 ring-inset ring-white/15"

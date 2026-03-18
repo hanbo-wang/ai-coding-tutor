@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { apiFetch } from "../api/http";
 import { RegistrationPolicy } from "../api/types";
 import {
@@ -15,6 +15,7 @@ import {
 } from "../forms/fieldValidation";
 import { UserNoticeDialog } from "./UserNoticeDialog";
 import { useAuth } from "./useAuth";
+import { resolveAuthRedirectTarget } from "./redirect";
 
 const UCL_DOMAIN_PATTERN = /@ucl\.ac\.uk$/i;
 const UCL_STUDENT_EMAIL_PATTERN = /^[a-z0-9]+(?:\.[a-z0-9]+)*\.[0-9]+@ucl\.ac\.uk$/;
@@ -181,6 +182,7 @@ export function RegisterPage() {
   const [resendCooldown, setResendCooldown] = useState(0);
   const [isUserNoticeOpen, setIsUserNoticeOpen] = useState(false);
   const { register, sendRegisterCode } = useAuth();
+  const location = useLocation();
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -358,7 +360,7 @@ export function RegisterPage() {
         programming_level: programmingLevel,
         maths_level: mathsLevel,
       });
-      navigate("/chat");
+      navigate(resolveAuthRedirectTarget(location.state), { replace: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Registration failed.";
       const mappedErrors = mapRegisterError(message);
@@ -747,13 +749,21 @@ export function RegisterPage() {
 
           <p className="mt-4 text-center text-sm text-gray-600">
             Already have an account?{" "}
-            <Link to="/login" className="text-accent-dark hover:underline">
+            <Link
+              to="/login"
+              state={location.state}
+              className="text-accent-dark hover:underline"
+            >
               Login
             </Link>
           </p>
           <p className="mt-2 text-center text-sm text-gray-600">
             Forgot your password?{" "}
-            <Link to="/forgot-password" className="text-accent-dark hover:underline">
+            <Link
+              to="/forgot-password"
+              state={location.state}
+              className="text-accent-dark hover:underline"
+            >
               Reset it here
             </Link>
           </p>

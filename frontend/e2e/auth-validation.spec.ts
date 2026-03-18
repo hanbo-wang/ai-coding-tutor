@@ -32,6 +32,16 @@ const verificationCodeSendResponse = {
   message: "Verification code sent.",
   resend_cooldown_seconds: 120,
 };
+const defaultZones = [
+  {
+    id: "zone-1",
+    title: "Python Foundations",
+    description: "Starter exercises for the Learning Hub.",
+    order: 1,
+    created_at: "2026-01-02T00:00:00Z",
+    notebook_count: 1,
+  },
+];
 
 function createAuthMockState(): AuthMockState {
   return {
@@ -118,6 +128,12 @@ async function installAuthApiMocks(
       }
       state.authenticated = true;
       await respondJson({ access_token: "login-token", token_type: "bearer" });
+      return;
+    }
+
+    if (path === "/api/auth/logout" && method === "POST") {
+      state.authenticated = false;
+      await respondJson({ message: "Logged out successfully." });
       return;
     }
 
@@ -220,6 +236,11 @@ async function installAuthApiMocks(
       return;
     }
 
+    if (path === "/api/zones" && method === "GET") {
+      await respondJson(defaultZones);
+      return;
+    }
+
     await respondJson({});
   });
 }
@@ -232,6 +253,37 @@ async function expectInvalidField(
 ): Promise<void> {
   await expect(page.locator(selector)).toHaveClass(/border-red-300/);
   await expect(page.locator(errorSelector)).toHaveText(message);
+}
+
+async function submitLogin(
+  page: Page,
+  credentials: { email?: string; password?: string } = {}
+): Promise<void> {
+  await page.locator("#email").fill(credentials.email ?? "learner@example.com");
+  await page.locator("#password").fill(credentials.password ?? "StrongPass123");
+  await page.getByRole("button", { name: "Login" }).click();
+}
+
+async function submitRegistration(
+  page: Page,
+  values: {
+    email?: string;
+    verificationCode?: string;
+    username?: string;
+    password?: string;
+  } = {}
+): Promise<void> {
+  const password = values.password ?? "StrongPass123";
+
+  await page.locator("#email").fill(values.email ?? "learner@example.com");
+  await page
+    .locator("#verificationCode")
+    .fill(values.verificationCode ?? "123456");
+  await page.locator("#username").fill(values.username ?? "new_user");
+  await page.locator("#password").fill(password);
+  await page.locator("#confirmPassword").fill(password);
+  await page.locator("#acceptedUserNotice").check();
+  await page.getByRole("button", { name: "Create Account" }).click();
 }
 
 test.describe("Auth and profile validation", () => {
@@ -282,6 +334,51 @@ test.describe("Auth and profile validation", () => {
       "#login-password-error",
       "Invalid email or password"
     );
+  });
+
+  test("login redirects to Learning Hub when there is no saved destination", async ({
+    page,
+  }) => {
+    const state = createAuthMockState();
+    await installAuthApiMocks(page, state);
+
+    await page.goto("/login");
+    await submitLogin(page);
+
+    await expect(page).toHaveURL(/\/learning-hub$/);
+    await expect(page.getByRole("heading", { name: "Learning Hub" })).toBeVisible();
+    await expect(page.getByText("Python Foundations")).toBeVisible();
+  });
+
+  test("visiting login while authenticated automatically logs the user out", async ({
+    page,
+  }) => {
+    const state = createAuthMockState();
+    state.authenticated = true;
+    await installAuthApiMocks(page, state);
+
+    await page.goto("/login");
+
+    await expect(page).toHaveURL(/\/login$/);
+    await expect(page.getByRole("heading", { name: "Login" })).toBeVisible();
+
+    await page.goto("/profile");
+    await expect(page).toHaveURL(/\/login$/);
+  });
+
+  test("login returns to the original protected page before falling back to Learning Hub", async ({
+    page,
+  }) => {
+    const state = createAuthMockState();
+    await installAuthApiMocks(page, state);
+
+    await page.goto("/profile");
+    await expect(page).toHaveURL(/\/login$/);
+
+    await submitLogin(page);
+
+    await expect(page).toHaveURL(/\/profile$/);
+    await expect(page.locator("#username")).toHaveValue(state.user.username);
   });
 
   test("register highlights the email field when the email format is invalid", async ({
@@ -344,6 +441,54 @@ test.describe("Auth and profile validation", () => {
       "#register-username-error",
       "Username already taken"
     );
+  });
+
+  test("register redirects to Learning Hub when there is no saved destination", async ({
+    page,
+  }) => {
+    const state = createAuthMockState();
+    await installAuthApiMocks(page, state);
+
+    await page.goto("/register");
+    await submitRegistration(page);
+
+    await expect(page).toHaveURL(/\/learning-hub$/);
+    await expect(page.getByRole("heading", { name: "Learning Hub" })).toBeVisible();
+    await expect(page.getByText("Python Foundations")).toBeVisible();
+  });
+
+  test("visiting register while authenticated automatically logs the user out", async ({
+    page,
+  }) => {
+    const state = createAuthMockState();
+    state.authenticated = true;
+    await installAuthApiMocks(page, state);
+
+    await page.goto("/register");
+
+    await expect(page).toHaveURL(/\/register$/);
+    await expect(page.getByText("Tell us about you")).toBeVisible();
+
+    await page.goto("/profile");
+    await expect(page).toHaveURL(/\/login$/);
+  });
+
+  test("register preserves the original protected page when coming from the login redirect state", async ({
+    page,
+  }) => {
+    const state = createAuthMockState();
+    await installAuthApiMocks(page, state);
+
+    await page.goto("/profile");
+    await expect(page).toHaveURL(/\/login$/);
+
+    await page.getByRole("link", { name: "Register" }).click();
+    await expect(page).toHaveURL(/\/register$/);
+
+    await submitRegistration(page, { username: "redirected_user" });
+
+    await expect(page).toHaveURL(/\/profile$/);
+    await expect(page.locator("#username")).toHaveValue("redirected_user");
   });
 
   test("register shows a two-minute resend countdown after sending a code", async ({
@@ -412,6 +557,22 @@ test.describe("Auth and profile validation", () => {
       "#forgot-password-email-error",
       "Email is not registered."
     );
+  });
+
+  test("visiting forgot-password while authenticated automatically logs the user out", async ({
+    page,
+  }) => {
+    const state = createAuthMockState();
+    state.authenticated = true;
+    await installAuthApiMocks(page, state);
+
+    await page.goto("/forgot-password");
+
+    await expect(page).toHaveURL(/\/forgot-password$/);
+    await expect(page.getByRole("heading", { name: "Forgot Password" })).toBeVisible();
+
+    await page.goto("/profile");
+    await expect(page).toHaveURL(/\/login$/);
   });
 
   test("forgot-password shows a two-minute resend countdown after sending a code", async ({
@@ -529,5 +690,27 @@ test.describe("Auth and profile validation", () => {
 
     await page.getByRole("button", { name: "Delete Account" }).click();
     await expect(page).toHaveURL(/\/register$/);
+  });
+
+  test("root path redirects unauthenticated users to login", async ({ page }) => {
+    const state = createAuthMockState();
+    await installAuthApiMocks(page, state);
+
+    await page.goto("/");
+
+    await expect(page).toHaveURL(/\/login$/);
+  });
+
+  test("root path redirects authenticated users to Learning Hub", async ({
+    page,
+  }) => {
+    const state = createAuthMockState();
+    state.authenticated = true;
+    await installAuthApiMocks(page, state);
+
+    await page.goto("/");
+
+    await expect(page).toHaveURL(/\/learning-hub$/);
+    await expect(page.getByText("Python Foundations")).toBeVisible();
   });
 });

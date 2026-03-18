@@ -1,6 +1,8 @@
-import { Suspense, lazy } from "react";
+import { ReactNode, Suspense, lazy, useEffect, useState } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { ProtectedRoute } from "./auth/ProtectedRoute";
+import { useAuth } from "./auth/useAuth";
+import { DEFAULT_POST_AUTH_REDIRECT } from "./auth/redirect";
 import { Navbar } from "./components/Navbar";
 import { GlobalErrorBoundary } from "./components/GlobalErrorBoundary";
 const LoginPage = lazy(() => import("./auth/LoginPage").then((module) => ({ default: module.LoginPage })));
@@ -24,6 +26,50 @@ const routeLoadingFallback = (
   </div>
 );
 
+function HomeRedirect() {
+  const { user, isLoading } = useAuth();
+
+  if (isLoading) {
+    return routeLoadingFallback;
+  }
+
+  return <Navigate to={user ? DEFAULT_POST_AUTH_REDIRECT : "/login"} replace />;
+}
+
+function LoggedOutAuthRoute({ children }: { children: ReactNode }) {
+  const { user, isLoading, logout } = useAuth();
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+
+  useEffect(() => {
+    if (!user || isLoading) {
+      return;
+    }
+
+    let isActive = true;
+    setIsLoggingOut(true);
+
+    void logout()
+      .catch((error) => {
+        console.error("Failed to auto-logout on auth entry route:", error);
+      })
+      .finally(() => {
+        if (isActive) {
+          setIsLoggingOut(false);
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [isLoading, logout, user]);
+
+  if (isLoading || isLoggingOut) {
+    return routeLoadingFallback;
+  }
+
+  return <>{children}</>;
+}
+
 export default function App() {
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-gray-100">
@@ -32,9 +78,30 @@ export default function App() {
         <GlobalErrorBoundary>
           <Suspense fallback={routeLoadingFallback}>
             <Routes>
-              <Route path="/login" element={<LoginPage />} />
-              <Route path="/register" element={<RegisterPage />} />
-              <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+              <Route
+                path="/login"
+                element={
+                  <LoggedOutAuthRoute>
+                    <LoginPage />
+                  </LoggedOutAuthRoute>
+                }
+              />
+              <Route
+                path="/register"
+                element={
+                  <LoggedOutAuthRoute>
+                    <RegisterPage />
+                  </LoggedOutAuthRoute>
+                }
+              />
+              <Route
+                path="/forgot-password"
+                element={
+                  <LoggedOutAuthRoute>
+                    <ForgotPasswordPage />
+                  </LoggedOutAuthRoute>
+                }
+              />
               <Route path="/chat" element={<ProtectedRoute><ChatPage /></ProtectedRoute>} />
               <Route path="/profile" element={<ProtectedRoute><ProfilePage /></ProtectedRoute>} />
               <Route path="/profile/reset-password/password" element={<ProtectedRoute><ResetPasswordByPasswordPage /></ProtectedRoute>} />
@@ -46,7 +113,7 @@ export default function App() {
               <Route path="/zone-notebook/:zoneId/:notebookId" element={<ProtectedRoute><ZoneNotebookWorkspacePage /></ProtectedRoute>} />
               <Route path="/admin" element={<ProtectedRoute><AdminDashboardPage /></ProtectedRoute>} />
               <Route path="/system-health" element={<ProtectedRoute><HealthPage /></ProtectedRoute>} />
-              <Route path="/" element={<Navigate to="/chat" replace />} />
+              <Route path="/" element={<HomeRedirect />} />
             </Routes>
           </Suspense>
         </GlobalErrorBoundary>

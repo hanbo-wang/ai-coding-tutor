@@ -1,5 +1,5 @@
 import { FormEvent, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   FieldErrors,
   TouchedFields,
@@ -11,6 +11,7 @@ import {
   touchFields,
 } from "../forms/fieldValidation";
 import { useAuth } from "./useAuth";
+import { resolveAuthRedirectTarget } from "./redirect";
 
 type LoginField = "email" | "password";
 
@@ -58,6 +59,7 @@ export function LoginPage() {
   );
   const [isSubmitting, setIsSubmitting] = useState(false);
   const { login } = useAuth();
+  const location = useLocation();
   const navigate = useNavigate();
 
   const syncValidation = (nextValues: LoginValues) => {
@@ -100,7 +102,7 @@ export function LoginPage() {
 
     try {
       await login({ email: email.trim(), password });
-      navigate("/chat");
+      navigate(resolveAuthRedirectTarget(location.state), { replace: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Login failed.";
       const mappedErrors = mapLoginError(message);
@@ -196,7 +198,11 @@ export function LoginPage() {
             </div>
 
             <div className="text-right">
-              <Link to="/forgot-password" className="text-sm text-accent-dark hover:underline">
+              <Link
+                to="/forgot-password"
+                state={location.state}
+                className="text-sm text-accent-dark hover:underline"
+              >
                 Forgot password?
               </Link>
             </div>
@@ -212,7 +218,11 @@ export function LoginPage() {
 
           <p className="mt-4 text-center text-sm text-gray-600">
             Don't have an account?{" "}
-            <Link to="/register" className="text-accent-dark hover:underline">
+            <Link
+              to="/register"
+              state={location.state}
+              className="text-accent-dark hover:underline"
+            >
               Register
             </Link>
           </p>

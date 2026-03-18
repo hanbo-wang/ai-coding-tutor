@@ -19,6 +19,7 @@ __pycache__/
 *.pyd
 venv/
 .venv/
+.python-packages/
 *.egg-info/
 .pytest_cache/
 .mypy_cache/

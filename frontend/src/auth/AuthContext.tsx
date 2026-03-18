@@ -92,9 +92,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = async () => {
-    await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
-    setAccessToken(null);
-    setUser(null);
+    try {
+      await fetch("/api/auth/logout", {
+        method: "POST",
+        credentials: "include",
+      });
+    } finally {
+      setAccessToken(null);
+      setUser(null);
+    }
   };
 
   const deleteAccount = async () => {

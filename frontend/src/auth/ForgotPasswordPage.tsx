@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   FieldErrors,
   TouchedFields,
@@ -80,6 +80,7 @@ function mapForgotPasswordError(
 
 export function ForgotPasswordPage() {
   const { sendPasswordResetCode, resetPassword } = useAuth();
+  const location = useLocation();
   const navigate = useNavigate();
 
   const [email, setEmail] = useState("");
@@ -198,7 +199,10 @@ export function ForgotPasswordPage() {
       setVerificationCode("");
       setNewPassword("");
       setConfirmNewPassword("");
-      window.setTimeout(() => navigate("/login"), 1200);
+      window.setTimeout(
+        () => navigate("/login", { replace: true, state: location.state }),
+        1200
+      );
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Password reset failed.";
@@ -435,7 +439,11 @@ export function ForgotPasswordPage() {
 
           <p className="mt-4 text-center text-sm text-gray-600">
             Back to{" "}
-            <Link to="/login" className="text-accent-dark hover:underline">
+            <Link
+              to="/login"
+              state={location.state}
+              className="text-accent-dark hover:underline"
+            >
               Login
             </Link>
           </p>
