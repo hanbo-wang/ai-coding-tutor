@@ -74,3 +74,24 @@ Support modules:
 
 Answer keys:
   newton_and_secant_test.ipynb
+
+
+4. Fourier Transform (fourier_transform/)
+------------------------------------------
+The Discrete Fourier Transform and Fast Fourier Transform, from
+the core intuition of frequency-domain correlation through to
+practical usage with NumPy's FFT.
+
+Notebooks:
+  dft_and_fft.ipynb
+    Sine wave fundamentals, correlation with sinusoids, DFT
+    derivation and naive implementation, computational cost
+    analysis, and practical FFT usage with NumPy (including
+    frequency extraction from noisy signals).
+
+Support modules:
+  fourier_hints.py    Progressive hint boxes for each exercise.
+  fourier_verify.py   Automated test functions that check student answers.
+
+Answer keys:
+  dft_and_fft_test.ipynb
