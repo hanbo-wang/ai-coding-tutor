@@ -13,6 +13,12 @@
 
 ---
 
+
+https://github.com/user-attachments/assets/14903e89-91b5-4932-bf2b-84b6114f4dac
+
+
+---
+
 ## How It Works
 
 The **pedagogy engine** controls every AI response:
