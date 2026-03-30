@@ -89,9 +89,15 @@ Notebooks:
     analysis, and practical FFT usage with NumPy (including
     frequency extraction from noisy signals).
 
+  supplementary_cooley_tukey_fft.ipynb
+    Full derivation of the Cooley-Tukey radix-2 FFT algorithm:
+    even/odd decomposition, twiddle factors, butterfly symmetry,
+    recursive implementation, and timing comparison.
+
 Support modules:
   fourier_hints.py    Progressive hint boxes for each exercise.
   fourier_verify.py   Automated test functions that check student answers.
 
 Answer keys:
   dft_and_fft_test.ipynb
+  supplementary_cooley_tukey_fft_test.ipynb

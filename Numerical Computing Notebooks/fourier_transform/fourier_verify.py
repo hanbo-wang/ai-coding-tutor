@@ -117,3 +117,90 @@ def check_noisy_spectrum(freqs_n, X_clean, X_noisy, N_noisy, fs_noisy):
         return
 
     print(f"{_GREEN}Noisy spectrum — All checks passed.{_RESET}")
+
+
+# ---------------------------------------------------------------------------
+# Twiddle factors check
+# ---------------------------------------------------------------------------
+
+def check_twiddle_factors(fn):
+    """Verify the student's twiddle factor computation."""
+    for N in [2, 4, 8, 16]:
+        try:
+            result = fn(N)
+            expected = np.exp(-2j * np.pi * np.arange(N // 2) / N)
+
+            if not isinstance(result, np.ndarray):
+                print(f"{_RED}Twiddle factors — N={N}: return value should be a NumPy array.{_RESET}")
+                return
+
+            if len(result) != N // 2:
+                print(f"{_RED}Twiddle factors — N={N}: output length is {len(result)} (expected {N // 2}).{_RESET}")
+                return
+
+            if not np.allclose(result, expected, atol=1e-10):
+                print(f"{_RED}Twiddle factors — N={N}: values do not match expected.{_RESET}")
+                print(f"  Max error: {np.max(np.abs(result - expected)):.2e}")
+                return
+
+        except Exception as e:
+            print(f"{_RED}Twiddle factors — N={N}: raised an error: {e}{_RESET}")
+            return
+
+    print(f"{_GREEN}Twiddle factors — All tests passed.{_RESET}")
+
+
+# ---------------------------------------------------------------------------
+# Cooley-Tukey FFT check
+# ---------------------------------------------------------------------------
+
+def check_cooley_tukey_fft(fn):
+    """Verify the student's recursive Cooley-Tukey FFT implementation."""
+    cases = [
+        (
+            "impulse (N=8)",
+            np.array([1, 0, 0, 0, 0, 0, 0, 0], dtype=complex),
+        ),
+        (
+            "DC signal (N=4)",
+            np.array([1, 1, 1, 1], dtype=complex),
+        ),
+        (
+            "cosine (N=8, k=2)",
+            np.cos(2 * np.pi * 2 * np.arange(8) / 8),
+        ),
+        (
+            "random signal (N=16)",
+            np.random.RandomState(42).randn(16),
+        ),
+        (
+            "random signal (N=64)",
+            np.random.RandomState(7).randn(64),
+        ),
+    ]
+
+    for i, (name, x) in enumerate(cases, 1):
+        try:
+            result = fn(x)
+            expected = np.fft.fft(x)
+
+            if not isinstance(result, np.ndarray):
+                print(f"{_RED}Cooley-Tukey FFT — Test {i} ({name}) failed.{_RESET}")
+                print("  Return value should be a NumPy array.")
+                return
+
+            if len(result) != len(x):
+                print(f"{_RED}Cooley-Tukey FFT — Test {i} ({name}) failed.{_RESET}")
+                print(f"  Output length is {len(result)} (expected {len(x)}).")
+                return
+
+            if not np.allclose(result, expected, atol=1e-8):
+                print(f"{_RED}Cooley-Tukey FFT — Test {i} ({name}) failed.{_RESET}")
+                print(f"  Max error: {np.max(np.abs(result - expected)):.2e}")
+                return
+
+        except Exception as e:
+            print(f"{_RED}Cooley-Tukey FFT — Test {i} ({name}) raised an error: {e}{_RESET}")
+            return
+
+    print(f"{_GREEN}Cooley-Tukey FFT — All tests passed.{_RESET}")

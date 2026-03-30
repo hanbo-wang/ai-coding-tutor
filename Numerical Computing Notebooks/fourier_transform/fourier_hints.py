@@ -41,6 +41,44 @@ X_noisy = np.abs(np.fft.rfft(noisy))
   </details>
 </details>
 """,
+    "twiddle_factors": f"""
+<details style="{_STYLE}">
+  <summary><strong>Hint 1</strong></summary>
+  <p>Each twiddle factor is <code>W_N^k = exp(-j 2&pi; k / N)</code>. Build an array of these for <code>k = 0, 1, &hellip;, N/2 &minus; 1</code>.</p>
+  <details style="{_STYLE}">
+    <summary><strong>Hint 2</strong></summary>
+    <p>Use <code>np.exp(-2j * np.pi * np.arange(N // 2) / N)</code>.</p>
+    <details style="{_STYLE}">
+      <summary><strong>Show answer</strong></summary>
+<pre style="background:#f5f5f5; padding:8px; border-radius:4px;">
+return np.exp(-2j * np.pi * np.arange(N // 2) / N)
+</pre>
+    </details>
+  </details>
+</details>
+""",
+    "cooley_tukey_fft": f"""
+<details style="{_STYLE}">
+  <summary><strong>Hint 1</strong></summary>
+  <p>Split <code>x</code> into even-indexed and odd-indexed elements. Recursively compute the FFT of each half. Then combine using the butterfly: <code>X[k] = E[k] + W * O[k]</code> and <code>X[k+N/2] = E[k] &minus; W * O[k]</code>.</p>
+  <details style="{_STYLE}">
+    <summary><strong>Hint 2</strong></summary>
+    <p>Even elements: <code>x[0::2]</code>. Odd elements: <code>x[1::2]</code>. Twiddle factors: <code>np.exp(-2j * np.pi * np.arange(N//2) / N)</code>. Precompute <code>T = twiddle * O</code>, then <code>X[:N//2] = E + T</code> and <code>X[N//2:] = E &minus; T</code>.</p>
+    <details style="{_STYLE}">
+      <summary><strong>Show answer</strong></summary>
+<pre style="background:#f5f5f5; padding:8px; border-radius:4px;">
+E = cooley_tukey_fft(x[0::2])
+O = cooley_tukey_fft(x[1::2])
+T = np.exp(-2j * np.pi * np.arange(N // 2) / N) * O
+X = np.zeros(N, dtype=complex)
+X[:N // 2] = E + T
+X[N // 2:] = E - T
+return X
+</pre>
+    </details>
+  </details>
+</details>
+""",
 }
 
 
